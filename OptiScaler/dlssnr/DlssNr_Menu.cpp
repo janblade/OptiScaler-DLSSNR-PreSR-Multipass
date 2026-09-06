@@ -252,6 +252,26 @@ void RenderMenu(Config* config, float menuResScale)
 
             ImGui::PopStyleColor(2);
 
+            // The slider above sets what's asked for; it is not what necessarily runs. The proxy
+            // backend only ever does one pass, and a pass-scratch allocation can fail under VRAM
+            // pressure -- both silently cap the effective count, and a slider showing "3x model
+            // cost" with no further comment while nothing past pass 1 actually runs is exactly the
+            // dead-control regression this warning exists to prevent.
+            const DlssNr::PassCapStatus capStatus = DlssNr::LastPassCapStatus();
+            if ((uint32_t) passes > 1 && capStatus.effectivePasses < (unsigned int) passes)
+            {
+                ImGui::TextColored(ImVec4(0.92f, 0.30f, 0.25f, 1.0f),
+                                    "Capped to %ux -- %s", capStatus.effectivePasses,
+                                    capStatus.proxyBackend
+                                        ? "the driver-proxy backend only supports one pass"
+                                        : capStatus.scratchFailed
+                                              ? "the extra pass' allocation failed (see log)"
+                                              : capStatus.createFailed
+                                                    ? "a pass feature failed to build (see log) -- "
+                                                      "will not retry until the next rebuild"
+                                                    : "extra pass features are still building");
+            }
+
             HelpMarker("Runs sequential model layers between one encode and one final composition."
                        "\nEach additional layer consumes the previous layer's model output and owns"
                        "\na separate persistent feature and temporal history."

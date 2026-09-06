@@ -457,7 +457,7 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
                               (void*) dx11Reactive.Dx12Resource);
 
         LOG_DEBUG("Dispatch!!");
-        if (dx12Feature->GetUpscalerType() != Upscaler::DLSSD)
+        if (!IsRayReconstruction(dx12Feature->GetUpscalerType()))
             DlssNr::EvaluateBeforeUpscale(cmdList, InParameters, Dx12CommandQueue, _frameCount);
         dx12EvalResult = dx12Feature->Evaluate(cmdList, InParameters);
 
@@ -478,7 +478,7 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
         if (dx12EvalResult && Config::Instance()->DlssNrEnabled.value_or_default())
         {
             DlssNr::EvaluateAfterUpscale(cmdList, InParameters, Dx12CommandQueue,
-                                         dx12Feature->GetUpscalerType() == Upscaler::DLSSD,
+                                         IsRayReconstruction(dx12Feature->GetUpscalerType()),
                                          _frameCount);
 
             // Asked only after the D3D12 path has had its turn. Probing first would have made a D3D11

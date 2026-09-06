@@ -1173,7 +1173,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
             // return, so filtering on the parameter block alone would run the model twice a frame.
             if (result == NVSDK_NGX_Result_Success && feature != NVSDK_NGX_Feature_FrameGeneration)
                 DlssNr::EvaluateAfterUpscale(InCmdList, InParameters, nullptr,
-                                             feature == NVSDK_NGX_Feature_RayReconstruction);
+                                             DlssNr::IsRayReconstructionFeature(feature));
 
             return result;
         }
@@ -1204,7 +1204,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
     // Same pass, for OptiScaler's own upscalers rather than native DLSS.
     if (optiResult == NVSDK_NGX_Result_Success && feature != NVSDK_NGX_Feature_FrameGeneration)
         DlssNr::EvaluateAfterUpscale(InCmdList, InParameters, nullptr,
-                                     feature == NVSDK_NGX_Feature_RayReconstruction);
+                                     DlssNr::IsRayReconstructionFeature(feature));
 
     return optiResult;
 }

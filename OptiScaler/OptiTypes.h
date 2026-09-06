@@ -68,6 +68,15 @@ enum class Upscaler
     Reset
 };
 
+// Single definition of "this is Ray Reconstruction" for callers that only have an internal
+// Upscaler value (as opposed to a native NVSDK_NGX_Feature -- see
+// DlssNr::IsRayReconstructionFeature for that domain). Kept here, next to the enum, so a future
+// RR-like backend only needs updating in one place per domain instead of at every call site.
+inline constexpr bool IsRayReconstruction(Upscaler upscaler) noexcept
+{
+    return upscaler == Upscaler::DLSSD;
+}
+
 enum class ApiUpscalerInput
 {
     DLSS_DX11,

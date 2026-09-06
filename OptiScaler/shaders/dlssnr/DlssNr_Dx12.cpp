@@ -225,6 +225,12 @@ struct NrState
     ID3D12Resource* passScratch = nullptr;
     bool passScratchFailed = false;
 
+    // What the last Dispatch actually ran with, for the menu -- so a slider set higher than this can
+    // say why instead of just looking like a live 2x/3x setting that happens to do nothing.
+    unsigned int lastConfiguredPasses = 1;
+    unsigned int lastEffectivePasses = 1;
+    bool lastProxyBackend = false;
+
     // The frame as the upscaler wrote it. The resolve adds the model's edit to this rather than
     // reconstructing it by inverting the tone curve, which is what turned every light in the frame into
     // a string of coloured cells.
@@ -473,7 +479,7 @@ std::filesystem::path g_dllDir;
 bool EnsureForwarder()
 {
     if (g_nr.forwarder != nullptr)
-        return g_nr.create != nullptr;
+        return g_nr.create != nullptr && g_nr.evaluate != nullptr;
 
     if (g_dllDir.empty())
         g_dllDir = Util::DllPath().remove_filename();
@@ -735,6 +741,20 @@ void ForgetCalibration()
     g_nr.calibWhy = "measuring...";
 }
 
+// Parks every extra-pass feature and clears its per-pass state. Shared by every place that
+// invalidates the main feature and needs its extras to go with it -- a format change and a
+// resolution/tuning/placement rebuild both mean the same thing for pass 1..MaxPassCount-1.
+void ResetExtraPassState()
+{
+    for (unsigned int i = 1; i < DlssNr::MaxPassCount; ++i)
+    {
+        ParkNrFeature(g_nr.passFeature[i]);
+        g_nr.passNeedsReset[i] = false;
+        g_nr.passCreateFailed[i] = false;
+        g_nr.passPendingSubmission[i] = false;
+    }
+}
+
 void ReleaseSurfacesIfFormatChanged(DXGI_FORMAT needed)
 {
     if (g_nr.output == nullptr || g_nr.output->GetDesc().Format == needed)
@@ -749,13 +769,7 @@ void ReleaseSurfacesIfFormatChanged(DXGI_FORMAT needed)
     g_nr.featurePendingSubmission = false;
 
     // The extras go with it: they were built for this raster and this tuning too.
-    for (unsigned int i = 1; i < DlssNr::MaxPassCount; ++i)
-    {
-        ParkNrFeature(g_nr.passFeature[i]);
-        g_nr.passNeedsReset[i] = false;
-        g_nr.passCreateFailed[i] = false;
-        g_nr.passPendingSubmission[i] = false;
-    }
+    ResetExtraPassState();
 
     for (ID3D12Resource** r :
          { &g_nr.output, &g_nr.passScratch, &g_nr.colorCopy, &g_nr.hdrCopy, &g_nr.colorSmall,
@@ -1309,15 +1323,16 @@ constexpr unsigned long long kSettleFrames = 30;
 
 // The extras the official integration sets: global tone (read at create) and the interface inputs.
 // Written before every create and evaluate, nulls included, so nothing stale ever sits in the block.
-void SetExtras(const Config& cfg, ID3D12Resource* ui, ID3D12Resource* backbuffer, unsigned int uiWidth,
-               unsigned int uiHeight, unsigned int bbWidth, unsigned int bbHeight)
+void SetExtras(const Config& cfg, ID3D12Resource* ui, ID3D12Resource* uiAlpha,
+               ID3D12Resource* backbuffer, unsigned int uiWidth, unsigned int uiHeight,
+               unsigned int bbWidth, unsigned int bbHeight)
 {
     if (g_nr.setExtras == nullptr || g_nr.capabilityParams == nullptr)
         return;
 
     // Global tone is written at the model's own default: the control that exposed it changed nothing
     // that could be seen, and the block persists, so a value still has to be put there.
-    g_nr.setExtras(g_nr.capabilityParams, 1.0f, ui, ui, backbuffer,
+    g_nr.setExtras(g_nr.capabilityParams, 1.0f, ui, uiAlpha, backbuffer,
                    uiWidth, uiHeight, bbWidth, bbHeight);
 }
 
@@ -1601,6 +1616,40 @@ DlssNr_Dx12::~DlssNr_Dx12()
     }
 }
 
+namespace
+{
+// RAII guard for the "note the current state, transition away, do the work, put it back"
+// pattern used at several points in Dispatch (meter, frame hold, resolve fallback). Restores in
+// its destructor, so a future early return added between transition and restore can't leave the
+// resource sitting in a transient barrier state the way a hand-paired transition/restore call
+// pair can. Templated on the caller's transition callable rather than tied to one signature, so
+// it works with Dispatch's local TransitionTarget lambda without type erasure.
+template <typename TransitionFn>
+class ScopedTargetTransition
+{
+public:
+    ScopedTargetTransition(TransitionFn transitionFn, D3D12_RESOURCE_STATES current,
+                           D3D12_RESOURCE_STATES to)
+        : transition(std::move(transitionFn)), restoreTo(current)
+    {
+        transition(to);
+    }
+
+    ~ScopedTargetTransition() { transition(restoreTo); }
+
+    ScopedTargetTransition(const ScopedTargetTransition&) = delete;
+    ScopedTargetTransition& operator=(const ScopedTargetTransition&) = delete;
+
+private:
+    TransitionFn transition;
+    D3D12_RESOURCE_STATES restoreTo;
+};
+
+template <typename TransitionFn>
+ScopedTargetTransition(TransitionFn, D3D12_RESOURCE_STATES, D3D12_RESOURCE_STATES)
+    -> ScopedTargetTransition<TransitionFn>;
+} // namespace
+
 void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* colour,
                            ID3D12Resource* depth, ID3D12Resource* motion, ID3D12Resource* output,
                            const DlssNrFrameInfo& frame, ID3D12CommandQueue* timingQueue)
@@ -1787,6 +1836,13 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     const bool proxyBackend = cfg.DlssNrUseProxy.value_or_default();
     const unsigned int requestedPasses = proxyBackend ? 1u : configuredPasses;
 
+    // For the menu: what was asked for, and whether the proxy backend alone (scratch-allocation
+    // capping is recorded separately, below, once it's known) already rules out more than one pass.
+    g_nr.lastConfiguredPasses = configuredPasses;
+    g_nr.lastProxyBackend = proxyBackend;
+    if (proxyBackend)
+        g_nr.lastEffectivePasses = 1;
+
     if (proxyBackend && configuredPasses > 1)
     {
         static bool warnedProxyPasses = false;
@@ -1819,13 +1875,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         ParkNrFeature(g_nr.feature);
         g_nr.featurePendingSubmission = false;
 
-        for (unsigned int i = 1; i < DlssNr::MaxPassCount; ++i)
-        {
-            ParkNrFeature(g_nr.passFeature[i]);
-            g_nr.passNeedsReset[i] = false;
-            g_nr.passCreateFailed[i] = false;
-            g_nr.passPendingSubmission[i] = false;
-        }
+        ResetExtraPassState();
 
         // Resolution and seam changes invalidate the scratch state. Tuning does not, and throwing
         // resources away for it would mean a reallocation every time a slider moves.
@@ -1926,7 +1976,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             return;
         }
 
-        SetExtras(cfg, nullptr, nullptr, 0, 0, 0, 0);
+        SetExtras(cfg, nullptr, nullptr, nullptr, 0, 0, 0, 0);
         const auto tuning = PassTuning(cfg, 0);
         g_nr.feature =
             g_nr.create(snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
@@ -2058,7 +2108,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             }
             else
             {
-                SetExtras(cfg, nullptr, nullptr, 0, 0, 0, 0);
+                SetExtras(cfg, nullptr, nullptr, nullptr, 0, 0, 0, 0);
                 const auto tuning = PassTuning(cfg, pass);
                 g_nr.passFeature[pass] = g_nr.create(
                     snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
@@ -2100,9 +2150,9 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // something to assume: the game says so, in the flags it created its own DLSS feature with. Running
     // the colour transform over a frame that has already been through a tonemapper is pure damage, and
     // skipping it on one that has not leaves the model reading ordinary values as enormously bright.
-    // EvaluateInternal has already combined the game's HDR flag with the authoritative output format.
-    // That authority matters before SR: Color and Output may use different surface formats while still
-    // representing the same frame colour space.
+    // EvaluateInternal has already combined the game's HDR flag with the format of whichever buffer
+    // this pass actually transforms (Color before SR, Output after) -- Color and Output may use
+    // different surface formats while still representing the same frame colour space.
     const bool isHdrBuffer = frame.ColourIsLinearHdr;
 
     static bool reportedHdr = false;
@@ -2226,11 +2276,12 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         meterParams.Width = 1;
         meterParams.Height = 1;
 
-        const D3D12_RESOURCE_STATES priorTargetState = targetState;
-        TransitionTarget(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        DispatchPass(cmdList, meterParams, target, nullptr, nullptr,
-                     (ID3D12Resource*) frame.ExposureTexture, nullptr, g_nr.meter, nullptr);
-        TransitionTarget(priorTargetState);
+        {
+            ScopedTargetTransition guard(TransitionTarget, targetState,
+                                         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            DispatchPass(cmdList, meterParams, target, nullptr, nullptr,
+                         (ID3D12Resource*) frame.ExposureTexture, nullptr, g_nr.meter, nullptr);
+        }
 
         CopyMeterToReadback(cmdList, device, true);
         ConsumeMeterReadback();
@@ -2284,14 +2335,15 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
                 if (g_nr.heldColor != nullptr)
                 {
-                    const D3D12_RESOURCE_STATES priorTargetState = targetState;
-                    TransitionTarget(D3D12_RESOURCE_STATE_COPY_SOURCE);
-                    Barrier(cmdList, g_nr.heldColor, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                            D3D12_RESOURCE_STATE_COPY_DEST);
-                    cmdList->CopyResource(g_nr.heldColor, target);
-                    Barrier(cmdList, g_nr.heldColor, D3D12_RESOURCE_STATE_COPY_DEST,
-                            D3D12_RESOURCE_STATE_COPY_SOURCE);
-                    TransitionTarget(priorTargetState);
+                    {
+                        ScopedTargetTransition guard(TransitionTarget, targetState,
+                                                     D3D12_RESOURCE_STATE_COPY_SOURCE);
+                        Barrier(cmdList, g_nr.heldColor, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                D3D12_RESOURCE_STATE_COPY_DEST);
+                        cmdList->CopyResource(g_nr.heldColor, target);
+                        Barrier(cmdList, g_nr.heldColor, D3D12_RESOURCE_STATE_COPY_DEST,
+                                D3D12_RESOURCE_STATE_COPY_SOURCE);
+                    }
 
                     g_nr.heldActive = true;
                     g_nr.heldWidth = (unsigned int) td.Width;
@@ -2303,10 +2355,9 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             else
             {
                 // Held: restore the frozen frame onto the live output before the encode reads it.
-                const D3D12_RESOURCE_STATES priorTargetState = targetState;
-                TransitionTarget(D3D12_RESOURCE_STATE_COPY_DEST);
+                ScopedTargetTransition guard(TransitionTarget, targetState,
+                                             D3D12_RESOURCE_STATE_COPY_DEST);
                 cmdList->CopyResource(target, g_nr.heldColor);
-                TransitionTarget(priorTargetState);
             }
 
             // Suspend white-point measurement while held: use the snapshot so it cannot drift and
@@ -2441,7 +2492,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // working size.
     const float mvToWork = width != 0 ? (float) workWidth / (float) width : 1.0f;
 
-    SetExtras(cfg, nullptr, nullptr, 0, 0, 0, 0);
+    SetExtras(cfg, nullptr, nullptr, nullptr, 0, 0, 0, 0);
 
     // The proxy path, when asked for. Same inputs, same model -- the difference is who calls it.
     //
@@ -2486,6 +2537,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             ++effectivePasses;
         }
     }
+
+    g_nr.lastEffectivePasses = effectivePasses;
 
     {
         static unsigned int loggedConfigured = 0;
@@ -2752,10 +2805,11 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         {
             Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                     D3D12_RESOURCE_STATE_COPY_SOURCE);
-            const D3D12_RESOURCE_STATES priorTargetState = targetState;
-            TransitionTarget(D3D12_RESOURCE_STATE_COPY_DEST);
-            cmdList->CopyResource(target, g_nr.hdrCopy);
-            TransitionTarget(priorTargetState);
+            {
+                ScopedTargetTransition guard(TransitionTarget, targetState,
+                                             D3D12_RESOURCE_STATE_COPY_DEST);
+                cmdList->CopyResource(target, g_nr.hdrCopy);
+            }
             Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_COPY_SOURCE,
                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         }
@@ -2868,10 +2922,39 @@ namespace DlssNr
 {
 void RetryAfterFailure()
 {
+    std::lock_guard<std::mutex> nrLock(g_nrMutex);
+
     g_nr.failed = false;
     g_nr.reason = "";
     g_nr.reset = true;
+}
 
+PassCapStatus LastPassCapStatus()
+{
+    // Every other entry point in this file takes the lock before touching g_nr; this one was
+    // reaching passFeature/passCreateFailed without it, racing Dispatch's per-frame writes.
+    std::lock_guard<std::mutex> nrLock(g_nrMutex);
+
+    PassCapStatus status;
+    status.configuredPasses = g_nr.lastConfiguredPasses;
+    status.effectivePasses = g_nr.lastEffectivePasses;
+    status.proxyBackend = g_nr.lastProxyBackend;
+    status.scratchFailed = g_nr.passScratchFailed;
+
+    // A failed extra-pass creation is permanent until the next rebuild (ReleaseSurfacesIfFormatChanged
+    // / the resolution-tuning-placement path both call ResetExtraPassState, which is the only thing
+    // that clears passCreateFailed). Distinguish it from "still building" -- that message implies a
+    // transient state that will resolve on its own, which a permanent failure never will.
+    for (unsigned int pass = 1; pass < DlssNr::MaxPassCount; ++pass)
+    {
+        if (g_nr.passCreateFailed[pass])
+        {
+            status.createFailed = true;
+            break;
+        }
+    }
+
+    return status;
 }
 
 // Reads the game's parameter block and runs the pass on what it finds.
@@ -3001,9 +3084,11 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
     frame.SubmissionEpoch = timingQueue != nullptr ? submissionEpoch : State::Instance().frameCount;
 
     // Color and Output may use different formats even though DLSS treats them as the same frame colour
-    // space. Output is the stable authority across injection points; target is only a fallback for a
-    // malformed parameter block.
-    ID3D12Resource* colourAuthority = output != nullptr ? output : target;
+    // space. The transform below runs on whichever buffer this pass actually touches -- target
+    // (=Color) before SR, output after -- so the authority has to be that same buffer, not the other
+    // one, or the decision can disagree with the data it's deciding for.
+    ID3D12Resource* colourAuthority = beforeUpscale ? (target != nullptr ? target : output)
+                                                     : (output != nullptr ? output : target);
     frame.ColourIsLinearHdr =
         (createFlags & NVSDK_NGX_DLSS_Feature_Flags_IsHDR) != 0 &&
         colourAuthority != nullptr && FormatCanHoldLinearHdr(colourAuthority->GetDesc().Format);
@@ -3181,14 +3266,16 @@ void ProbeD3D11(void* d3d11Device)
     if (done || d3d11Device == nullptr)
         return;
 
+    // Opt in only. See the note on DlssNrProbeD3D11: this is the one call in the pass that reaches
+    // into a subsystem on the game's own device rather than reading something we already hold.
+    // Checked before the lock below -- it reads Config, not g_nr, and the probe is off by default,
+    // so every frame otherwise paid for a mutex acquisition purely to find that out.
+    if (!Config::Instance()->DlssNrProbeD3D11.value_or_default())
+        return;
+
     // Every other entry point in this file takes the lock before touching g_nr; this one was reaching
     // EnsureForwarder without it.
     std::lock_guard<std::mutex> nrLock(g_nrMutex);
-
-    // Opt in only. See the note on DlssNrProbeD3D11: this is the one call in the pass that reaches
-    // into a subsystem on the game's own device rather than reading something we already hold.
-    if (!Config::Instance()->DlssNrProbeD3D11.value_or_default())
-        return;
 
     done = true;
 
@@ -3300,6 +3387,8 @@ void ProbeD3D11(void* d3d11Device)
 
 CalibrationReading Calibration()
 {
+    std::lock_guard<std::mutex> nrLock(g_nrMutex);
+
     CalibrationReading r {};
     r.suggestion = g_nr.calibSuggestion;
     r.steadiness = g_nr.calibSteadiness;
@@ -3309,14 +3398,24 @@ CalibrationReading Calibration()
     return r;
 }
 
-bool IsRunning() { return g_nr.feature != nullptr && !g_nr.failed; }
+bool IsRunning()
+{
+    std::lock_guard<std::mutex> nrLock(g_nrMutex);
+    return g_nr.feature != nullptr && !g_nr.failed;
+}
 
-const char* FailureReason() { return g_nr.failed ? g_nr.reason : ""; }
+const char* FailureReason()
+{
+    std::lock_guard<std::mutex> nrLock(g_nrMutex);
+    return g_nr.failed ? g_nr.reason : "";
+}
 
 // What the game offers by way of exposure, and what has been read from it. For the menu, so a user
 // can see whether this game supplies one at all without having to read a log.
 ExposureStatus GameExposureStatus()
 {
+    std::lock_guard<std::mutex> nrLock(g_nrMutex);
+
     ExposureStatus s {};
     s.seenFrames = g_nr.exposureFrames;
     s.offeredNow = g_nr.exposureOfferedNow;

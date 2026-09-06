@@ -21,6 +21,15 @@ namespace DlssNr
 {
 inline constexpr unsigned int MaxPassCount = 3;
 
+// Single definition of "this is Ray Reconstruction" for callers that only have the native NGX
+// feature id (as opposed to an internal Upscaler value -- see ::IsRayReconstruction in
+// OptiTypes.h for that domain). Kept here so a caller deciding whether to force NR post-SR
+// doesn't re-derive this identity check itself.
+inline bool IsRayReconstructionFeature(NVSDK_NGX_Feature feature) noexcept
+{
+    return feature == NVSDK_NGX_Feature_RayReconstruction;
+}
+
 // The model runs immediately after the game's upscaler, before the interface is drawn. It is shown a
 // display-referred proxy of that frame -- the sort of picture it was trained on -- and its answer is
 // composed back over the untouched original.
@@ -51,6 +60,24 @@ void EvaluateBeforeUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramet
 
 
 
+
+// What the last Dispatch actually ran with, for the "Model passes" slider: the proxy backend and a
+// failed pass-scratch allocation each silently cap the effective pass count below what's
+// configured, and the menu needs to say so rather than leave the slider looking like a live
+// 2x/3x setting that happens to do nothing.
+struct PassCapStatus
+{
+    unsigned int configuredPasses = 1;
+    unsigned int effectivePasses = 1;
+    bool proxyBackend = false;
+    bool scratchFailed = false;
+
+    // A pass feature's own creation failed (missing snippet, or the create call itself returned
+    // null) -- permanent until the next rebuild, unlike "still building" which resolves on its own.
+    bool createFailed = false;
+};
+
+PassCapStatus LastPassCapStatus();
 
 // The settings panel, drawn inside OptiScaler's menu.
 void RenderMenu(::Config* config, float menuResScale);

@@ -37,7 +37,8 @@
         "INFRA_ANALYZE_COMMITS",
         "INFRA_MAP_DATAFLOW",
         "INFRA_WORKTREE_START",
-        "INFRA_WORKTREE_FINISH"
+        "INFRA_WORKTREE_FINISH",
+        "INFRA_SYNC_UPSTREAM"
       ],
       "dependencies": [],
       "protected": false

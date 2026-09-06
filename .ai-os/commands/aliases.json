@@ -20,6 +20,8 @@
     "absorb_history": "INFRA_ANALYZE_COMMITS --mode=merges-only --count=10",
     "absorb": "INFRA_ANALYZE_COMMITS --mode=merges-only --count=10",
     "trace": "INFRA_MAP_DATAFLOW",
+    "sync": "INFRA_SYNC_UPSTREAM",
+    "upstream": "INFRA_SYNC_UPSTREAM",
     "amend": "MEMORY_AMEND",
     "simplify": "SIMPLIFY_REVIEW",
     "bloat": "SIMPLIFY_AUDIT",

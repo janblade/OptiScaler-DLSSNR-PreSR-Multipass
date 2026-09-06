@@ -309,6 +309,55 @@ Remove a worktree once its branch is merged or abandoned.
 
 ---
 
+### INFRA_SYNC_UPSTREAM
+
+Safely reconcile the current branch with new commits on an upstream/origin it doesn't
+own — without losing local work or landing a broken build.
+
+```
+> OS_COMMAND INFRA_SYNC_UPSTREAM [--remote=<name>] [--branch=<name>] [--strategy=rebase|merge]
+```
+
+**Procedure:**
+1. **Precondition.** `git status` — working tree must be clean before touching history
+   (R9). Anything uncommitted → stop, ask whether to commit or stash it first. Never
+   rebase or merge over uncommitted work.
+2. **See what's actually new before merging blind.** `git fetch <remote>`, then
+   `git log --oneline <local>..<remote>/<branch>` for the incoming commits and
+   `git diff --stat <local>..<remote>/<branch>` for the files they touch. Compare
+   against what the local branch itself changed since its fork point
+   (`git diff --stat <merge-base>..HEAD`) — file-level overlap between the two is the
+   real conflict-risk signal. Non-trivial overlap → tell the user which files/commits
+   collide before proceeding, don't silently attempt the merge and hope.
+3. **Pick a strategy.** Default `rebase` for a linear-history solo fork (matches a repo
+   whose own history has no merge commits). Use `merge` instead when the local commits
+   are already pushed/shared elsewhere (rebase rewrites history other clones may
+   depend on — R20 territory, confirm with the user first) or when the user wants both
+   histories preserved as authored. Unsure → ask "rebase or merge?" rather than
+   guessing.
+4. **Run it**, and if it conflicts, resolve file by file — read both sides' intent
+   before touching anything:
+   - Two independent additions landing at the same location (each side inserted a
+     different line at the same spot) → usually keep **both**, in whichever order the
+     surrounding code needs — don't default to "ours" or "theirs" without checking
+     whether the other side's change is still required by code that follows it.
+   - A genuine contradiction (both sides changed the *same* logic differently, not
+     just nearby) → don't guess a resolution. Surface both versions to the user and
+     wait (R24: confirm before applying a fix below High confidence).
+5. **Build before declaring the sync done.** A clean `git rebase --continue` or merge
+   commit is not proof the result compiles — an auto-merged file with no conflict
+   marker can still be semantically wrong. Run the project's actual build (or test
+   suite, if one exists) on the merged result. A conflict resolved but never
+   built/tested is not resolved.
+6. **Push only after step 5 passes.** A `403`/permission-denied push to a remote this
+   session doesn't own → don't force anything or change credentials. Fork the
+   upstream repo to the user's own account (`gh repo fork <owner>/<repo>`), repoint
+   `origin` to the fork, and retry the push there.
+7. **Log the sync**: commits pulled in, which files conflicted and how each was
+   resolved, and the build result that gated the push — to `decisions.jsonl`.
+
+---
+
 ## Stack-Specific Best Practices
 
 The infra skill references these best practices based on detected stack:
@@ -327,3 +376,15 @@ The infra skill references these best practices based on detected stack:
 1. **Scaffolding before detecting** — Always run INFRA_DETECT_STACK first on existing projects.
 2. **Overwriting existing CI** — Always check for existing pipeline files before generating new ones.
 3. **Ignoring health check warnings** — A "passing" health check with warnings still has issues to address.
+4. **Rebasing/merging over uncommitted local changes** (`INFRA_SYNC_UPSTREAM`) — commit
+   or stash first, always; never let a sync start with a dirty tree.
+5. **Trusting a conflict-free auto-merge without a skim** (`INFRA_SYNC_UPSTREAM`) — git
+   not flagging a conflict means the two diffs didn't overlap on the same lines, not
+   that the combined result is semantically correct.
+6. **Declaring a sync done at "Successfully rebased"** (`INFRA_SYNC_UPSTREAM`) — that
+   message is git's, not the build's; verify the merged result actually compiles/passes
+   before pushing.
+7. **Assuming a fresh fork starts at the state you last saw** (`INFRA_SYNC_UPSTREAM`) —
+   `gh repo fork` snapshots the upstream's *current* tip, which may already be ahead of
+   whatever commit the local branch was created from; always fetch and diff before
+   assuming a known base.

@@ -35,7 +35,7 @@
     "frameworks": ["DirectX", "Vulkan", "DLSS", "FidelityFX-SDK", "XeSS"]
   },
   "evolution_history": {
-    "total_evolutions": 1,
-    "last_evolution": "EP-1"
+    "total_evolutions": 2,
+    "last_evolution": "EP-2"
   }
 }

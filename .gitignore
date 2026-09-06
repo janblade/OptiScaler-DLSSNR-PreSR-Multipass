@@ -441,3 +441,9 @@ CyberFSR/imgui.ini
 /OptiScaler/misc/Telemetry.cpp
 /OptiScaler/misc/Telemetry.h
 release
+
+# AI OS Ephemeral Memory
+.ai-os/memory/episodic/sessions.jsonl
+.ai-os/memory/episodic/last_session.json
+.ai-os/memory/episodic/session_override.json
+.ai-os/progress.md

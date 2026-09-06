@@ -21,6 +21,8 @@ class DxgiFactoryHooks
     using PFN_CreateSwapChainForHwnd = rewrite_signature<decltype(&IDXGIFactory2::CreateSwapChainForHwnd)>::type;
     using PFN_CreateSwapChainForCoreWindow =
         rewrite_signature<decltype(&IDXGIFactory2::CreateSwapChainForCoreWindow)>::type;
+    using PFN_CreateSwapChainForComposition =
+        rewrite_signature<decltype(&IDXGIFactory2::CreateSwapChainForComposition)>::type;
 
     inline static PFN_EnumAdapterByGpuPreference o_EnumAdapterByGpuPreference = nullptr;
     inline static PFN_EnumAdapterByLuid o_EnumAdapterByLuid = nullptr;
@@ -29,6 +31,7 @@ class DxgiFactoryHooks
     inline static PFN_CreateSwapChain o_CreateSwapChain = nullptr;
     inline static PFN_CreateSwapChainForHwnd o_CreateSwapChainForHwnd = nullptr;
     inline static PFN_CreateSwapChainForCoreWindow o_CreateSwapChainForCoreWindow = nullptr;
+    inline static PFN_CreateSwapChainForComposition o_CreateSwapChainForComposition = nullptr;
 
     inline static PFN_CreateSwapChain o_DLSSGCreateSwapChain = nullptr;
     inline static PFN_CreateSwapChainForHwnd o_DLSSGCreateSwapChainForHwnd = nullptr;
@@ -45,6 +48,17 @@ class DxgiFactoryHooks
     static HRESULT CreateSwapChainForCoreWindow(IDXGIFactory2* realFactory, IUnknown* pDevice, IUnknown* pWindow,
                                                 const DXGI_SWAP_CHAIN_DESC1* pDesc, IDXGIOutput* pRestrictToOutput,
                                                 IDXGISwapChain1** ppSwapChain);
+
+    // Diagnosed 2026-09-06 (NBA 2K26 menu/overlay investigation, see
+    // memory/plans/2026-09-06-optiscaler-reshade-addon64.md): HookToFactory hooked CreateSwapChain,
+    // CreateSwapChainForHwnd and CreateSwapChainForCoreWindow but never IDXGIFactory2::
+    // CreateSwapChainForComposition -- a game creating its real swapchain that way (DirectComposition,
+    // common for HDR/compositor-hosted presentation) would never get wrapped at all: no crash, no
+    // error, just total silence, exactly matching the live symptom (DLSS works fine since it never
+    // touches the swapchain; the menu, driven off the wrapped swapchain's Present, never initializes).
+    static HRESULT CreateSwapChainForComposition(IDXGIFactory2* realFactory, IUnknown* pDevice,
+                                                 const DXGI_SWAP_CHAIN_DESC1* pDesc, IDXGIOutput* pRestrictToOutput,
+                                                 IDXGISwapChain1** ppSwapChain);
 
     static HRESULT DLSSGCreateSwapChain(IDXGIFactory* realFactory, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc,
                                         IDXGISwapChain** ppSwapChain);
@@ -67,6 +81,7 @@ class DxgiFactoryHooks
     VALIDATE_MEMBER_HOOK(CreateSwapChain, PFN_CreateSwapChain)
     VALIDATE_MEMBER_HOOK(CreateSwapChainForHwnd, PFN_CreateSwapChainForHwnd)
     VALIDATE_MEMBER_HOOK(CreateSwapChainForCoreWindow, PFN_CreateSwapChainForCoreWindow)
+    VALIDATE_MEMBER_HOOK(CreateSwapChainForComposition, PFN_CreateSwapChainForComposition)
     VALIDATE_MEMBER_HOOK(EnumAdapters, PFN_EnumAdapters)
     VALIDATE_MEMBER_HOOK(EnumAdapters1, PFN_EnumAdapters1)
     VALIDATE_MEMBER_HOOK(EnumAdapterByLuid, PFN_EnumAdapterByLuid)

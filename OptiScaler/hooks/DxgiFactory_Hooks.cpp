@@ -69,6 +69,12 @@ static bool PrepareDx12InteropDesc1(DXGI_SWAP_CHAIN_DESC1& desc)
 
 void DxgiFactoryHooks::HookToFactory(IDXGIFactory* pFactory)
 {
+    // Investigated 2026-09-06 (NBA 2K26 menu/overlay never initializing -- see
+    // memory/plans/2026-09-06-optiscaler-reshade-addon64.md's task-file entry): confirmed live that
+    // every IDXGIFactory instance this process saw shared one vtable (Detours patches the target
+    // function's machine code in place, not the vtable slot's stored pointer, so this guard's
+    // "hook the first factory, every later one is covered too" assumption held here). The actual gap
+    // was CreateSwapChainForComposition never being hooked at all -- see below.
     if (pFactory == nullptr || o_EnumAdapters != nullptr)
         return;
 
@@ -132,6 +138,18 @@ void DxgiFactoryHooks::HookToFactory(IDXGIFactory* pFactory)
 
             if (o_CreateSwapChainForCoreWindow != nullptr)
                 DetourAttach(&(PVOID&) o_CreateSwapChainForCoreWindow, DxgiFactoryHooks::CreateSwapChainForCoreWindow);
+        }
+
+        // Vtable index 24: IUnknown(0-2) + IDXGIObject(3-6) + IDXGIFactory(7-11) + IDXGIFactory1(12-13) +
+        // IsWindowedStereoEnabled(14) + CreateSwapChainForHwnd(15) + CreateSwapChainForCoreWindow(16) +
+        // GetSharedResourceAdapterLuid(17) + Register/UnregisterStereoStatus*(18-20) +
+        // Register/UnregisterOcclusionStatus*(21-23) + CreateSwapChainForComposition(24).
+        if (o_CreateSwapChainForComposition == nullptr)
+        {
+            o_CreateSwapChainForComposition = (PFN_CreateSwapChainForComposition) pFactoryVTable[24];
+
+            if (o_CreateSwapChainForComposition != nullptr)
+                DetourAttach(&(PVOID&) o_CreateSwapChainForComposition, DxgiFactoryHooks::CreateSwapChainForComposition);
         }
     }
 
@@ -261,9 +279,34 @@ HRESULT DxgiFactoryHooks::CreateSwapChain(IDXGIFactory* realFactory, IUnknown* p
         return res;
     }
 
-    if (pDesc->BufferDesc.Height < 100 || pDesc->BufferDesc.Width < 100)
+    // Diagnosed 2026-09-06 (NBA 2K26 menu never initializing): Width==0 && Height==0 with a real
+    // OutputWindow is DXGI's documented "size to the window's client area" idiom, not an overlay --
+    // confirmed live, NBA 2K26's actual swapchain (BufferCount 3, real HWND, Windowed) is created
+    // exactly this way and was previously being misclassified as "Overlay call!" and passed through
+    // unwrapped, which is why the menu/toast overlay never appeared. Only a genuinely tiny, non-zero
+    // descriptor (Steam/Discord-style overlay helper swapchains) should still take that path.
+    //
+    // A non-null OutputWindow alone isn't enough to trust, though: a helper/overlay swapchain could
+    // use this exact same 0x0 idiom against its OWN tiny/hidden window. Check the window's real
+    // client rect rather than trusting the pointer -- a hidden helper window resolves to a tiny or
+    // zero rect; the game's actual window won't.
+    bool sizeToWindow = false;
+    if (pDesc->BufferDesc.Width == 0 && pDesc->BufferDesc.Height == 0 && pDesc->OutputWindow != nullptr)
     {
-        LOG_WARN("Overlay call!");
+        RECT clientRect {};
+        if (GetClientRect(pDesc->OutputWindow, &clientRect))
+        {
+            auto windowWidth = clientRect.right - clientRect.left;
+            auto windowHeight = clientRect.bottom - clientRect.top;
+            sizeToWindow = windowWidth >= 100 && windowHeight >= 100;
+        }
+    }
+
+    if (!sizeToWindow && (pDesc->BufferDesc.Height < 100 || pDesc->BufferDesc.Width < 100))
+    {
+        LOG_WARN("Overlay call! Width: {}, Height: {}, Format: {}, Count: {}, Hwnd: {:X}, Windowed: {}",
+                 pDesc->BufferDesc.Width, pDesc->BufferDesc.Height, (UINT) pDesc->BufferDesc.Format,
+                 pDesc->BufferCount, (SIZE_T) pDesc->OutputWindow, pDesc->Windowed);
 
         ScopedSkipDxgiLoadChecks skipDxgiLoadChecks {};
         ScopedSkipParentWrapping skipParentWrapping {};
@@ -271,6 +314,10 @@ HRESULT DxgiFactoryHooks::CreateSwapChain(IDXGIFactory* realFactory, IUnknown* p
         auto res = o_CreateSwapChain(realFactory, pDevice, pDesc, ppSwapChain);
         return res;
     }
+
+    if (sizeToWindow)
+        LOG_INFO("CreateSwapChain: 0x0 size-to-window descriptor, Hwnd: {:X}, Count: {}, wrapping normally",
+                 (SIZE_T) pDesc->OutputWindow, pDesc->BufferCount);
 
     DXGI_SWAP_CHAIN_DESC localDesc {};
     memcpy(&localDesc, pDesc, sizeof(DXGI_SWAP_CHAIN_DESC));
@@ -525,6 +572,20 @@ HRESULT DxgiFactoryHooks::CreateSwapChain(IDXGIFactory* realFactory, IUnknown* p
 
         if (result == S_OK)
         {
+            if (localDesc.BufferDesc.Width == 0 && localDesc.BufferDesc.Height == 0)
+            {
+                // DXGI resolved the 0x0 "size to window" descriptor internally; read back the real
+                // buffer dimensions so state/menu sizing doesn't see a bogus 0x0 swapchain.
+                DXGI_SWAP_CHAIN_DESC resolvedDesc {};
+                if ((*ppSwapChain)->GetDesc(&resolvedDesc) == S_OK)
+                {
+                    LOG_INFO("CreateSwapChain: resolved size-to-window swapchain to {}x{}",
+                             resolvedDesc.BufferDesc.Width, resolvedDesc.BufferDesc.Height);
+                    localDesc.BufferDesc.Width = resolvedDesc.BufferDesc.Width;
+                    localDesc.BufferDesc.Height = resolvedDesc.BufferDesc.Height;
+                }
+            }
+
             State::Instance().currentSwapchainDesc = localDesc;
             State::Instance().swapchainInteropApi = SwapchainInteropApi::None;
 
@@ -630,7 +691,7 @@ HRESULT DxgiFactoryHooks::CreateSwapChainForHwnd(IDXGIFactory2* realFactory, IUn
 
     if (pDesc->Height < 100 || pDesc->Width < 100)
     {
-        LOG_WARN("Overlay call!");
+        LOG_WARN("Overlay call! Width: {}, Height: {}", pDesc->Width, pDesc->Height);
         HRESULT result;
 
         {
@@ -1010,7 +1071,7 @@ HRESULT DxgiFactoryHooks::CreateSwapChainForCoreWindow(IDXGIFactory2* realFactor
 
     if (pDesc->Height < 100 || pDesc->Width < 100)
     {
-        LOG_WARN("Overlay call!");
+        LOG_WARN("Overlay call! Width: {}, Height: {}", pDesc->Width, pDesc->Height);
 
         ScopedSkipDxgiLoadChecks skipDxgiLoadChecks {};
         return realFactory->CreateSwapChainForCoreWindow(pDevice, pWindow, pDesc, pRestrictToOutput, ppSwapChain);
@@ -1099,6 +1160,127 @@ HRESULT DxgiFactoryHooks::CreateSwapChainForCoreWindow(IDXGIFactory2* realFactor
     return result;
 }
 
+HRESULT DxgiFactoryHooks::CreateSwapChainForComposition(IDXGIFactory2* realFactory, IUnknown* pDevice,
+                                                        const DXGI_SWAP_CHAIN_DESC1* pDesc,
+                                                        IDXGIOutput* pRestrictToOutput,
+                                                        IDXGISwapChain1** ppSwapChain)
+{
+    // Mirrors CreateSwapChainForCoreWindow immediately above -- the "plain" wrap path, no FG/DX11
+    // interop -- adapted for the missing window parameter (a composition swapchain doesn't take one;
+    // it's attached to a window indirectly via IDCompositionTarget). Util::GetProcessWindow() stands
+    // in wherever CreateSwapChainForHwnd/ForCoreWindow would otherwise use the real hWnd.
+    if (State::Instance().vulkanCreatingSC)
+    {
+        LOG_WARN("Vulkan is creating swapchain!");
+
+        if (pDesc != nullptr)
+            LOG_DEBUG("Width: {}, Height: {}, Format: {}, Flags: {:X}, Count: {}, SkipWrapping: {}", pDesc->Width,
+                      pDesc->Height, (UINT) pDesc->Format, pDesc->Flags, pDesc->BufferCount, _skipFGSwapChainCreation);
+
+        ScopedSkipDxgiLoadChecks skipDxgiLoadChecks {};
+        return realFactory->CreateSwapChainForComposition(pDevice, pDesc, pRestrictToOutput, ppSwapChain);
+    }
+
+    if (pDevice == nullptr || pDesc == nullptr)
+    {
+        LOG_WARN("pDevice or pDesc is nullptr!");
+        ScopedSkipDxgiLoadChecks skipDxgiLoadChecks {};
+        return realFactory->CreateSwapChainForComposition(pDevice, pDesc, pRestrictToOutput, ppSwapChain);
+    }
+
+    if (pDesc->Height < 100 || pDesc->Width < 100)
+    {
+        LOG_WARN("Overlay call! Width: {}, Height: {}", pDesc->Width, pDesc->Height);
+
+        ScopedSkipDxgiLoadChecks skipDxgiLoadChecks {};
+        return realFactory->CreateSwapChainForComposition(pDevice, pDesc, pRestrictToOutput, ppSwapChain);
+    }
+
+    DXGI_SWAP_CHAIN_DESC1 localDesc {};
+    memcpy(&localDesc, pDesc, sizeof(DXGI_SWAP_CHAIN_DESC1));
+
+    LOG_DEBUG("Width: {}, Height: {}, Format: {}, Count: {}, SkipWrapping: {}", localDesc.Width, localDesc.Height,
+              (UINT) localDesc.Format, localDesc.BufferCount, _skipFGSwapChainCreation);
+
+    // For vsync override
+    if (Config::Instance()->OverrideVsync.value_or_default())
+    {
+        localDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        localDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+
+        if (localDesc.BufferCount < 2)
+            localDesc.BufferCount = 2;
+    }
+
+    State::Instance().SCAllowTearing = (localDesc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) > 0;
+    State::Instance().SCLastFlags = localDesc.Flags;
+    State::Instance().realExclusiveFullscreen = false;
+
+    ID3D12CommandQueue* cq = nullptr;
+    IUnknown* real = nullptr;
+    if (pDevice->QueryInterface(IID_PPV_ARGS(&cq)) == S_OK)
+    {
+        if (!Util::CheckForRealObject(__FUNCTION__, cq, &real))
+            real = cq;
+
+        State::Instance().currentCommandQueue = (ID3D12CommandQueue*) real;
+
+        if (State::Instance().currentD3D12Device != nullptr)
+            WithDx12::SetD3D12Objects(State::Instance().currentD3D12Device, State::Instance().currentCommandQueue,
+                                      D3D12_COMMAND_LIST_TYPE_DIRECT);
+    }
+
+    HRESULT result = E_FAIL;
+    {
+        ScopedSkipDxgiLoadChecks skipDxgiLoadChecks {};
+        result = o_CreateSwapChainForComposition(realFactory, pDevice, &localDesc, pRestrictToOutput, ppSwapChain);
+    }
+
+    if (result == S_OK)
+    {
+        // check for SL proxy
+        IDXGISwapChain* realSC = nullptr;
+        if (!Util::CheckForRealObject(__FUNCTION__, *ppSwapChain, (IUnknown**) &realSC))
+            realSC = *ppSwapChain;
+
+        State::Instance().currentRealSwapchain = realSC;
+
+        IUnknown* readDevice = nullptr;
+        if (!Util::CheckForRealObject(__FUNCTION__, pDevice, (IUnknown**) &readDevice))
+            readDevice = pDevice;
+
+        realSC->GetDesc(&State::Instance().currentSwapchainDesc);
+
+        State::Instance().screenWidth = static_cast<float>(localDesc.Width);
+        State::Instance().screenHeight = static_cast<float>(localDesc.Height);
+
+        HWND processWindow = Util::GetProcessWindow();
+
+        LOG_DEBUG("Created new swapchain: {0:X}, processWindow: {1:X}", (UINT64) *ppSwapChain,
+                  (UINT64) processWindow);
+
+        WrappedIDXGISwapChain4* wrapped;
+        if ((*ppSwapChain)->QueryInterface(IID_PPV_ARGS(&wrapped)) != S_OK)
+        {
+            *ppSwapChain = new WrappedIDXGISwapChain4(realSC, readDevice, processWindow, localDesc.Flags, false);
+
+            if (!_skipFGSwapChainCreation)
+                State::Instance().currentSwapchain = *ppSwapChain;
+
+            State::Instance().currentWrappedSwapchain = *ppSwapChain;
+
+            LOG_DEBUG("Created new WrappedIDXGISwapChain4: {0:X}, pDevice: {1:X}", (UINT64) *ppSwapChain,
+                      (UINT64) pDevice);
+        }
+        else
+        {
+            wrapped->Release();
+        }
+    }
+
+    return result;
+}
+
 HRESULT DxgiFactoryHooks::DLSSGCreateSwapChain(IDXGIFactory* realFactory, IUnknown* pDevice,
                                                DXGI_SWAP_CHAIN_DESC* pDesc, IDXGISwapChain** ppSwapChain)
 {
@@ -1133,7 +1315,7 @@ HRESULT DxgiFactoryHooks::DLSSGCreateSwapChain(IDXGIFactory* realFactory, IUnkno
 
     if (pDesc->BufferDesc.Height < 100 || pDesc->BufferDesc.Width < 100)
     {
-        LOG_WARN("Overlay call!");
+        LOG_WARN("Overlay call! Width: {}, Height: {}", pDesc->BufferDesc.Width, pDesc->BufferDesc.Height);
 
         ScopedSkipDxgiLoadChecks skipDxgiLoadChecks {};
         ScopedSkipParentWrapping skipParentWrapping {};
@@ -1427,7 +1609,7 @@ HRESULT DxgiFactoryHooks::DLSSGCreateSwapChainForHwnd(IDXGIFactory2* realFactory
 
     if (pDesc->Height < 100 || pDesc->Width < 100)
     {
-        LOG_WARN("Overlay call!");
+        LOG_WARN("Overlay call! Width: {}, Height: {}", pDesc->Width, pDesc->Height);
         HRESULT result;
 
         {
@@ -1722,7 +1904,7 @@ HRESULT DxgiFactoryHooks::DLSSGCreateSwapChainForCoreWindow(IDXGIFactory2* realF
 
     if (pDesc->Height < 100 || pDesc->Width < 100)
     {
-        LOG_WARN("Overlay call!");
+        LOG_WARN("Overlay call! Width: {}, Height: {}", pDesc->Width, pDesc->Height);
 
         ScopedSkipDxgiLoadChecks skipDxgiLoadChecks {};
         return realFactory->CreateSwapChainForCoreWindow(pDevice, pWindow, pDesc, pRestrictToOutput, ppSwapChain);

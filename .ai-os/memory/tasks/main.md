@@ -29,6 +29,14 @@ Protected-branch working notes. Drained by `MEMORY_CONSOLIDATE`, not `TASK_CLOSE
   `Dispatch()`'s per-frame writes); the menu's pass-cap message had no case for a
   *permanent* pass-creation failure (`passCreateFailed`), so it misleadingly said
   "still building" forever in that case. See plan step 6 for full detail.
+- Pushed to `origin` (repoint: `origin` is now `janblade/OptiScaler-DLSSNR-PreSR-Multipass`,
+  a fork of `wilsjo2`'s repo, forked via `gh repo fork` since `janblade` had no push
+  access to `wilsjo2`'s repo directly). Rebased our 3 local commits onto
+  `origin/main`, which had 2 unrelated commits already on it ("native RR controls",
+  "per-pass strengths") touching the same DLSS-NR files -- 2 real conflicts in
+  `DlssNr_Dx12.cpp` (both were "our SetExtras signature change" vs "their new
+  PassTuning line" -- resolved by keeping both), re-verified by a clean Debug|x64
+  build after resolving, then pushed. `1366c6fa..1b773ae1 main -> main`.
 - Applied EP-1 (`registry/core.planning.sk/SKILL.md`): `PLAN_EXECUTE` now has a
   mandatory independent-review gate (step 6, `core.dev-loop.sk`'s review half) that
   must run once per plan before `Status: done` is set. Closes the gap that let the

@@ -52,6 +52,7 @@ struct DebugState
     bool BlockMouse = false;
     bool BlockKeyboard = false;
     bool BlockCursor = false;
+    bool BlockGamepad = false;
 
     bool IsUwp = false;
     bool UseWndProcSubclass = true;

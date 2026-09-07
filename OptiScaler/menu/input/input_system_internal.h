@@ -53,6 +53,9 @@ struct RawInputSanitizeDecision
     HRAWINPUT Handle = nullptr;
     RawSanitizeAction Action = RawSanitizeAction::Pass;
     USHORT AllowedMouseButtonUpFlags = 0;
+    // Set once the overlay has consumed this packet's content into its own ImGui input state, so
+    // the WM_INPUT path and the GetRawInputData hook do not both feed it (double wheel / deltas).
+    bool StateConsumed = false;
 };
 
 struct WindowsHookSlot
@@ -132,6 +135,7 @@ struct InputState
     bool BlockMouse = false;
     bool BlockKeyboard = false;
     bool BlockCursor = false;
+    bool BlockGamepad = false;
 
     bool IsUwp = false;
     bool UseWndProcSubclass = true;
@@ -535,6 +539,7 @@ bool ShouldApplyBlockingPolicyLocked();
 bool ShouldBlockKeyboardInputLocked();
 bool ShouldBlockMouseInputLocked();
 bool ShouldBlockCursorInputLocked();
+bool ShouldBlockGamepadInputLocked();
 void HandleBlockingFocusGainLocked();
 void HandleBlockingFocusLossLocked();
 void LogInputHealthSnapshotLocked(const char* origin);

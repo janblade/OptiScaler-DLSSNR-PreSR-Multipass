@@ -65,6 +65,8 @@ bool ShouldBlockMouseInputLocked() { return ShouldApplyBlockingPolicyLocked() &&
 
 bool ShouldBlockCursorInputLocked() { return ShouldApplyBlockingPolicyLocked() && _state.BlockCursor; }
 
+bool ShouldBlockGamepadInputLocked() { return ShouldApplyBlockingPolicyLocked() && _state.BlockGamepad; }
+
 void HandleBlockingFocusGainLocked()
 {
     if (!_state.MenuVisible || !_state.Focused)
@@ -733,15 +735,36 @@ void ApplyMenuVisibilityChangeLocked(bool visible)
     const bool wasMenuVisible = _state.MenuVisible;
 
     _state.MenuVisible = visible;
-    _state.BlockMouse = visible;
-    _state.BlockKeyboard = visible;
+
+    // ReShade-style conditional blocking. While the overlay is open, only withhold the mouse /
+    // keyboard from the game on frames where ImGui actually wants them -- cursor over a menu
+    // window, or a focused text field. This keeps the game controllable with the menu open and
+    // lets game bindings (and Alt+F4) through when the cursor is not in the menu. Cursor
+    // virtualization and gamepad blocking stay tied to plain visibility, so the OS cursor stays
+    // put and the car does not drive itself during menu navigation. This runs from EndFrame,
+    // after FeedImGui + ImGui::NewFrame(), so the Want* flags carry last frame's hover/active
+    // state (one-frame lag, as in ReShade).
+    bool wantMouse = visible;
+    bool wantKeyboard = visible;
+
+    if (visible && ImGui::GetCurrentContext() != nullptr)
+    {
+        const ImGuiIO& io = ImGui::GetIO();
+        wantMouse = io.WantCaptureMouse;
+        wantKeyboard = io.WantCaptureKeyboard || io.WantTextInput;
+    }
+
+    _state.BlockMouse = wantMouse;
+    _state.BlockKeyboard = wantKeyboard;
     _state.BlockCursor = visible;
+    _state.BlockGamepad = visible;
 
     if (wasMenuVisible != visible)
     {
-        LOG_INFO("menu visibility changed {} -> {} blockMouse:{} blockKeyboard:{} blockCursor:{} input:{} target:{}",
+        LOG_INFO("menu visibility changed {} -> {} blockMouse:{} blockKeyboard:{} blockCursor:{} blockGamepad:{} "
+                 "input:{} target:{}",
                  wasMenuVisible ? 1 : 0, visible ? 1 : 0, _state.BlockMouse ? 1 : 0, _state.BlockKeyboard ? 1 : 0,
-                 _state.BlockCursor ? 1 : 0, static_cast<void*>(_state.InputHwnd),
+                 _state.BlockCursor ? 1 : 0, _state.BlockGamepad ? 1 : 0, static_cast<void*>(_state.InputHwnd),
                  static_cast<void*>(_state.TargetHwnd));
     }
 
@@ -919,6 +942,7 @@ void ResetStateAfterShutdown()
     _state.BlockMouse = false;
     _state.BlockKeyboard = false;
     _state.BlockCursor = false;
+    _state.BlockGamepad = false;
 
     _state.RawMouseTargetHwnd = nullptr;
     _state.RawKeyboardTargetHwnd = nullptr;
@@ -1284,11 +1308,16 @@ void FeedImGui(bool menuVisible)
     if (_state.MouseWheel != 0.0f)
         io.AddMouseWheelEvent(0.0f, _state.MouseWheel);
 
-    io.AddMouseButtonEvent(0, _state.MouseButtons[0].Down);
-    io.AddMouseButtonEvent(1, _state.MouseButtons[1].Down);
-    io.AddMouseButtonEvent(2, _state.MouseButtons[2].Down);
-    io.AddMouseButtonEvent(3, _state.MouseButtons[3].Down);
-    io.AddMouseButtonEvent(4, _state.MouseButtons[4].Down);
+    for (int mb = 0; mb < static_cast<int>(_state.MouseButtons.size()); mb++)
+    {
+        // A very fast click can have its press and its release both consumed within one frame
+        // (raw-input batches, DirectInput buffered reads, CSP re-pumping). By the time we sample
+        // here MouseButtons[mb].Down is already back to false, so ImGui would never see the button
+        // go down and the click is lost. Feed the press edge explicitly when it happened this
+        // frame -- ImGui's trickle event queue defers the matching release to the next frame.
+        const bool level = _state.MouseButtons[mb].Down || _state.MouseButtons[mb].Pressed;
+        io.AddMouseButtonEvent(mb, level);
+    }
 
     AddKey(ImGuiKey_Tab, VK_TAB);
     AddKey(ImGuiKey_LeftArrow, VK_LEFT);
@@ -1477,6 +1506,7 @@ DebugState GetDebugState()
     state.BlockMouse = _state.BlockMouse;
     state.BlockKeyboard = _state.BlockKeyboard;
     state.BlockCursor = _state.BlockCursor;
+    state.BlockGamepad = _state.BlockGamepad;
 
     state.IsUwp = _state.IsUwp;
     state.UseWndProcSubclass = _state.UseWndProcSubclass;

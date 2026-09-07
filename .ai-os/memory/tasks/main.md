@@ -2,19 +2,33 @@
 
 Protected-branch working notes. Drained by `MEMORY_CONSOLIDATE`, not `TASK_CLOSE`.
 
-**ACTIVE PLAN** (2026-09-07): `memory/plans/2026-09-07-dlssnr-presr-jitter-cancel-mv.md` — Status
-in-progress, branch `experiment/dlssnr-presr-jitter-mv` (off `main`; NOT pushed). Prototype: pre-SR
-DLSS-NR jitter cancellation via a scratch motion-vector texture. New HLSL mode
-`DlssNrMode_JitterCancelMv = 5` in `dlssnr.hlsl` (4 precompiled artifacts regenerated with bundled
-`dxc.exe` + hand-rolled header gen — no Python on host; VK header array is `dlssnr_spv` lowercase,
-DX is `DlssNr_cso`). Config `DlssNrJitterCancel` (default off) + signed `DlssNrJitterCancelScale`
-(default 1.0). Substitution is inside `DlssNr_Dx12::Dispatch` right after `motionIn = ReadableGuide`:
-build `g_nr.jitterMv` = game MV + `(prevJitter - curJitter) * scale / guideMvScale` per axis, feed it
-to `g_nr.evaluate` + `DlssNr::Proxy::Run` only (`modelMotion`); resolve `DispatchPass` left on
-`motionIn` (compose shader never samples motion). `jitterMvState` member tracks the scratch's barrier
-state across frames so an early return can't strand it. Steps 1-7 done; step 8 (build) in progress;
-step 9 = user in-game A/B + keep-or-revert verdict (negative result explicitly allowed). Uncommitted;
-no push/PR without user go-ahead.
+## State @ 2026-09-08 (post wilsjo2 sync)
+
+`main` HEAD = `32563ad2` (Merge wilsjo2/main), pushed to origin. Lineage: `c3897a78` (PR #1) ->
+`91603612` (AI-OS v2.8.0 + bookkeeping) -> `32563ad2` (wilsjo2 merge).
+
+**wilsjo2/main sync — DONE.** merge (not rebase — main has merge commits + is shared). 46 files, 2
+incoming commits (`79d9b11c` deferred-DLSS pre-SR NR; `3d083723` Vulkan pre-SR parity + optional NR
+experiments + reviewed compat fixes). Brought in: `DlssNr_DeferredSr.inl`, `DlssNr_AsyncLatest.inl`,
+`PassProfiles.h`, `ResidualFg.h`, `MfgUnlock.{cpp,h}`, 5 `docs/*.md`, 4 `tests/nr_*_smoke.cpp`. All
+NR experiments **default-off**. wilsjo2 carries no `.ai-os/` / `CLAUDE.md` / `AGENTS.md` / `.claude/`
+— merge kept ours.
+- 1 conflict: `IFeature_Dx11.cpp` — both forks rewrote the D3D11 `Evaluate` state backup/restore from
+  the same base. Convergent: kept our `ComPtr`/`pipelineFailed` structure + took wilsjo2's batched
+  `CSSet*` + feature-level-aware `uavCount` (correct on FL11.0).
+- 1 post-merge compile fix: 6 `g_nrMutex` lock sites the auto-merge kept from wilsjo2 used
+  `std::lock_guard<std::mutex>` while our side had `g_nrMutex` as `std::recursive_mutex` — converted.
+- Debug|x64 + Release|x64 both build clean, 0 errors. New NR experiment paths are auto-merge +
+  compile-verified only — validate in-game before relying on them.
+
+**jitter-cancel prototype** (`memory/plans/2026-09-07-dlssnr-presr-jitter-cancel-mv.md`): committed
+`639a58ec` on `experiment/dlssnr-presr-jitter-mv`, pushed; **PR janblade#2 (experiment -> main)
+open**. First in-game pass "barely noticeable"; landing default-off, sweep continues. **PR #2 now
+conflicts with the wilsjo2 NR changes** (`dlssnr.hlsl`, `DlssNr_Dx12.cpp`, precompiled shaders,
+`Config.*`, `DlssNr_Menu.cpp`) — needs `experiment` rebased onto the new `main` before it merges
+cleanly. Not done (not requested).
+
+**AI-OS framework v2.8.0** committed `91603612`. `docs/dlssnr-binary-dump/` still untracked (1.5MB).
 
 Prior state: **PR #1 MERGED into `main` (merge commit `c3897a78`)** — `main` now contains 2f9d2746 +
 122eaca3. Merged branch `fix/overlay-input-stack-agnostic` still exists local + origin (safe to

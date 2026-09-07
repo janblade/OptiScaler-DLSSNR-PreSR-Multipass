@@ -30,7 +30,10 @@ HMODULE FindLoadedXInputModule()
 
 bool ShouldBlockXInputLocked()
 {
-    return _state.Initialized && (ShouldBlockKeyboardInputLocked() || ShouldBlockMouseInputLocked());
+    // Gamepad stays fully blocked while the overlay is visible (BlockGamepad tracks visibility),
+    // independent of the ReShade-style conditional mouse/keyboard blocking, so the car does not
+    // drive itself while the pad is used to navigate the menu.
+    return _state.Initialized && ShouldBlockGamepadInputLocked();
 }
 
 void FillNeutralXInputState(XINPUT_STATE* state)

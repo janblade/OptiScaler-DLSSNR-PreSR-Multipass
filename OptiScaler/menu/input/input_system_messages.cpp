@@ -56,6 +56,17 @@ void ResetButtonBlockedStateLocked()
     SyncAggregateModifierStateLocked();
 }
 
+void ReleaseHeldOverlayMouseButtonsLocked()
+{
+    // While the overlay is open it owns mouse-button semantics. On menu close / focus loss,
+    // a button still marked Down was last driven by our DirectInput / raw feed -- a pure
+    // DirectInput game has no game-facing WM_*BUTTONUP to clear it, so without this the stale
+    // Down feeds a phantom click into ImGui on the next open. SetMouseUpStateOnly leaves one
+    // clean Released edge and does not touch BlockedDown.
+    for (int button = 0; button < static_cast<int>(_state.MouseButtons.size()); button++)
+        SetMouseUpStateOnly(button, GetTickCount());
+}
+
 void SetMouseDownFromRawState(int button, DWORD messageTime, bool blocked)
 {
     if (button < 0 || button >= static_cast<int>(_state.MouseButtons.size()))
@@ -581,7 +592,12 @@ bool HandleWindowMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, Inpu
         SetKeyDown(vk, GetMessageTime(), blockKeyboard);
         OPTIINPUT_LOG_VERBOSE("key down vk:{} blocked:{}", vk, blockKeyboard ? 1 : 0);
 
-        shouldBlock = blockKeyboard;
+        // Never swallow Alt+F4. If we consume it the original WndProc / DefWindowProc never runs,
+        // so no WM_SYSCOMMAND/SC_CLOSE is synthesized and the game cannot be closed while the
+        // overlay is open.
+        const bool isAltF4 = msg == WM_SYSKEYDOWN && vk == VK_F4;
+
+        shouldBlock = blockKeyboard && !isAltF4;
         break;
     }
 

@@ -40,6 +40,33 @@ std::array<DirectInputMethodHookSlot<DirectInputGetDeviceState_t>, MaxDirectInpu
     DirectInputGetDeviceStateHooks {};
 std::array<DirectInputMethodHookSlot<DirectInputGetDeviceData_t>, MaxDirectInputMethodHooks>
     DirectInputGetDeviceDataHooks {};
+std::array<DirectInputMethodHookSlot<DirectInputSetDataFormat_t>, MaxDirectInputMethodHooks>
+    DirectInputSetDataFormatHooks {};
+
+// Byte offset of rgbButtons[] inside DIMOUSESTATE / DIMOUSESTATE2 (lX, lY, lZ come first).
+constexpr DWORD DirectInputMouseButtonsOffset = 3 * sizeof(LONG);
+
+// A data format is a "standard mouse layout" for our purposes when its data size is
+// sizeof(DIMOUSESTATE) / DIMOUSESTATE2 and it carries a button object at
+// DirectInputMouseButtonsOffset -- i.e. reading rgbButtons at that offset is well defined.
+bool DataFormatLooksLikeMouse(LPCDIDATAFORMAT format)
+{
+    if (format == nullptr || format->dwSize != sizeof(DIDATAFORMAT) ||
+        format->dwObjSize != sizeof(DIOBJECTDATAFORMAT) || format->rgodf == nullptr)
+        return false;
+
+    if (format->dwDataSize != sizeof(DIMOUSESTATE) && format->dwDataSize != sizeof(DIMOUSESTATE2))
+        return false;
+
+    for (DWORD i = 0; i < format->dwNumObjs; i++)
+    {
+        const DIOBJECTDATAFORMAT& obj = format->rgodf[i];
+        if (obj.dwOfs == DirectInputMouseButtonsOffset && (obj.dwType & DIDFT_BUTTON) != 0)
+            return true;
+    }
+
+    return false;
+}
 
 bool IsDirectInputKeyboardGuid(REFGUID guid) { return IsEqualGUID(guid, DirectInputSysKeyboardGuid) != FALSE; }
 
@@ -68,7 +95,10 @@ bool ShouldBlockDirectInputMouseLocked()
 
 bool ShouldBlockDirectInputOtherLocked()
 {
-    return _state.Initialized && (ShouldBlockKeyboardInputLocked() || ShouldBlockMouseInputLocked());
+    // Gamepads / wheels / other non-pointer DirectInput devices stay blocked for as long as the
+    // overlay is visible (BlockGamepad tracks visibility), not gated on the conditional
+    // mouse/keyboard block.
+    return _state.Initialized && ShouldBlockGamepadInputLocked();
 }
 
 bool ShouldBlockDirectInputDeviceLocked(DirectInputDeviceKind kind)
@@ -211,6 +241,7 @@ void ClearDirectInputMethodHooksLocked()
     DirectInputReleaseHooks = {};
     DirectInputGetDeviceStateHooks = {};
     DirectInputGetDeviceDataHooks = {};
+    DirectInputSetDataFormatHooks = {};
     RefreshDirectInputDeviceHookStateLocked();
 }
 
@@ -259,6 +290,19 @@ std::size_t FindDirectInputDeviceSlotLocked(void* device)
     }
 
     return MaxTrackedDirectInputDevices;
+}
+
+// True when the overlay may read mouse buttons out of this device's caller buffer. Permissive
+// until we have actually seen the game's SetDataFormat call (matches pre-hardening behaviour for
+// devices created before the hook attached); once seen, only a standard mouse layout qualifies.
+bool DirectInputMouseFormatUsableLocked(void* device)
+{
+    const std::size_t slot = FindDirectInputDeviceSlotLocked(device);
+    if (slot >= MaxTrackedDirectInputDevices)
+        return true;
+
+    const DirectInputDeviceSlot& deviceSlot = _state.DirectInputDeviceSlots[slot];
+    return !deviceSlot.MouseFormatChecked || deviceSlot.MouseFormatUsable;
 }
 
 DirectInputDeviceKind GetDirectInputDeviceKindLocked(void* device)
@@ -352,16 +396,20 @@ bool HookDirectInputDeviceLocked(void* device, DirectInputDeviceKind kind)
     auto release = reinterpret_cast<DirectInputDeviceRelease_t>(vtable[2]);
     auto getDeviceState = reinterpret_cast<DirectInputGetDeviceState_t>(vtable[9]);
     auto getDeviceData = reinterpret_cast<DirectInputGetDeviceData_t>(vtable[10]);
+    auto setDataFormat = reinterpret_cast<DirectInputSetDataFormat_t>(vtable[11]);
 
     bool attachRelease = false;
     bool attachGetDeviceState = false;
     bool attachGetDeviceData = false;
+    bool attachSetDataFormat = false;
 
     auto* releaseHook = PrepareDirectInputMethodHookLocked(DirectInputReleaseHooks, release, &attachRelease);
     auto* getDeviceStateHook =
         PrepareDirectInputMethodHookLocked(DirectInputGetDeviceStateHooks, getDeviceState, &attachGetDeviceState);
     auto* getDeviceDataHook =
         PrepareDirectInputMethodHookLocked(DirectInputGetDeviceDataHooks, getDeviceData, &attachGetDeviceData);
+    auto* setDataFormatHook =
+        PrepareDirectInputMethodHookLocked(DirectInputSetDataFormatHooks, setDataFormat, &attachSetDataFormat);
 
     bool completeCoverage = true;
 
@@ -386,7 +434,14 @@ bool HookDirectInputDeviceLocked(void* device, DirectInputDeviceKind kind)
         completeCoverage = false;
     }
 
-    if (!attachRelease && !attachGetDeviceState && !attachGetDeviceData)
+    if (setDataFormat != nullptr && setDataFormatHook == nullptr)
+    {
+        LOG_WARN("DirectInput SetDataFormat hook table is full, device:{} target:{}", device,
+                 reinterpret_cast<void*>(setDataFormat));
+        completeCoverage = false;
+    }
+
+    if (!attachRelease && !attachGetDeviceState && !attachGetDeviceData && !attachSetDataFormat)
     {
         TrackDirectInputDeviceLocked(device, kind);
         return completeCoverage;
@@ -404,6 +459,9 @@ bool HookDirectInputDeviceLocked(void* device, DirectInputDeviceKind kind)
     if (attachGetDeviceData)
         DetourAttach(reinterpret_cast<PVOID*>(&getDeviceDataHook->Trampoline), hkDirectInputGetDeviceData);
 
+    if (attachSetDataFormat)
+        DetourAttach(reinterpret_cast<PVOID*>(&setDataFormatHook->Trampoline), hkDirectInputSetDataFormat);
+
     const LONG result = DetourTransactionCommit();
 
     if (result != NO_ERROR)
@@ -419,6 +477,9 @@ bool HookDirectInputDeviceLocked(void* device, DirectInputDeviceKind kind)
 
         if (attachGetDeviceData)
             *getDeviceDataHook = {};
+
+        if (attachSetDataFormat)
+            *setDataFormatHook = {};
 
         RefreshDirectInputDeviceHookStateLocked();
         return false;
@@ -436,6 +497,10 @@ bool HookDirectInputDeviceLocked(void* device, DirectInputDeviceKind kind)
     if (attachGetDeviceData)
         LOG_INFO("DirectInput GetDeviceData target detoured target:{} device:{}",
                  reinterpret_cast<void*>(getDeviceData), device);
+
+    if (attachSetDataFormat)
+        LOG_INFO("DirectInput SetDataFormat target detoured target:{} device:{}",
+                 reinterpret_cast<void*>(setDataFormat), device);
 
     TrackDirectInputDeviceLocked(device, kind);
     return completeCoverage;
@@ -629,7 +694,8 @@ bool RemoveDirectInputHooksLocked()
         !_state.DirectInputCreateWHookInstalled && !_state.DirectInputCreateExHookInstalled &&
         !_state.DirectInputCreateDeviceAHookInstalled && !_state.DirectInputCreateDeviceWHookInstalled &&
         !_state.DirectInputGetDeviceStateHookInstalled && !_state.DirectInputGetDeviceDataHookInstalled &&
-        !_state.DirectInputDeviceReleaseHookInstalled)
+        !_state.DirectInputDeviceReleaseHookInstalled &&
+        !HasDirectInputMethodHooksLocked(DirectInputSetDataFormatHooks))
     {
         ClearDirectInputHookPointersLocked();
         ClearAllDirectInputDeviceSlotsLocked();
@@ -667,6 +733,12 @@ bool RemoveDirectInputHooksLocked()
     {
         if (slot.InUse && slot.Trampoline != nullptr)
             DetourDetach(reinterpret_cast<PVOID*>(&slot.Trampoline), hkDirectInputGetDeviceData);
+    }
+
+    for (auto& slot : DirectInputSetDataFormatHooks)
+    {
+        if (slot.InUse && slot.Trampoline != nullptr)
+            DetourDetach(reinterpret_cast<PVOID*>(&slot.Trampoline), hkDirectInputSetDataFormat);
     }
 
     for (auto& slot : DirectInputReleaseHooks)
@@ -894,16 +966,118 @@ HRESULT WINAPI hkDirectInputCreateDeviceW(void* directInput, REFGUID guid, void*
     return result;
 }
 
+namespace
+{
+
+// Apply one mouse-button level to the overlay's ImGui state from a DirectInput read. index
+// 0=left, 1=right, 2=middle -- exactly our MouseButtons layout. `blocking` is the real per-call
+// block decision (not _state.BlockMouse): BlockedDown is only set when the game is actually
+// being denied this press, so a later real WM_*BUTTONUP does not suppress a release the game is
+// owed. Called with _state.Mutex held.
+void FeedOverlayMouseButtonLevelLocked(int button, bool down, DWORD time, bool blocking)
+{
+    if (button < 0 || button >= static_cast<int>(_state.MouseButtons.size()))
+        return;
+
+    if (down)
+        SetMouseDown(button, time, blocking);
+    else if (_state.MouseButtons[button].Down)
+        SetMouseUpStateOnly(button, time);
+}
+
+// Feed the overlay's ImGui mouse-button state from a DirectInput immediate-state (GetDeviceState)
+// read. A button is down when the high bit of its byte is set. Buttons only -- movement and wheel
+// are left to the raw / message paths, so there is no wheel/delta double-count. The caller has
+// already confirmed the device's data format places rgbButtons at DirectInputMouseButtonsOffset
+// (SetDataFormat hook). Called with _state.Mutex held.
+void FeedOverlayMouseFromDirectInputStateLocked(const void* data, DWORD dataSize, bool blocking)
+{
+    if (data == nullptr || dataSize <= DirectInputMouseButtonsOffset)
+        return;
+
+    const BYTE* buttons = static_cast<const BYTE*>(data) + DirectInputMouseButtonsOffset;
+    DWORD count = dataSize - DirectInputMouseButtonsOffset;
+    if (count > _state.MouseButtons.size())
+        count = static_cast<DWORD>(_state.MouseButtons.size());
+
+    const DWORD time = GetTickCount();
+
+    for (DWORD i = 0; i < count; i++)
+        FeedOverlayMouseButtonLevelLocked(static_cast<int>(i), (buttons[i] & 0x80) != 0, time, blocking);
+}
+
+// Flush the device's buffered event queue and present an empty successful read. Used on every
+// GetDeviceData path where the menu owns the mouse -- without the flush, menu-time events replay
+// into the game on the first frame after the overlay closes. `original` is the per-device
+// vtable[10] trampoline. Does not touch _state; call without holding _state.Mutex (as the old
+// inline flush did).
+void BlockAndDrainDeviceData(DirectInputGetDeviceData_t original, void* device, DWORD objectDataSize, LPDWORD inOut)
+{
+    if (original != nullptr)
+    {
+        DWORD flushCount = INFINITE;
+        ScopedHookBypass bypass;
+        original(device, objectDataSize, nullptr, &flushCount, 0);
+    }
+
+    if (inOut != nullptr)
+        *inOut = 0;
+}
+
+} // namespace
+
+HRESULT WINAPI hkDirectInputSetDataFormat(void* device, LPCDIDATAFORMAT format)
+{
+    DirectInputSetDataFormat_t original = nullptr;
+
+    {
+        std::unique_lock lock(_state.Mutex);
+
+        const std::size_t slot = FindDirectInputDeviceSlotLocked(device);
+        if (slot < MaxTrackedDirectInputDevices)
+        {
+            _state.DirectInputDeviceSlots[slot].MouseFormatChecked = true;
+            _state.DirectInputDeviceSlots[slot].MouseFormatUsable = DataFormatLooksLikeMouse(format);
+        }
+
+        if (device != nullptr)
+        {
+            PVOID* vtable = *reinterpret_cast<PVOID**>(device);
+            auto target = reinterpret_cast<DirectInputSetDataFormat_t>(vtable[11]);
+            original = ResolveDirectInputMethodTrampolineLocked(DirectInputSetDataFormatHooks, target);
+        }
+    }
+
+    if (original == nullptr)
+        return DIERR_GENERIC;
+
+    ScopedHookBypass bypass;
+    return original(device, format);
+}
+
 HRESULT WINAPI hkDirectInputGetDeviceState(void* device, DWORD dataSize, LPVOID data)
 {
     DirectInputGetDeviceState_t original = nullptr;
+    bool blocking = false;
+    bool feedOverlay = false;
 
     {
         std::unique_lock lock(_state.Mutex);
         const DirectInputDeviceKind kind = GetDirectInputDeviceKindLocked(device);
         _state.DirectInputGetDeviceStateCallCount++;
 
-        if (ShouldBlockDirectInputDeviceLocked(kind))
+        blocking = ShouldBlockDirectInputDeviceLocked(kind);
+
+        // Feed the overlay only while it actually owns input (focused, menu up, not inside a
+        // hook-bypass) and only when this device's data format really is a standard mouse
+        // layout -- otherwise bytes at DirectInputMouseButtonsOffset are not rgbButtons.
+        feedOverlay = kind == DirectInputDeviceKind::Mouse && data != nullptr && _state.Initialized &&
+                      _state.Focused && ShouldApplyBlockingPolicyLocked() &&
+                      DirectInputMouseFormatUsableLocked(device);
+
+        // Fast path: blocking and the overlay does not need this device -- zero it and return
+        // without ever calling the real read, exactly as before.
+        if (blocking && !feedOverlay)
         {
             if (data != nullptr && dataSize > 0)
                 std::memset(data, 0, dataSize);
@@ -914,7 +1088,8 @@ HRESULT WINAPI hkDirectInputGetDeviceState(void* device, DWORD dataSize, LPVOID 
             return DI_OK;
         }
 
-        _state.DirectInputGetDeviceStatePassedCount++;
+        if (!blocking)
+            _state.DirectInputGetDeviceStatePassedCount++;
 
         if (device != nullptr)
         {
@@ -927,8 +1102,38 @@ HRESULT WINAPI hkDirectInputGetDeviceState(void* device, DWORD dataSize, LPVOID 
     if (original == nullptr)
         return DIERR_GENERIC;
 
-    ScopedHookBypass bypass;
-    return original(device, dataSize, data);
+    HRESULT hr;
+    {
+        ScopedHookBypass bypass;
+        hr = original(device, dataSize, data);
+    }
+
+    // The game reads its mouse through DirectInput (common in Assetto Corsa + CSP). Read the real
+    // state first so the overlay learns the click, then hide it from the game if the menu owns the
+    // mouse this frame. GetDeviceState is immediate (no buffered queue), so there is nothing to
+    // drain -- zeroing the returned struct is enough.
+    if (feedOverlay)
+    {
+        if (SUCCEEDED(hr))
+        {
+            std::unique_lock lock(_state.Mutex);
+            FeedOverlayMouseFromDirectInputStateLocked(data, dataSize, blocking);
+        }
+
+        // Hide real button state from the game whether or not the read succeeded -- on failure
+        // the buffer is undefined and a game that reads it anyway would otherwise briefly see
+        // live state with the overlay up.
+        if (blocking)
+        {
+            if (data != nullptr && dataSize > 0)
+                std::memset(data, 0, dataSize);
+
+            std::unique_lock lock(_state.Mutex);
+            _state.DirectInputGetDeviceStateBlockedCount++;
+        }
+    }
+
+    return hr;
 }
 
 HRESULT WINAPI hkDirectInputGetDeviceData(void* device, DWORD objectDataSize, LPDIDEVICEOBJECTDATA data, LPDWORD inOut,
@@ -936,17 +1141,26 @@ HRESULT WINAPI hkDirectInputGetDeviceData(void* device, DWORD objectDataSize, LP
 {
     DirectInputGetDeviceData_t original = nullptr;
     DirectInputDeviceKind kind = DirectInputDeviceKind::Other;
-    bool shouldBlock = false;
+    bool blocking = false;
+    bool feedOverlay = false;
 
     {
         std::unique_lock lock(_state.Mutex);
         kind = GetDirectInputDeviceKindLocked(device);
         _state.DirectInputGetDeviceDataCallCount++;
-        shouldBlock = ShouldBlockDirectInputDeviceLocked(kind);
+        blocking = ShouldBlockDirectInputDeviceLocked(kind);
 
-        if (shouldBlock)
+        // Only mirror real buffered reads (data != null, not a PEEK): a PEEK leaves the events in
+        // the buffer for a later real read, and feeding both would double-count the click. Also
+        // gate on the overlay actually owning input (focused, menu up, not inside a hook-bypass)
+        // and on this device's data format being a standard mouse layout.
+        feedOverlay = kind == DirectInputDeviceKind::Mouse && data != nullptr && inOut != nullptr &&
+                      (flags & DIGDD_PEEK) == 0 && objectDataSize >= 2 * sizeof(DWORD) && _state.Initialized &&
+                      _state.Focused && ShouldApplyBlockingPolicyLocked() && DirectInputMouseFormatUsableLocked(device);
+
+        if (blocking && !feedOverlay)
             _state.DirectInputGetDeviceDataBlockedCount++;
-        else
+        else if (!blocking)
             _state.DirectInputGetDeviceDataPassedCount++;
 
         if (device != nullptr)
@@ -961,7 +1175,8 @@ HRESULT WINAPI hkDirectInputGetDeviceData(void* device, DWORD objectDataSize, LP
         }
     }
 
-    if (!shouldBlock)
+    // Not blocking and the overlay does not need it: straight passthrough, exactly as before.
+    if (!blocking && !feedOverlay)
     {
         if (original == nullptr)
             return DIERR_GENERIC;
@@ -970,22 +1185,63 @@ HRESULT WINAPI hkDirectInputGetDeviceData(void* device, DWORD objectDataSize, LP
         return original(device, objectDataSize, data, inOut, flags);
     }
 
-    // GetDeviceData is backed by a buffered event queue. Returning zero without
-    // touching the real queue lets menu-time events replay after closing the
-    // overlay. Flush the device buffer, then present an empty successful read.
-    if (original != nullptr)
+    // Blocking and the overlay does not need it: GetDeviceData is backed by a buffered event queue,
+    // so returning zero without touching the real queue lets menu-time events replay after closing
+    // the overlay. Flush the device buffer, then present an empty successful read.
+    if (blocking && !feedOverlay)
     {
-        DWORD flushCount = INFINITE;
-        ScopedHookBypass bypass;
-        original(device, objectDataSize, nullptr, &flushCount, 0);
+        BlockAndDrainDeviceData(original, device, objectDataSize, inOut);
+
+        OPTIINPUT_LOG_VERBOSE("blocking DirectInput GetDeviceData device:{} kind:{} flags:{}", device,
+                              DirectInputDeviceKindName(kind), flags);
+        return DI_OK;
     }
 
-    if (inOut != nullptr)
-        *inOut = 0;
+    // feedOverlay: read the real buffered data so the overlay learns the clicks, then, if the menu
+    // owns the mouse this frame, drain whatever is left and hide it from the game.
+    if (original == nullptr)
+        return DIERR_GENERIC;
 
-    OPTIINPUT_LOG_VERBOSE("blocking DirectInput GetDeviceData device:{} kind:{} flags:{}", device,
-                          DirectInputDeviceKindName(kind), flags);
-    return DI_OK;
+    HRESULT hr;
+    {
+        ScopedHookBypass bypass;
+        hr = original(device, objectDataSize, data, inOut, flags);
+    }
+
+    if (SUCCEEDED(hr) && inOut != nullptr)
+    {
+        std::unique_lock lock(_state.Mutex);
+
+        const DWORD entries = *inOut;
+        const DWORD time = GetTickCount();
+
+        for (DWORD i = 0; i < entries; i++)
+        {
+            const auto* entry = reinterpret_cast<const DIDEVICEOBJECTDATA*>(
+                reinterpret_cast<const BYTE*>(data) + static_cast<size_t>(i) * objectDataSize);
+
+            // Mouse button offsets are DIMOFS_BUTTON0..7 == rgbButtons[] offset + index.
+            if (entry->dwOfs < DirectInputMouseButtonsOffset ||
+                entry->dwOfs >= DirectInputMouseButtonsOffset + _state.MouseButtons.size())
+                continue;
+
+            FeedOverlayMouseButtonLevelLocked(static_cast<int>(entry->dwOfs - DirectInputMouseButtonsOffset),
+                                              (entry->dwData & 0x80) != 0, time, blocking);
+        }
+    }
+
+    // Drain the remainder and hide the read from the game whether or not the real read above
+    // succeeded -- the queue must not survive to replay after the overlay closes, and *inOut
+    // must be zeroed even on a failed read.
+    if (blocking)
+    {
+        BlockAndDrainDeviceData(original, device, objectDataSize, inOut);
+
+        std::unique_lock lock(_state.Mutex);
+        _state.DirectInputGetDeviceDataBlockedCount++;
+    }
+
+    return hr;
 }
 
 ULONG WINAPI hkDirectInputDeviceRelease(void* device)

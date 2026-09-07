@@ -414,6 +414,35 @@ RawInputSanitizeDecision GetRawInputSanitizeDecisionLocked(HRAWINPUT rawInput, c
     return decision;
 }
 
+// A raw packet can be seen by both the WM_INPUT handler and the GetRawInputData hook in the same
+// frame. Feed the overlay's ImGui input state from it exactly once -- returns true for the first
+// caller, false afterwards. The flag rides the per-frame sanitize cache (a 128-entry ring keyed by
+// handle, cleared each frame in ClearTransientState). It must be walked directly here, not via the
+// by-value copy GetRawInputSanitizeDecisionLocked returns, and this must run after that function has
+// populated the handle's entry (both call sites already do). A packet with no handle
+// (GetRawInputBuffer) always feeds -- no handle, no dedup; at worst one extra idempotent level event
+// if the same packet straddles a render-thread cache reset, or if >128 distinct handles in one
+// frame overwrite the ring.
+bool TryConsumeRawInputStateLocked(HRAWINPUT rawInput)
+{
+    if (rawInput == nullptr)
+        return true;
+
+    for (RawInputSanitizeDecision& cachedDecision : _state.RawInputSanitizeCache)
+    {
+        if (cachedDecision.Handle == rawInput)
+        {
+            if (cachedDecision.StateConsumed)
+                return false;
+
+            cachedDecision.StateConsumed = true;
+            return true;
+        }
+    }
+
+    return true;
+}
+
 void RecordRawInputSanitizeCounterLocked(const RAWINPUT& input, RawSanitizeAction action)
 {
     switch (input.header.dwType)
@@ -715,7 +744,10 @@ bool HandleRawInputLocked(HRAWINPUT rawInputHandle)
         (input->header.dwType == RIM_TYPEMOUSE &&
          decision.Action == RawSanitizeAction::SanitizeMouseKeepAllowedButtonUps);
 
-    UpdateStateFromRawInputLocked(*input);
+    // Deduped against the GetRawInputData hook: whichever sees this handle first this frame feeds
+    // the overlay, the other skips it (double wheel / delta otherwise).
+    if (TryConsumeRawInputStateLocked(rawInputHandle))
+        UpdateStateFromRawInputLocked(*input);
 
     return mustReachGame;
 }
@@ -843,6 +875,15 @@ UINT WINAPI hkGetRawInputData(HRAWINPUT rawInput, UINT command, LPVOID data, PUI
                                   static_cast<void*>(rawInput), input->header.dwType, static_cast<int>(decision.Action),
                                   decision.AllowedMouseButtonUpFlags);
             RecordRawInputSanitizeCounterLocked(*input, decision.Action);
+
+            // The overlay builds its own ImGui input from raw packets. When the game reads the
+            // mouse/keyboard through raw input and the WM_INPUT message never reaches our hooks
+            // (e.g. Assetto Corsa + CSP), this is the only place the packet is seen -- feed the
+            // menu from it here, before the sanitiser neutralises the content, deduped by handle
+            // against the WM_INPUT path.
+            if (_state.MenuVisible && TryConsumeRawInputStateLocked(rawInput))
+                UpdateStateFromRawInputLocked(*input);
+
             ApplyRawInputSanitizeActionLocked(*input, decision.Action, decision.AllowedMouseButtonUpFlags);
         }
     }
@@ -897,6 +938,12 @@ UINT WINAPI hkGetRawInputBuffer(PRAWINPUT data, PUINT size, UINT headerSize)
                                   current->header.dwType, static_cast<int>(action), allowedMouseButtonUpFlags,
                                   static_cast<unsigned>(currentBytes - bufferBegin));
             RecordRawInputSanitizeCounterLocked(*current, action);
+
+            // Feed the overlay from buffered raw packets too, before the content is neutralised.
+            // These carry no HRAWINPUT handle and are not seen by the WM_INPUT path, so no dedup.
+            if (_state.MenuVisible)
+                UpdateStateFromRawInputLocked(*current);
+
             ApplyRawInputSanitizeActionLocked(*current, action, allowedMouseButtonUpFlags);
 
             current = reinterpret_cast<PRAWINPUT>(currentBytes + packetSize);

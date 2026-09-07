@@ -27,7 +27,8 @@ enum DlssNrMode : uint32_t
     DlssNrMode_NormalizeMotion = 8, // current-to-previous motion in normalized image coordinates
     DlssNrMode_ComposeMotion = 9, // compose two successive fields at the displaced coordinate
     DlssNrMode_ApplyInterpolatedResidual = 10, // t4: R8_UNORM NVIDIA suppression flag
-    DlssNrMode_ZeroMotion = 11 // private reset-only NR/SR guide, never passed to residual FG
+    DlssNrMode_ZeroMotion = 11, // private reset-only NR/SR guide, never passed to residual FG
+    DlssNrMode_JitterCancelMv = 12 // game motion vectors + per-frame jitter delta -> a scratch MV copy
 };
 
 // A successful sample may be reused only on the immediately following frame.
@@ -79,6 +80,14 @@ struct DlssNrFrameInfo
     // top of that counts it twice.
     float MvScaleX = 1.0f;
     float MvScaleY = 1.0f;
+
+    // The camera's sub-pixel jitter this frame, in render-resolution pixels, exactly as the game
+    // handed it to the upscaler. The retail NR model has no parameter for it (nvngx_dlssnr.dll
+    // exposes zero jitter params), so it is used for one thing only: building a jitter-cancelled
+    // copy of the motion vectors handed to the model when DlssNrJitterCancel is on -- experimental,
+    // pre-SR only. Zero when the game did not supply it.
+    float JitterX = 0.0f;
+    float JitterY = 0.0f;
 
     // Throw away the model's history. Set it on a cut, a teleport, or the first frame of a feature.
     bool Reset = false;
@@ -221,6 +230,13 @@ struct alignas(256) DlssNrConstants
     float SkinColour;
     float EnvironmentDetail;
     float EnvironmentColour;
+
+    // DlssNrMode_JitterCancelMv only: how far to shift each motion vector, already converted into the
+    // MV texture's own texel units (delta_px * DlssNrJitterCancelScale / MvScale). Trailing scalars,
+    // mirrored in the shader cbuffer, so the layout stays a flat run of 4-byte values every existing
+    // mode ignores. Every other mode leaves these zero.
+    float JitterMvDeltaX;
+    float JitterMvDeltaY;
 };
 
 class DlssNr_Common

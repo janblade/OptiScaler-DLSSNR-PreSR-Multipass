@@ -35,6 +35,8 @@ cbuffer Params : register(b0)
     float gSkinColour;
     float gEnvironmentDetail;
     float gEnvironmentColour;
+    float gJitterMvDeltaX;  // mode 12 only: MV shift in the motion texture's own units, per axis
+    float gJitterMvDeltaY;
 };
 
 // Bringing an impossible colour back into a possible one.
@@ -494,6 +496,18 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= gWidth || id.y >= gHeight)
         return;
+
+    // Jitter cancellation for the pre-SR NR model. Copy the game's motion vectors and fold in this
+    // frame's sub-pixel jitter shift, so the model's temporal history reprojection lines this frame's
+    // jittered sample grid up with the last one instead of reading the jitter delta as scene motion
+    // and smearing it. The game's own MV resource is untouched -- this writes a private copy that only
+    // the NR model sees. The delta arrives already in the motion texture's own units, so this is a
+    // straight add. Whole allocation, not just the guide rect, so the scratch has no stale margin.
+    if (gMode == 12)
+    {
+        gTarget[id.xy] = gMotion.Load(int3(id.xy, 0)) + float4(gJitterMvDeltaX, gJitterMvDeltaY, 0.0, 0.0);
+        return;
+    }
 
     // Normalised, so the source may be any size relative to this dispatch.
     float2 uv = (float2(id.xy) + 0.5) / float2(gWidth, gHeight);

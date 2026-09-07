@@ -353,6 +353,19 @@ struct NrState
     bool afterRayReconstruction = false;
     bool reset = true;
 
+    // Experimental pre-SR jitter cancellation (Config::DlssNrJitterCancel). The previous frame's
+    // sub-pixel jitter, and a scratch motion-vector texture that carries the game's vectors plus the
+    // per-frame jitter delta -- the only copy the model ever sees. havePrevJitter is cleared whenever
+    // the feature or its surfaces are rebuilt so a fresh history never inherits a stale delta.
+    float prevJitterX = 0.0f;
+    float prevJitterY = 0.0f;
+    bool havePrevJitter = false;
+    ID3D12Resource* jitterMv = nullptr;
+    // Tracked across frames so the pass can put the scratch back to UAV itself next frame rather than
+    // relying on an end-of-Dispatch restore that an early return could skip. Fresh CreateScratch hands
+    // it back in UNORDERED_ACCESS, and teardown resets this to match.
+    D3D12_RESOURCE_STATES jitterMvState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+
     // Dimensions of the guides as the upscaler handed them over, kept for the present path, which runs
     // long after that call has returned.
     unsigned int guideWidth = 0;
@@ -777,10 +790,12 @@ void ReleaseSurfacesIfFormatChanged(DXGI_FORMAT needed)
 
     for (ID3D12Resource** r :
          { &g_nr.output, &g_nr.passScratch, &g_nr.colorCopy, &g_nr.hdrCopy, &g_nr.colorSmall,
-           &g_nr.outputNative, &g_nr.activeColor })
+           &g_nr.outputNative, &g_nr.activeColor, &g_nr.jitterMv })
         ParkNrResource(*r);
 
     g_nr.passScratchFailed = false;
+    g_nr.havePrevJitter = false;
+    g_nr.jitterMvState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 
     g_nr.reset = true;
 }
@@ -1851,7 +1866,10 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             ParkNrResource(g_nr.colorSmall);
             ParkNrResource(g_nr.outputNative);
             ParkNrResource(g_nr.activeColor);
+            ParkNrResource(g_nr.jitterMv);
             g_nr.passScratchFailed = false;
+            g_nr.havePrevJitter = false;
+            g_nr.jitterMvState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         }
     }
 
@@ -2472,7 +2490,111 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         return;
     }
 
-    // The vectors were scaled to full-frame pixels; the image the model reprojects is the working size.
+    // Experimental pre-SR jitter cancellation (Config::DlssNrJitterCancel). The retail NR model has no
+    // jitter parameter, so before it runs, fold this frame's sub-pixel jitter shift into a private
+    // copy of the motion vectors and hand it that instead: its temporal history reprojection then
+    // lines this frame's jittered sample grid up with the last one rather than reading the jitter
+    // delta as scene motion and smearing it. The game's own MV resource -- the one SR reads -- is
+    // never touched. A straight no-op after SR (jitter is already resolved there), on a reset, and
+    // when the flag is off (default), in which case the model gets the game's vectors byte-for-byte.
+    ID3D12Resource* modelMotion = motionIn;
+    const bool jitterCancel = cfg.DlssNrJitterCancel.value_or_default() && frame.BeforeUpscale &&
+                              !frame.AfterRayReconstruction;
+
+    if (jitterCancel)
+    {
+        float deltaX = 0.0f;
+        float deltaY = 0.0f;
+
+        // g_nr.reset catches our own rebuilds (resize, feature recreate) that the game's Reset flag
+        // does not; either way the history the delta would warp has just been discarded.
+        if (g_nr.havePrevJitter && !frame.Reset && !g_nr.reset)
+        {
+            deltaX = g_nr.prevJitterX - frame.JitterX;
+            deltaY = g_nr.prevJitterY - frame.JitterY;
+        }
+
+        const float scale = cfg.DlssNrJitterCancelScale.value_or_default();
+        const float mvScaleX = g_nr.guideMvScaleX != 0.0f ? g_nr.guideMvScaleX : 1.0f;
+        const float mvScaleY = g_nr.guideMvScaleY != 0.0f ? g_nr.guideMvScaleY : 1.0f;
+
+        // The model multiplies each MV texel by guideMvScale to get render-res pixels, so the value
+        // added to the texel to shift the result by deltaPx pixels is deltaPx / guideMvScale. The
+        // working-size ratio the model also applies is uniform across the field and cancels, so it is
+        // not in here. A negative guideMvScale (Y-flipped encoding) carries the delta's sign with it.
+        const float texelDeltaX = deltaX * scale / mvScaleX;
+        const float texelDeltaY = deltaY * scale / mvScaleY;
+
+        const D3D12_RESOURCE_DESC motionDesc = motionIn->GetDesc();
+
+        if (g_nr.jitterMv != nullptr)
+        {
+            const D3D12_RESOURCE_DESC have = g_nr.jitterMv->GetDesc();
+            if (have.Width != motionDesc.Width || have.Height != motionDesc.Height ||
+                have.Format != motionDesc.Format)
+            {
+                ParkNrResource(g_nr.jitterMv);
+                g_nr.jitterMvState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+            }
+        }
+
+        if (g_nr.jitterMv == nullptr)
+            g_nr.jitterMv = CreateScratch(device, motionDesc.Format, (unsigned int) motionDesc.Width,
+                                          motionDesc.Height);
+
+        if (g_nr.jitterMv != nullptr)
+        {
+            DlssNrConstants jc {};
+            jc.Mode = DlssNrMode_JitterCancelMv;
+            // The whole allocation, not just the guide rect, so the scratch carries no uninitialised
+            // margin the model might sample at an edge. Mode 5 bounds on Width/Height and reads no
+            // other field of the block.
+            jc.Width = (unsigned int) motionDesc.Width;
+            jc.Height = motionDesc.Height;
+            jc.JitterMvDeltaX = texelDeltaX;
+            jc.JitterMvDeltaY = texelDeltaY;
+
+            Barrier(cmdList, g_nr.jitterMv, g_nr.jitterMvState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            DispatchPass(cmdList, jc, motionIn, nullptr, nullptr, motionIn, nullptr, g_nr.jitterMv,
+                         nullptr);
+            Barrier(cmdList, g_nr.jitterMv, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            g_nr.jitterMvState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            modelMotion = g_nr.jitterMv;
+        }
+
+        // Throttled, so the in-game A/B has numbers without the log flooding. First call always
+        // prints; prevJitter is the genuine stored value (0,0 until havePrevJitter, and the delta
+        // is 0 to match).
+        static bool loggedJitterOnce = false;
+        static unsigned long long lastJitterLog = 0;
+        if (!loggedJitterOnce || g_frames - lastJitterLog >= 60)
+        {
+            loggedJitterOnce = true;
+            lastJitterLog = g_frames;
+            LOG_INFO("DLSS-NR jitter-cancel: curJitter ({:.4f}, {:.4f}) prevJitter ({:.4f}, {:.4f})"
+                     "{} -> MV texel delta ({:.5f}, {:.5f}) at MvScale ({}, {}){}",
+                     frame.JitterX, frame.JitterY, g_nr.prevJitterX, g_nr.prevJitterY,
+                     g_nr.havePrevJitter ? "" : " [warm-up]", texelDeltaX, texelDeltaY, mvScaleX,
+                     mvScaleY, g_nr.jitterMv != nullptr ? "" : "  [scratch alloc failed -- MVs unchanged]");
+        }
+
+        g_nr.prevJitterX = frame.JitterX;
+        g_nr.prevJitterY = frame.JitterY;
+        g_nr.havePrevJitter = true;
+    }
+    else
+    {
+        // Flag off, post-SR, or RR: keep no stale history, and reclaim the scratch after a toggle-off.
+        g_nr.havePrevJitter = false;
+
+        if (g_nr.jitterMv != nullptr)
+        {
+            ParkNrResource(g_nr.jitterMv);
+            g_nr.jitterMvState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        }
+    }
+
     // The vectors were scaled to full-frame pixels; the image the model reprojects is the
     // working size.
     const float mvToWork = width != 0 ? (float) workWidth / (float) width : 1.0f;
@@ -2487,7 +2609,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     if (cfg.DlssNrUseProxy.value_or_default())
     {
         const unsigned int proxyResult = DlssNr::Proxy::Run(
-            cmdList, device, modelInput, depthIn, motionIn, g_nr.output, workWidth, workHeight,
+            cmdList, device, modelInput, depthIn, modelMotion, g_nr.output, workWidth, workHeight,
             guideWidth, guideHeight, g_nr.guideDepthInverted, g_nr.reset,
             g_nr.guideMvScaleX * mvToWork, g_nr.guideMvScaleY * mvToWork);
 
@@ -2580,7 +2702,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
         MakeModelWritable(passOutput);
         result = g_nr.evaluate(
-            cmdList, passFeature, g_nr.capabilityParams, passInput, depthIn, motionIn, passOutput,
+            cmdList, passFeature, g_nr.capabilityParams, passInput, depthIn, modelMotion, passOutput,
             workWidth, workHeight, guideWidth, guideHeight, g_nr.guideDepthInverted ? 1 : 0,
             passReset ? 1 : 0, tuning.intensity,
             (int) PassStyle(cfg, pass), tuning.structure,
@@ -2795,6 +2917,9 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         }
 
+        // motionIn, not modelMotion: the resolve shader has no history accumulator and never samples
+        // the motion slot, so the jitter-cancelled copy would only mislead a reader here. Only the
+        // model evaluate (and the proxy) get the substituted vectors.
         DispatchPass(cmdList, resolveParams, resolveProxy, resolveAnswer, resolveOriginal, motionIn,
                      exposureTex, resolveTarget, nullptr);
 
@@ -3164,6 +3289,32 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
 
     if (params->Get(NVSDK_NGX_Parameter_MV_Scale_Y, &frame.MvScaleY) != NVSDK_NGX_Result_Success)
         frame.MvScaleY = 1.0f;
+
+    // The game's sub-pixel jitter. Read the same optional way as MV scale -- a game that does not
+    // supply it just gets zero, and the jitter-cancelled MV path below then contributes nothing.
+    const bool haveJitterX =
+        params->Get(NVSDK_NGX_Parameter_Jitter_Offset_X, &frame.JitterX) == NVSDK_NGX_Result_Success;
+    const bool haveJitterY =
+        params->Get(NVSDK_NGX_Parameter_Jitter_Offset_Y, &frame.JitterY) == NVSDK_NGX_Result_Success;
+
+    if (!haveJitterX)
+        frame.JitterX = 0.0f;
+    if (!haveJitterY)
+        frame.JitterY = 0.0f;
+
+    // Said once. A game that never populates the NGX jitter params leaves the jitter-cancel path with
+    // nothing to do however it is tuned -- worth knowing before the in-game A/B reads "no effect" and
+    // concludes the idea failed, when the input was simply absent.
+    if (beforeUpscale && cfg.DlssNrJitterCancel.value_or_default() && !haveJitterX && !haveJitterY)
+    {
+        static bool saidNoJitter = false;
+        if (!saidNoJitter)
+        {
+            saidNoJitter = true;
+            LOG_WARN("DLSS-NR jitter-cancel: the game supplies no Jitter_Offset params on this "
+                     "evaluate -- the pass will run but shift the motion vectors by zero.");
+        }
+    }
 
     // What the game says about its own exposure. Logged, used for nothing yet.
     //
@@ -3564,6 +3715,16 @@ void Shutdown()
         g_nr.colorSmall->Release();
         g_nr.colorSmall = nullptr;
     }
+
+    if (g_nr.jitterMv != nullptr)
+    {
+        g_nr.jitterMv->Release();
+        g_nr.jitterMv = nullptr;
+    }
+    g_nr.havePrevJitter = false;
+    g_nr.prevJitterX = 0.0f;
+    g_nr.prevJitterY = 0.0f;
+    g_nr.jitterMvState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 
     if (g_nr.superUp != nullptr)
     {

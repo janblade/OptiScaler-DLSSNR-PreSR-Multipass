@@ -399,6 +399,15 @@ class Config
     // untouched whatever this is set to. 1.0 is full resolution and behaves exactly as before.
     CustomOptional<float> DlssNrWorkingScale { 1.0f };
 
+    // Experimental, pre-SR only: hand the NR model a copy of the motion vectors with this frame's
+    // sub-pixel jitter shift (thisJitter - lastJitter) folded in, so its temporal history
+    // reprojection aligns despite the model having no jitter parameter of its own. Off = the game's
+    // motion vectors reach the model untouched (current behaviour, byte-for-byte). The scale
+    // multiplies the applied delta and accepts negatives -- the sign and units of jitter vs the
+    // game's MV encoding vary by engine, so it is dialled in-game rather than hardcoded.
+    CustomOptional<bool> DlssNrJitterCancel { false };
+    CustomOptional<float> DlssNrJitterCancelScale { 1.0f };
+
     // Filter used for NR supersampling (working scale > 1): the model runs above native, and this is
     // the downscaler that averages its answer back to native. Independent of OutputScalingDownscaler
     // so NR and Output Scaling can run different filters at once. Lanczos3 is the sharp default.

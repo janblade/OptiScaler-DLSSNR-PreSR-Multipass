@@ -96,6 +96,7 @@ void HandleBlockingFocusLossLocked()
     DrainDirectInputBufferedDataLocked();
     DrainXInputKeystrokesLocked();
     ResetButtonBlockedStateLocked();
+    ReleaseHeldOverlayMouseButtonsLocked();
     ResetRawInputBlockStateLocked();
     ResetRawInputSanitizeCacheLocked();
 }
@@ -730,32 +731,49 @@ void PollInputFallbackLocked()
     RefreshInputAcquisitionModeLocked();
 }
 
+void UpdateBlockingPolicyLocked()
+{
+    // ReShade-style conditional blocking. While the overlay is open, only withhold the mouse /
+    // keyboard from the game on frames where ImGui actually wants them -- cursor over a menu
+    // window, or a focused text field. This keeps the game controllable with the menu open and
+    // lets game bindings (and Alt+F4) through when the cursor is not in the menu. Cursor
+    // virtualization and gamepad blocking stay tied to plain visibility (owned by
+    // ApplyMenuVisibilityChangeLocked), so the OS cursor stays put and the car does not drive
+    // itself during menu navigation.
+    //
+    // Must run from EndFrame, after FeedImGui + ImGui::NewFrame(), so the Want* flags carry last
+    // frame's hover/active state (one-frame lag, as in ReShade). Deliberately NOT folded into
+    // ApplyMenuVisibilityChangeLocked -- that also runs from SetMenuVisible and Shutdown at
+    // arbitrary points in the frame, where the Want* flags would be stale.
+    if (!_state.MenuVisible || ImGui::GetCurrentContext() == nullptr)
+        return;
+
+    const ImGuiIO& io = ImGui::GetIO();
+    _state.BlockMouse = io.WantCaptureMouse;
+    _state.BlockKeyboard = io.WantCaptureKeyboard || io.WantTextInput;
+}
+
 void ApplyMenuVisibilityChangeLocked(bool visible)
 {
     const bool wasMenuVisible = _state.MenuVisible;
 
     _state.MenuVisible = visible;
 
-    // ReShade-style conditional blocking. While the overlay is open, only withhold the mouse /
-    // keyboard from the game on frames where ImGui actually wants them -- cursor over a menu
-    // window, or a focused text field. This keeps the game controllable with the menu open and
-    // lets game bindings (and Alt+F4) through when the cursor is not in the menu. Cursor
-    // virtualization and gamepad blocking stay tied to plain visibility, so the OS cursor stays
-    // put and the car does not drive itself during menu navigation. This runs from EndFrame,
-    // after FeedImGui + ImGui::NewFrame(), so the Want* flags carry last frame's hover/active
-    // state (one-frame lag, as in ReShade).
-    bool wantMouse = visible;
-    bool wantKeyboard = visible;
-
-    if (visible && ImGui::GetCurrentContext() != nullptr)
+    // Mouse/keyboard blocking is refined every frame by UpdateBlockingPolicyLocked (the
+    // ReShade-style conditional block, EndFrame only). Here we only seed those flags on the
+    // visibility transition -- assume ImGui wants the devices the instant the menu opens, until
+    // the next policy tick corrects it -- and own the flags that follow plain visibility.
+    if (!wasMenuVisible && visible)
     {
-        const ImGuiIO& io = ImGui::GetIO();
-        wantMouse = io.WantCaptureMouse;
-        wantKeyboard = io.WantCaptureKeyboard || io.WantTextInput;
+        _state.BlockMouse = true;
+        _state.BlockKeyboard = true;
+    }
+    else if (wasMenuVisible && !visible)
+    {
+        _state.BlockMouse = false;
+        _state.BlockKeyboard = false;
     }
 
-    _state.BlockMouse = wantMouse;
-    _state.BlockKeyboard = wantKeyboard;
     _state.BlockCursor = visible;
     _state.BlockGamepad = visible;
 
@@ -791,6 +809,7 @@ void ApplyMenuVisibilityChangeLocked(bool visible)
         // Drop synthetic down/up suppression that only existed while the
         // overlay owned input. New raw handles will rebuild sanitize decisions.
         ResetButtonBlockedStateLocked();
+        ReleaseHeldOverlayMouseButtonsLocked();
         ResetRawInputBlockStateLocked();
         ResetRawInputSanitizeCacheLocked();
     }
@@ -1353,6 +1372,10 @@ void EndFrame(bool menuVisible)
 {
     std::unique_lock lock(_state.Mutex);
 
+    // Refine the conditional mouse/keyboard block from this frame's ImGui Want* state
+    // before the visibility handler seeds/holds the flags. EndFrame is the only place the
+    // Want* flags are valid (post-FeedImGui + NewFrame).
+    UpdateBlockingPolicyLocked();
     ApplyMenuVisibilityChangeLocked(menuVisible);
     LogInputHealthSnapshotLocked("EndFrame");
     ClearTransientState();

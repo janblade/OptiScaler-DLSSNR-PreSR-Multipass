@@ -81,6 +81,14 @@ struct DirectInputDeviceSlot
     void* Device = nullptr;
     DirectInputDeviceKind Kind = DirectInputDeviceKind::Other;
     DWORD LastObjectDataSize = 0;
+
+    // Populated by the SetDataFormat hook. MouseFormatChecked stays false until the game calls
+    // SetDataFormat on this device; while unchecked the overlay mouse feed falls back to
+    // permissive (assume a standard layout, matching pre-hardening behaviour). Once checked,
+    // the feed only reads buttons from the caller buffer when MouseFormatUsable is true (the
+    // format places rgbButtons at the DIMOUSESTATE offset).
+    bool MouseFormatChecked = false;
+    bool MouseFormatUsable = false;
 };
 
 enum class HidDeviceKind
@@ -416,6 +424,7 @@ using DirectInputCreateEx_t = HRESULT(WINAPI*)(HINSTANCE, DWORD, REFIID, LPVOID*
 using DirectInputCreateDevice_t = HRESULT(WINAPI*)(void*, REFGUID, void**, LPUNKNOWN);
 using DirectInputGetDeviceState_t = HRESULT(WINAPI*)(void*, DWORD, LPVOID);
 using DirectInputGetDeviceData_t = HRESULT(WINAPI*)(void*, DWORD, LPDIDEVICEOBJECTDATA, LPDWORD, DWORD);
+using DirectInputSetDataFormat_t = HRESULT(WINAPI*)(void*, LPCDIDATAFORMAT);
 using DirectInputDeviceRelease_t = ULONG(WINAPI*)(void*);
 
 extern InputState _state;
@@ -513,6 +522,7 @@ HRESULT WINAPI hkDirectInputCreateDeviceW(void* directInput, REFGUID guid, void*
 HRESULT WINAPI hkDirectInputGetDeviceState(void* device, DWORD dataSize, LPVOID data);
 HRESULT WINAPI hkDirectInputGetDeviceData(void* device, DWORD objectDataSize, LPDIDEVICEOBJECTDATA data, LPDWORD inOut,
                                           DWORD flags);
+HRESULT WINAPI hkDirectInputSetDataFormat(void* device, LPCDIDATAFORMAT format);
 ULONG WINAPI hkDirectInputDeviceRelease(void* device);
 
 // Target/input window
@@ -532,6 +542,7 @@ void UpdateFocusState(HWND targetHwnd);
 LRESULT CALLBACK OptiInputWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 // Frame/menu policy
+void UpdateBlockingPolicyLocked();
 void ApplyMenuVisibilityChangeLocked(bool visible);
 void ResetRawInputBlockStateLocked();
 void ResetRawInputSanitizeCacheLocked();
@@ -573,6 +584,7 @@ BOOL RealGetCursorPosSafe(LPPOINT point);
 void SetMouseDownFromRawState(int button, DWORD messageTime, bool blocked);
 void SetMouseUpFromRawState(int button, DWORD messageTime);
 void ResetButtonBlockedStateLocked();
+void ReleaseHeldOverlayMouseButtonsLocked();
 void SetKeyUpStateOnly(int vk, DWORD messageTime);
 void SetMouseUpStateOnly(int button, DWORD messageTime);
 

@@ -65,7 +65,7 @@ static bool inputFG = false;
 static bool inputFps = false;
 static bool inputFpsCycle = false;
 static uint64_t lastInputTick = 0;
-static uint64_t lastShortcutFireTick = 0;
+static uint64_t lastShortcutFireTick[256] = {};
 constexpr uint64_t debounceThreshold = 1000;
 
 static bool hasGamepad = false;
@@ -267,10 +267,22 @@ void MenuCommon::UpdateManualInput(HWND targetHwnd)
     // same physical tap is observed by more than one acquisition path (WndProc hook, message-queue
     // hook, raw-input / GetAsyncKeyState poll) on different frames, producing a second spurious
     // release edge that makes the menu "close then immediately re-open". Require a fresh press edge
-    // between fires, plus a short cooldown, so one tap can only toggle once. The cooldown tick is
-    // shared across all shortcuts, so any fire suppresses the others for shortcutCooldown ms.
+    // between fires, plus a short cooldown, so one tap can only toggle once.
+    //
+    // The cooldown is per-key (lastShortcutFireTick[vk]): it suppresses only repeated fires of the
+    // *same* shortcut, so two different shortcuts tapped in quick succession both register. This is
+    // a distinct mechanism from the 1000 ms `debounceThreshold` / `lastInputTick` gate below,
+    // which is the key-capture / rebind guard.
     static bool shortcutArmed[256] = {};
     constexpr uint64_t shortcutCooldown = 250;
+
+    // Disarm everything while unfocused: a press edge seen before focus loss must not stay armed
+    // to fire on a stale release once focus returns.
+    if (!OptiInput::IsFocused())
+    {
+        for (bool& armed : shortcutArmed)
+            armed = false;
+    }
 
     auto CheckShortcut = [&](int vk, bool& inputFlag, const char* logMessage)
     {
@@ -286,13 +298,13 @@ void MenuCommon::UpdateManualInput(HWND targetHwnd)
         if (!shortcutArmed[vk])
             return;
 
-        if (currentTick - lastShortcutFireTick < shortcutCooldown)
+        if (currentTick - lastShortcutFireTick[vk] < shortcutCooldown)
             return;
 
         if (OptiInput::IsKeyReleased(vk))
         {
             shortcutArmed[vk] = false;
-            lastShortcutFireTick = currentTick;
+            lastShortcutFireTick[vk] = currentTick;
             lastKey = vk;
             // receivingWmInputs = false;
             inputFlag = true;

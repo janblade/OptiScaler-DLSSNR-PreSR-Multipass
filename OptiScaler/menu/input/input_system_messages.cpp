@@ -56,6 +56,17 @@ void ResetButtonBlockedStateLocked()
     SyncAggregateModifierStateLocked();
 }
 
+void ReleaseHeldOverlayMouseButtonsLocked()
+{
+    // While the overlay is open it owns mouse-button semantics. On menu close / focus loss,
+    // a button still marked Down was last driven by our DirectInput / raw feed -- a pure
+    // DirectInput game has no game-facing WM_*BUTTONUP to clear it, so without this the stale
+    // Down feeds a phantom click into ImGui on the next open. SetMouseUpStateOnly leaves one
+    // clean Released edge and does not touch BlockedDown.
+    for (int button = 0; button < static_cast<int>(_state.MouseButtons.size()); button++)
+        SetMouseUpStateOnly(button, GetTickCount());
+}
+
 void SetMouseDownFromRawState(int button, DWORD messageTime, bool blocked)
 {
     if (button < 0 || button >= static_cast<int>(_state.MouseButtons.size()))

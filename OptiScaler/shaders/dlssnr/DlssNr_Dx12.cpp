@@ -1,8 +1,11 @@
 #include "pch.h"
+#include <dlssnr/PassProfiles.h>
 
 #include <set>
 
 #include <dlssnr/DlssNr.h>
+#include <dlssnr/ResidualFg.h>
+#include <DirectXMath.h>
 
 
 #include <dlssnr/DlssNr_Capture.h>
@@ -165,18 +168,14 @@ using PFN_NrProbeFloat = void(__cdecl*) (void*, const char*, float, int);
 
 // One per back buffer, so an allocator is never reset while its frame is still in flight.
 
-struct NrPassTuning
-{
-    float intensity = 1.0f;
-    float structure = 1.0f;
-    float tone = 0.0f;
-    float skin = -1.0f;
-    bool autoMask = true;
-    bool operator==(const NrPassTuning&) const = default;
-};
+using DlssNr::Profiles::NrPassTuning;
+using DlssNr::Profiles::PassPreset;
+using DlssNr::Profiles::PassStyle;
+using DlssNr::Profiles::PassTuning;
 
 struct NrState
 {
+    unsigned long long successfulDispatches = 0;
     HMODULE forwarder = nullptr;
     PFN_NrCreate create = nullptr;
     PFN_NrEvaluate evaluate = nullptr;
@@ -1341,74 +1340,6 @@ void SetExtras(const Config& cfg, ID3D12Resource* ui, ID3D12Resource* uiAlpha,
                    uiWidth, uiHeight, bbWidth, bbHeight);
 }
 
-unsigned int PassPreset(const Config& cfg, unsigned int pass)
-{
-    const unsigned int base = std::min(cfg.DlssNrPreset.value_or_default(), 3u);
-
-    if (pass == 1 && cfg.DlssNrPass2Preset.has_value())
-        return std::min(cfg.DlssNrPass2Preset.value(), 3u);
-
-    if (pass == 2 && cfg.DlssNrPass3Preset.has_value())
-        return std::min(cfg.DlssNrPass3Preset.value(), 3u);
-
-    return base;
-}
-
-unsigned int PassStyle(const Config& cfg, unsigned int pass)
-{
-    const unsigned int base = std::min(cfg.DlssNrStyle.value_or_default(), 2u);
-
-    if (pass == 1 && cfg.DlssNrPass2Style.has_value())
-        return std::min(cfg.DlssNrPass2Style.value(), 2u);
-
-    if (pass == 2 && cfg.DlssNrPass3Style.has_value())
-        return std::min(cfg.DlssNrPass3Style.value(), 2u);
-
-    return base;
-}
-
-NrPassTuning PassTuning(const Config& cfg, unsigned int pass)
-{
-    NrPassTuning result { cfg.DlssNrIntensity.value_or_default(),
-                          cfg.DlssNrLocalStructure.value_or_default(),
-                          pass == 0 ? cfg.DlssNrLocalTone.value_or_default() : 0.0f,
-                          cfg.DlssNrSkinStructure.value_or_default(),
-                          cfg.DlssNrAutoMask.value_or_default() };
-    if (pass == 1)
-    {
-        if (cfg.DlssNrPass2Intensity.has_value())
-            result.intensity = cfg.DlssNrPass2Intensity.value();
-        if (cfg.DlssNrPass2LocalStructure.has_value())
-            result.structure = cfg.DlssNrPass2LocalStructure.value();
-        if (cfg.DlssNrPass2LocalTone.has_value())
-            result.tone = cfg.DlssNrPass2LocalTone.value();
-        if (cfg.DlssNrPass2SkinStructure.has_value())
-            result.skin = cfg.DlssNrPass2SkinStructure.value();
-        if (cfg.DlssNrPass2AutoMask.has_value())
-            result.autoMask = cfg.DlssNrPass2AutoMask.value();
-    }
-    if (pass == 2)
-    {
-        if (cfg.DlssNrPass3Intensity.has_value())
-            result.intensity = cfg.DlssNrPass3Intensity.value();
-        if (cfg.DlssNrPass3LocalStructure.has_value())
-            result.structure = cfg.DlssNrPass3LocalStructure.value();
-        if (cfg.DlssNrPass3LocalTone.has_value())
-            result.tone = cfg.DlssNrPass3LocalTone.value();
-        if (cfg.DlssNrPass3SkinStructure.has_value())
-            result.skin = cfg.DlssNrPass3SkinStructure.value();
-        if (cfg.DlssNrPass3AutoMask.has_value())
-            result.autoMask = cfg.DlssNrPass3AutoMask.value();
-    }
-    const auto bounded = [](float value, float fallback, float minimum) {
-        return std::isfinite(value) ? std::clamp(value, minimum, 2.0f) : fallback;
-    };
-    result.intensity = bounded(result.intensity, 1.0f, 0.0f);
-    result.structure = bounded(result.structure, 1.0f, 0.0f);
-    result.tone = bounded(result.tone, pass == 0 ? 1.0f : 0.0f, 0.0f);
-    result.skin = bounded(result.skin, -1.0f, -1.0f);
-    return result;
-}
 
 bool TuningMatchesFeature(const Config& cfg, unsigned int requestedPasses)
 {
@@ -1443,7 +1374,7 @@ void RecordBuiltPrimaryTuning(const Config& cfg)
 // Guards the module's state. Every caller is now on the game's render thread, so this is no longer
 // holding two threads apart -- but the D3D11-on-D3D12 bridge enters from its own call site, and the
 // cost is a CPU-side lock on a path that already records command lists.
-std::mutex g_nrMutex;
+std::recursive_mutex g_nrMutex;
 
 // Runs the pass inside the same state envelope every other OptiScaler compute pass runs in.
 //
@@ -1659,7 +1590,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                            ID3D12Resource* depth, ID3D12Resource* motion, ID3D12Resource* output,
                            const DlssNrFrameInfo& frame, ID3D12CommandQueue* timingQueue)
 {
-    std::lock_guard<std::mutex> nrLock(g_nrMutex);
+    std::lock_guard<std::recursive_mutex> nrLock(g_nrMutex);
     const Config& cfg = *Config::Instance();
 
     if (g_nr.failed || cmdList == nullptr || colour == nullptr || depth == nullptr ||
@@ -1677,7 +1608,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // the game's state, or returns with those bindings still active.
     const bool restoreRequired = cfg.RestoreComputeSignature.value_or_default() ||
                                  cfg.RestoreGraphicSignature.value_or_default();
-    if (restoreRequired && !D3D12Hooks::CanRestoreRootSignature(cmdList))
+    if (restoreRequired && !frame.IndependentCommands && !D3D12Hooks::CanRestoreRootSignature(cmdList))
     {
         ReportSkipOnce("the upscaler could not restore state this frame");
         return;
@@ -1689,7 +1620,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // it to us; a pre-SR resource without UAV support is written through a scratch-and-copy fallback.
     const D3D12_RESOURCE_STATES outputArrival =
         frame.BeforeUpscale
-            ? (Config::Instance()->ColorResourceBarrier.has_value()
+            ? (!frame.PrivateColorCopy && Config::Instance()->ColorResourceBarrier.has_value()
                    ? (D3D12_RESOURCE_STATES) Config::Instance()->ColorResourceBarrier.value()
                    : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
             : Config::Instance()->OutputResourceBarrier.has_value()
@@ -1860,7 +1791,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     const unsigned int configuredPasses =
         std::clamp(frame.AfterRayReconstruction ? cfg.DlssNrRRPasses.value_or_default()
                                                : cfg.DlssNrPasses.value_or_default(),
-                   1u, DlssNr::MaxPassCount);
+                   1u, cfg.DlssNrUnlockPasses.value_or_default() ? DlssNr::MaxPassCount
+                                                               : DlssNr::DefaultMaxPassCount);
     const bool proxyBackend = cfg.DlssNrUseProxy.value_or_default();
     const unsigned int requestedPasses = proxyBackend ? 1u : configuredPasses;
 
@@ -2921,6 +2853,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // Failed evaluations leave the game's original image intact. A successful copy-back writes
     // only the active rectangle and restores both resources before DLSS consumes the image.
     FinishColor(result == NVSDK_NGX_Result_Success);
+    if (result == NVSDK_NGX_Result_Success)
+        ++g_nr.successfulDispatches;
 
     if (g_gpuTime != nullptr)
     {
@@ -2986,9 +2920,12 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
 namespace DlssNr
 {
+#include "DlssNr_DeferredSr.inl"
+#include "DlssNr_AsyncLatest.inl"
+
 void RetryAfterFailure()
 {
-    std::lock_guard<std::mutex> nrLock(g_nrMutex);
+    std::lock_guard<std::recursive_mutex> nrLock(g_nrMutex);
 
     g_nr.failed = false;
     g_nr.reason = "";
@@ -2999,7 +2936,7 @@ PassCapStatus LastPassCapStatus()
 {
     // Every other entry point in this file takes the lock before touching g_nr; this one was
     // reaching passFeature/passCreateFailed without it, racing Dispatch's per-frame writes.
-    std::lock_guard<std::mutex> nrLock(g_nrMutex);
+    std::lock_guard<std::recursive_mutex> nrLock(g_nrMutex);
 
     PassCapStatus status;
     status.configuredPasses = g_nr.lastConfiguredPasses;
@@ -3032,7 +2969,43 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
                       bool beforeUpscale, ID3D12CommandQueue* timingQueue, bool forcePost,
                       unsigned long long submissionEpoch)
 {
+    std::lock_guard<std::recursive_mutex> nrLock(g_nrMutex);
     const Config& cfg = *Config::Instance();
+
+    // The deferred route owns both seams. Never fall through to in-place NR if it is waiting,
+    // unsupported, or failed: that would contaminate the clean SR input used by this experiment.
+    if (cfg.DlssNrEnabled.value_or_default() && cfg.DlssNrDeferredDlss.value_or_default() &&
+        cfg.DlssNrAsyncLatest.value_or_default() && !forcePost)
+    {
+        if (cmdList && params)
+        {
+            const auto epoch = timingQueue ? submissionEpoch : State::Instance().frameCount;
+            if (beforeUpscale) AsyncLatest::Before(cmdList, params, epoch, timingQueue);
+            else AsyncLatest::After(cmdList, params, epoch);
+        }
+        return;
+    }
+    if (AsyncLatest::current || !AsyncLatest::retired.empty())
+    {
+        AsyncLatest::Cancel();
+        g_nr.reset = true;
+        // Changing mode never introduces a raster-queue wait on an old background job.
+        if (AsyncLatest::Draining()) return;
+    }
+    if (!cfg.DlssNrEnabled.value_or_default() || !cfg.DlssNrDeferredDlss.value_or_default() || forcePost)
+        DeferredSr::Cancel();
+    else
+    {
+        if (cmdList != nullptr && params != nullptr)
+        {
+            const auto epoch = timingQueue != nullptr ? submissionEpoch : State::Instance().frameCount;
+            if (beforeUpscale)
+                DeferredSr::Before(cmdList, params, epoch, timingQueue);
+            else
+                DeferredSr::After(cmdList, params, epoch);
+        }
+        return;
+    }
 
     if (!cfg.DlssNrEnabled.value_or_default())
     {
@@ -3349,7 +3322,7 @@ void ProbeD3D11(void* d3d11Device)
 
     // Every other entry point in this file takes the lock before touching g_nr; this one was reaching
     // EnsureForwarder without it.
-    std::lock_guard<std::mutex> nrLock(g_nrMutex);
+    std::lock_guard<std::recursive_mutex> nrLock(g_nrMutex);
 
     done = true;
 
@@ -3461,7 +3434,7 @@ void ProbeD3D11(void* d3d11Device)
 
 CalibrationReading Calibration()
 {
-    std::lock_guard<std::mutex> nrLock(g_nrMutex);
+    std::lock_guard<std::recursive_mutex> nrLock(g_nrMutex);
 
     CalibrationReading r {};
     r.suggestion = g_nr.calibSuggestion;
@@ -3474,13 +3447,13 @@ CalibrationReading Calibration()
 
 bool IsRunning()
 {
-    std::lock_guard<std::mutex> nrLock(g_nrMutex);
+    std::lock_guard<std::recursive_mutex> nrLock(g_nrMutex);
     return g_nr.feature != nullptr && !g_nr.failed;
 }
 
 const char* FailureReason()
 {
-    std::lock_guard<std::mutex> nrLock(g_nrMutex);
+    std::lock_guard<std::recursive_mutex> nrLock(g_nrMutex);
     return g_nr.failed ? g_nr.reason : "";
 }
 
@@ -3488,7 +3461,7 @@ const char* FailureReason()
 // can see whether this game supplies one at all without having to read a log.
 ExposureStatus GameExposureStatus()
 {
-    std::lock_guard<std::mutex> nrLock(g_nrMutex);
+    std::lock_guard<std::recursive_mutex> nrLock(g_nrMutex);
 
     ExposureStatus s {};
     s.seenFrames = g_nr.exposureFrames;
@@ -3513,7 +3486,18 @@ bool CaptureInProgress() { return g_capture.isActive(); }
 
 void Shutdown()
 {
-    std::lock_guard<std::mutex> nrLock(g_nrMutex);
+    std::lock_guard<std::recursive_mutex> nrLock(g_nrMutex);
+    if (!AsyncLatest::Shutdown())
+    {
+        DeferredSr::Shutdown();
+        // Unsubmitted/in-flight work may still reference NR state. Retain it for
+        // process teardown rather than block shutdown or release GPU-live objects.
+        (void)new NrState(std::move(g_nr));
+        (void)g_compose.release(); (void)g_gpuTime.release(); (void)g_ngxTime.release();
+        g_nrRetired.clear();
+        return;
+    }
+    DeferredSr::Shutdown();
 
     for (auto& r : g_nrRetired)
     {

@@ -238,6 +238,12 @@ bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX
 
     // Upscaler will write to the first active shader, or just output
     InParameters->Set(NVSDK_NGX_Parameter_Output, currentTarget);
+    struct RestoreOutput
+    {
+        NVSDK_NGX_Parameter* params;
+        ID3D12Resource* output;
+        ~RestoreOutput() { params->Set(NVSDK_NGX_Parameter_Output, output); }
+    } restoreOutput { InParameters, paramOutput };
 
     UpscalerTime->Start(InCommandList);
 

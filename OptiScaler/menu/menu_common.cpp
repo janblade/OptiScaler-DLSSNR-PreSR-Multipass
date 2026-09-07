@@ -1,5 +1,6 @@
 ﻿#include "pch.h"
 #include "menu_common.h"
+#include <framegen/dlssg/MfgUnlock.h>
 #include <dlssnr/DlssNr_ExposureScan.h>
 
 #include <algorithm>
@@ -3259,6 +3260,21 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
     auto& primaryGpu = *ctx.primaryGpu;
 
     /// FG INPUTS
+    bool adaUnlock = config->FGDLSSGAdaMfgUnlock.value_or_default();
+    if (ImGui::Checkbox("Built-in RTX 40 MFG unlock (experimental; restart)", &adaUnlock))
+        config->FGDLSSGAdaMfgUnlock = adaUnlock;
+    ShowHelpMarker("Optional y4my4my4m Ada unlock. Save Settings and restart to enable or remove it."
+                   "\nRequires a supported DLSSG runtime and Streamline 2.7.1+ for multiplier overrides."
+                   "\nDo not combine with another MFG unlocker. Does not add FG to an unsupported game."
+                   "\nNot validated on RTX 40 hardware here; RTX 20/30/50 are left unchanged.");
+    if (adaUnlock)
+    {
+        const auto& status = MfgUnlock::LastStatus();
+        ImGui::TextWrapped("DLSSG %s: capability %s, validation %s, retargeted kernel groups %u",
+                           status.SnippetVersion.empty() ? "not patched" : status.SnippetVersion.c_str(),
+                           status.AdvertiseMatched ? "matched" : "not matched",
+                           status.ValidateMatched ? "matched" : "not matched", status.KernelsRewritten);
+    }
 
     static std::vector<MenuOption<FGInput>> inputOptions;
     inputOptions.clear();

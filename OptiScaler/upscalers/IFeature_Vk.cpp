@@ -78,6 +78,15 @@ bool IFeature_Vk::Evaluate(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Parameter* InP
     InParameters->Get(NVSDK_NGX_Parameter_MotionVectors, (void**) &paramMotion);
     InParameters->Get(NVSDK_NGX_Parameter_Depth, (void**) &paramDepth);
 
+    // The pipeline borrows the game's wrapper. Restore it on failure as well as success
+    // (y4my4my4m's Vulkan split exposed this pre-existing dangling-output bug).
+    struct RestoreOutput
+    {
+        NVSDK_NGX_Resource_VK* output;
+        NVSDK_NGX_Resource_VK saved;
+        ~RestoreOutput() { if (output) *output = saved; }
+    } restoreOutput { paramOutput, paramOutput ? *paramOutput : NVSDK_NGX_Resource_VK {} };
+
     // Save the original output so we can restore it later
     VkImageInfo originalOutput {};
     if (paramOutput)
@@ -163,7 +172,7 @@ bool IFeature_Vk::Evaluate(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Parameter* InP
               // Dispatch
               [&](const VkImageInfo& input, const VkImageInfo& output) -> bool
               {
-                  if (!RCAS->CanRender() || !paramMotion || !paramOutput)
+                  if (!RCAS->CanRender() || !paramMotion || !paramDepth || !paramOutput)
                       return true;
 
                   RCAS->SetImageLayout(InCmdBuffer, input.Image, VK_IMAGE_LAYOUT_GENERAL,

@@ -127,8 +127,13 @@ void RenderMenu(Config* config, float menuResScale)
                    "\nUndocumented and driven directly, so none of this is officially supported.");
 
         bool beforeSr = config->DlssNrRunBeforeSr.value_or_default();
+        const bool deferredActive = config->DlssNrDeferredDlss.value_or_default();
+        if (deferredActive)
+            ImGui::BeginDisabled();
         if (ImGui::Checkbox("Apply before Super Resolution", &beforeSr))
             config->DlssNrRunBeforeSr = beforeSr;
+        if (deferredActive)
+            ImGui::EndDisabled();
 
         HelpMarker("Runs Neural Rendering on the render-resolution colour input immediately before"
                    "\nSuper Resolution, so SR temporally accumulates and upscales the enhanced frame."
@@ -137,6 +142,52 @@ void RenderMenu(Config* config, float menuResScale)
                    "\ninputs use their active render size; offset or invalid inputs fall back post-SR."
                    "\n\nThis placement control currently applies to the Direct3D 12 path and its"
                    "\nDirect3D 11/Vulkan bridges; native Vulkan keeps the post-upscale path.");
+
+        bool deferredDlss = config->DlssNrDeferredDlss.value_or_default();
+        if (ImGui::Checkbox("Generate before SR, apply after SR (DLSS)", &deferredDlss))
+            config->DlssNrDeferredDlss = deferredDlss;
+        HelpMarker("Experimental: the game raster stays clean. NR runs on a render-size copy, then"
+                   "\na private DLSS SR feature upscales its signed contribution for application after SR."
+                   "\nThe contribution is encoded around neutral grey; DLSS may distort it or flicker."
+                   "\nRequires an NVIDIA DLSS SR runtime. No spatial/FSR fallback is used on failure."
+                   "\nOverrides the pre-SR checkbox, not RR. Native Vulkan is not supported."
+                   "\nNR's displayed GPU time excludes the additional DLSS/composition cost."
+                   "\nDisable frame hold, debug views and comparison modes for this experiment.");
+        if (deferredDlss)
+            ImGui::TextWrapped("Residual DLSS: %s", DlssNr::DeferredDlssStatus().c_str());
+        ImGui::BeginDisabled(!deferredDlss);
+        bool asyncLatest = config->DlssNrAsyncLatest.value_or_default();
+        if (ImGui::Checkbox("Async NR: use latest completed result (experimental)", &asyncLatest))
+            config->DlssNrAsyncLatest = asyncLatest;
+        HelpMarker("Runs NR and private residual DLSS on a separate GPU queue. The CURRENT raster"
+                   "\nuses the newest completed result, even if it is several frames old."
+                   "\nNo raster delay, residual interpolation or GPU wait for NR completion."
+                   "\nBusy requests are dropped; cuts/resizes discard stale results."
+                   "\nRegular FG keeps the current raster and its current guides."
+                   "\nGPU contention, snapshot copies, CPU API submission and model rebuilds still"
+                   "\nhave a cost: this is not a guarantee of unaffected FPS or frame pacing."
+                   "\nOverrides the two-frame residual FG/hold controls below. Histories reset per NR job.");
+        ImGui::BeginDisabled(asyncLatest);
+        bool residualFg = config->DlssNrResidualFg.value_or_default();
+        if (ImGui::Checkbox("NR every second frame (NVIDIA FG, experimental)", &residualFg))
+            config->DlssNrResidualFg = residualFg;
+        HelpMarker("Uses NVIDIA interpolation on the DLSS-upscaled residual, not full game frames."
+                   "\nBuffers the matching clean SR image and residual by one rendered frame."
+                   "\nWARNING: later game effects may still use newer-frame data; motion blur,"
+                   "\nlighting effects and UI may not align. Adds latency and GPU/VRAM cost."
+                   "\nRequires a working NVIDIA FG runtime, low-resolution non-jittered motion vectors."
+                   "\nWith no motion texture: sample-and-hold applies each residual to two CURRENT"
+                   "\nframes, with no residual FG or raster delay. Fresh private NR/SR samples use"
+                   "\nzero guides with history reset; the game's own upscaler still needs valid inputs."
+                   "\nCuts and failed evaluations reset history; rejected FG output retains clean colour.");
+        bool approxCamera = config->DlssNrResidualFgApproxCamera.value_or_default();
+        if (ImGui::Checkbox("Allow approximate FG camera guides (experimental)", &approxCamera))
+            config->DlssNrResidualFgApproxCamera = approxCamera;
+        HelpMarker("Explicit fallback for games/bridges without full camera transforms."
+                   "\nUses real motion vectors, but approximate projection and camera transforms."
+                   "\nCamera movement and disocclusions may produce artifacts. Not reference-quality guides.");
+        ImGui::EndDisabled();
+        ImGui::EndDisabled();
 
         bool afterRR = config->DlssNrApplyAfterRR.value_or_default();
         if (ImGui::Checkbox("Apply after Ray Reconstruction (DX12)", &afterRR))
@@ -147,7 +198,8 @@ void RenderMenu(Config* config, float menuResScale)
                    "\nIndependent controls below prevent inheriting the cost of the SR configuration."
                    "\nNative Vulkan does not use these DX12 controls.");
         int rrPasses = (int) config->DlssNrRRPasses.value_or_default();
-        if (ImGui::SliderInt("NR passes after RR", &rrPasses, 1, (int) MaxPassCount))
+        if (ImGui::SliderInt("NR passes after RR", &rrPasses, 1,
+                             (int) (config->DlssNrUnlockPasses.value_or_default() ? MaxPassCount : DefaultMaxPassCount)))
             config->DlssNrRRPasses = (unsigned int) rrPasses;
         float rrScale = config->DlssNrRRWorkingScale.value_or_default();
         if (ImGui::SliderFloat("NR model scale after RR", &rrScale, 0.25f, 2.0f, "%.2fx"))
@@ -184,15 +236,29 @@ void RenderMenu(Config* config, float menuResScale)
         }
         else if (!DlssNr::IsRunning() && !vulkan)
         {
-            const char* reason = DlssNr::FailureReason();
+            const auto feature = State::Instance().currentFeature;
+            const bool nativeVk = feature && feature->Api() == API::Vulkan && !feature->IsWithDx12();
+            const char* reason = nativeVk ? DlssNr::FailureReasonVk() : DlssNr::FailureReason();
 
             if (reason[0] != 0)
             {
                 ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f), "Off for this session: %s.", reason);
                 ImGui::SameLine();
 
-                if (ImGui::SmallButton("Retry"))
+                if (nativeVk)
+                    ImGui::TextUnformatted("Restart the game to retry native Vulkan NR.");
+                else if (ImGui::SmallButton("Retry"))
                     DlssNr::RetryAfterFailure();
+            }
+            else if (feature && feature->Api() == API::DX11 && !feature->IsWithDx12())
+            {
+                ImGui::TextWrapped("NR needs the D3D12 bridge on D3D11. Choose an upscaler marked w/Dx12 and restart.");
+            }
+            else if (nativeVk && config->DlssNrDeferredDlss.value_or_default())
+            {
+                ImGui::TextWrapped("Deferred DLSS residual composition and async NR currently require D3D12 or its bridge."
+                                   " Disable Generate before SR, apply after SR (DLSS) to use native Vulkan NR."
+                                   " Apply before Super Resolution is supported here.");
             }
             else if (enabled)
                 ImGui::TextUnformatted("Waiting for the upscaler to run.");
@@ -236,9 +302,18 @@ void RenderMenu(Config* config, float menuResScale)
 
         ImGui::SeparatorText("Cost");
 
+        bool unlockPasses = config->DlssNrUnlockPasses.value_or_default();
+        if (ImGui::Checkbox("Lift model pass limit (up to 30; expensive)", &unlockPasses))
+            config->DlssNrUnlockPasses = unlockPasses;
+        HelpMarker("Optional extended pass range, inspired by y4my4my4m's fork."
+                   "\nThe normal ceiling remains 3. More passes cost GPU time and VRAM and can amplify artifacts."
+                   "\nHigh counts can exhaust VRAM or trigger a driver timeout. Raise gradually."
+                   "\nNo extra model features are allocated unless those passes are active.");
+        const unsigned int passLimit = unlockPasses ? MaxPassCount : DefaultMaxPassCount;
+
         {
             int passes = (int) std::clamp(config->DlssNrPasses.value_or_default(), 1u,
-                                          DlssNr::MaxPassCount);
+                                          passLimit);
             const ImVec4 colour = passes <= 1   ? ImVec4(0.35f, 0.88f, 0.38f, 1.0f)
                                   : passes == 2 ? ImVec4(0.95f, 0.70f, 0.20f, 1.0f)
                                                 : ImVec4(0.92f, 0.30f, 0.25f, 1.0f);
@@ -246,9 +321,9 @@ void RenderMenu(Config* config, float menuResScale)
             ImGui::PushStyleColor(ImGuiCol_Text, colour);
             ImGui::PushStyleColor(ImGuiCol_SliderGrab, colour);
 
-            if (ImGui::SliderInt("Model passes", &passes, 1, (int) DlssNr::MaxPassCount,
+            if (ImGui::SliderInt("Model passes", &passes, 1, (int) passLimit,
                                  passes == 1 ? "%d (normal)" : "%dx model cost"))
-                config->DlssNrPasses = (uint32_t) std::clamp(passes, 1, (int) DlssNr::MaxPassCount);
+                config->DlssNrPasses = (uint32_t) std::clamp(passes, 1, (int) passLimit);
 
             ImGui::PopStyleColor(2);
 
@@ -276,8 +351,8 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nEach additional layer consumes the previous layer's model output and owns"
                        "\na separate persistent feature and temporal history."
                        "\n\nThe base proxy stays immutable and the final answer is composed against it"
-                       "\nonce, so colour and transfer strength do not compound. Local tone is applied"
-                       "\nonly by the first layer."
+                       "\nonce, so colour and transfer strength do not compound. Later layers default"
+                       "\nto zero local tone; each layer can override it."
                        "\n\nCost scales almost linearly. Two is the common 'deep fried' look; three is"
                        "\nthe guarded ceiling because later layers converge while cost and artifacts grow.");
         }
@@ -500,6 +575,29 @@ void RenderMenu(Config* config, float menuResScale)
             ImGui::SameLine();
             if (ImGui::SmallButton("Reset##mask"))
                 config->DlssNrPass3AutoMask = std::optional<bool> {};
+            ImGui::TreePop();
+        }
+
+        const unsigned int visiblePasses = std::clamp(std::max(config->DlssNrPasses.value_or_default(),
+                                                              config->DlssNrRRPasses.value_or_default()),
+                                                      1u, passLimit);
+        for (unsigned int pass = 3; pass < visiblePasses; ++pass)
+        {
+            auto& settings = config->DlssNrExtraPasses[pass - 3];
+            if (!ImGui::TreeNode(std::format("Pass {}", pass + 1).c_str()))
+                continue;
+            ImGui::TextWrapped("Unset controls inherit pass 1; local tone defaults to 0.");
+            InheritedProfileCombo("Style", &settings.style, inheritedStyles, IM_ARRAYSIZE(inheritedStyles));
+            DeferredSlider("Intensity", &settings.intensity, 0.0f, 2.0f, config->DlssNrIntensity.value_or_default(), "%.2f", true);
+            DeferredSlider("Local structure", &settings.structure, 0.0f, 2.0f, config->DlssNrLocalStructure.value_or_default(), "%.2f", true);
+            DeferredSlider("Local tone", &settings.tone, 0.0f, 2.0f, 0.0f, "%.2f", true);
+            DeferredSlider("Skin structure", &settings.skin, -1.0f, 2.0f, config->DlssNrSkinStructure.value_or_default(), "%.2f", true);
+            bool mask = settings.autoMask.value_or(config->DlssNrAutoMask.value_or_default());
+            if (ImGui::Checkbox("Auto skin mask", &mask))
+                settings.autoMask = mask;
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset##mask"))
+                settings.autoMask = std::optional<bool> {};
             ImGui::TreePop();
         }
 
@@ -875,7 +973,7 @@ void RenderMenu(Config* config, float menuResScale)
         // Highlight guard, directly under the white point / trim -- it bounds the model's edit and
         // belongs with the exposure controls it works alongside.
         float maxRatio = config->DlssNrMaxRatio.value_or_default();
-        if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, 8.0f, "%.1fx"))
+        if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, unlockPasses ? (float) MaxPassCount : 8.0f, "%.1fx"))
             config->DlssNrMaxRatio = maxRatio;
 
         ImGui::SameLine();

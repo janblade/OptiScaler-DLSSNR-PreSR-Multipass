@@ -498,6 +498,66 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // Normalised, so the source may be any size relative to this dispatch.
     float2 uv = (float2(id.xy) + 0.5) / float2(gWidth, gHeight);
 
+    // Experimental private-DLSS carrier, not an ordinary colour image. Neutral 0.5 encodes zero;
+    // values below it carry darkening. A reversible signed compression avoids clipping negative
+    // edits at the DLSS input. ExposurePreMul is a fixed scale shared by this frame's two stages.
+    if (gMode == 5)
+    {
+        float3 difference = SanitizeFinite3(gModel.Load(int3(id.xy, 0)).rgb -
+                                            gSource.Load(int3(id.xy, 0)).rgb, 0.0);
+        float3 d = difference / max(gExposurePreMul, 1e-4);
+        gTarget[id.xy] = float4(0.5 + 0.5 * d / (1.0 + abs(d)), 1.0);
+        return;
+    }
+    if (gMode == 6 || gMode == 10)
+    {
+        float4 base = gSource.Load(int3(id.xy, 0));
+#ifndef VK_MODE
+        if (gMode == 10 && gExposure.Load(int3(0, 0, 0)).r > 0.0)
+        {
+            gTarget[id.xy] = base;
+            return;
+        }
+#endif
+        float3 encoded = SanitizeFinite3(gModel.Load(int3(id.xy, 0)).rgb, 0.5);
+        // Limit the inverse near its poles: DLSS can ring outside the carrier's [0,1] range.
+        float3 signedEdit = clamp(2.0 * encoded - 1.0, -0.999, 0.999);
+        float3 edit = signedEdit / (1.0 - abs(signedEdit)) * max(gExposurePreMul, 1e-4);
+        gTarget[id.xy] = float4(max(SanitizeFinite3(base.rgb + edit, base.rgb), 0.0), base.a);
+        return;
+    }
+    if (gMode == 7)
+    {
+        gTarget[id.xy] = 1.0;
+        return;
+    }
+    if (gMode == 11)
+    {
+        gTarget[id.xy] = 0;
+        return;
+    }
+    if (gMode == 8)
+    {
+        // The caller supplies raw-vector -> normalized active-image scale.
+        // Alpha is explicit validity for composition; 65504 is the FG invalid sentinel.
+        float2 motion = gSource.Load(int3(id.xy, 0)).xy * float2(gMvScaleX, gMvScaleY);
+        bool valid = all(isfinite(motion)) && all(abs(motion) < 2.0);
+        gTarget[id.xy] = valid ? float4(motion, 0, 1) : float4(65504, 65504, 0, 0);
+        return;
+    }
+    if (gMode == 9)
+    {
+        float4 current = gSource.Load(int3(id.xy, 0));
+        float2 previousUV = uv + current.xy;
+        bool valid = current.a > 0.999 && all(isfinite(current.xy)) &&
+                     all(previousUV >= 0.0) && all(previousUV <= 1.0);
+        float4 previous = valid ? gModel.SampleLevel(gLinear, previousUV, 0) : 0;
+        float2 combined = current.xy + previous.xy;
+        valid = valid && previous.a > 0.999 && all(isfinite(combined)) && all(abs(combined) < 2.0);
+        gTarget[id.xy] = valid ? float4(combined, 0, 1) : float4(65504, 65504, 0, 0);
+        return;
+    }
+
     // The meter. One thread per tile of a 64x64 grid over the frame, writing that tile's mean
     // luminance. The frame is raw linear here -- this runs before the encode, on purpose, because the
     // number being looked for is what the encode's divisor should be.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <d3d12.h>
+#include <string>
 
 #include <shaders/dlssnr/DlssNr_Common.h>
 #include <nvsdk_ngx.h>
@@ -19,7 +20,8 @@ class Config;
 
 namespace DlssNr
 {
-inline constexpr unsigned int MaxPassCount = 3;
+inline constexpr unsigned int MaxPassCount = 30;
+inline constexpr unsigned int DefaultMaxPassCount = 3;
 
 // Single definition of "this is Ray Reconstruction" for callers that only have the native NGX
 // feature id (as opposed to an internal Upscaler value -- see ::IsRayReconstruction in
@@ -124,6 +126,8 @@ CalibrationReading Calibration();
 
 // Whether the model is loaded and running, for the overlay.
 bool IsRunning();
+// Private residual-upscaler status; separate from the NR model's own running status/time.
+std::string DeferredDlssStatus();
 
 // Why it is not, if it is not. Empty while it is running or has not been tried yet.
 const char* FailureReason();

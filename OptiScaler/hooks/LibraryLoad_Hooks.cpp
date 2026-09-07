@@ -2,6 +2,7 @@
 #include "LibraryLoad_Hooks.h"
 
 #include <Config.h>
+#include <framegen/dlssg/MfgUnlock.h>
 #include <DllNames.h>
 
 #include <proxies/Ntdll_Proxy.h>
@@ -115,6 +116,15 @@ HMODULE LibraryLoadHooks::LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibF
             return nvngxDlss;
         else
             LOG_ERROR("Trying to load dll: {}", libNameA);
+    }
+
+    // Optional Ada unlock before NGX caches capabilities. External FG already returned above.
+    if (std::filesystem::path(normalizedPath).filename() == L"nvngx_dlssg.dll" && MfgUnlock::Pending())
+    {
+        auto snippet = NtdllProxy::LoadLibraryExW_Ldr(lpLibFullPath, NULL, 0);
+        if (snippet)
+            MfgUnlock::TryApply(snippet);
+        return snippet;
     }
 
     // NGX OTA

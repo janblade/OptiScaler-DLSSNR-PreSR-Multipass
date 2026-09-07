@@ -73,7 +73,8 @@ if (-not (Test-Path $forwarder)) {
     Write-Host "forwarder: using the shared build output ($forwarder)"
 }
 
-$exports = @("dlssnr_call_create", "dlssnr_call_evaluate", "dlssnr_call_set_extras")
+$exports = @("dlssnr_call_create", "dlssnr_call_evaluate", "dlssnr_call_set_extras",
+             "dlssnr_vk_probe", "dlssnr_vk_init", "dlssnr_vk_create", "dlssnr_vk_evaluate", "dlssnr_vk_release")
 $bytes = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($forwarder))
 $missing = @($exports | Where-Object { $bytes.IndexOf($_) -lt 0 })
 
@@ -186,10 +187,22 @@ if ($on) {
 
 Write-Host "ini verified: nothing switched on by default"
 
+foreach ($key in @('DeferredDLSS', 'ResidualFG', 'ResidualFGApproxCamera', 'AsyncLatest', 'UnlockPasses', 'AdaMfgUnlock')) {
+    if ($ini -match "(?mi)^$key=true\s*$") {
+        throw "REFUSING: experimental option $key is enabled in the portable package"
+    }
+}
+
 # The proprietary runtime must never slip into a public artifact. Its two approved hashes are
 # documentation/diagnostic inputs only; users obtain the GPU-appropriate file themselves.
 if (Get-ChildItem -LiteralPath $stage -Recurse -File | Where-Object { $_.Name -ieq 'nvngx_dlssnr.dll' }) {
     throw 'REFUSING: proprietary nvngx_dlssnr.dll is present in the staging directory'
+}
+if (-not $IncludeDlssFrameGeneration) {
+    $nvidiaRuntime = Get-ChildItem -LiteralPath $stage -Recurse -File | Where-Object {
+        $_.Name -match '^(nvngx_dlss.*|sl\..*)\.dll$'
+    }
+    if ($nvidiaRuntime) { throw 'REFUSING: NVIDIA runtime DLLs found in the public downloader-only package' }
 }
 
 $crossGenHash = 'E67DEE209320CDAFE0E93E45675D7AA34323A53ACC57A72B2E40A181581C989A'

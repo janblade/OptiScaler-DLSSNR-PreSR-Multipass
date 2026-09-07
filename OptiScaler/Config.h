@@ -260,6 +260,12 @@ class Config
     // Run the NR pass on the upscaler's colour input, at render resolution, immediately before SR.
     // Off preserves the v0.2.0 post-upscale placement.
     CustomOptional<bool> DlssNrRunBeforeSr { false };
+    // Generate NR before SR, upscale its signed contribution with a private DLSS feature,
+    // and apply it after the game's upscaler. Takes precedence over RunBeforeSR; opt-in.
+    CustomOptional<bool> DlssNrDeferredDlss { false };
+    CustomOptional<bool> DlssNrResidualFg { false };
+    CustomOptional<bool> DlssNrAsyncLatest { false };
+    CustomOptional<bool> DlssNrResidualFgApproxCamera { false };
     CustomOptional<bool> DlssNrApplyAfterRR { false };
     CustomOptional<unsigned int> DlssNrRRPasses { 1 };
     CustomOptional<float> DlssNrRRWorkingScale { 0.5f };
@@ -300,6 +306,14 @@ class Config
     CustomOptional<float, NoDefault> DlssNrPass3LocalTone;
     CustomOptional<float, NoDefault> DlssNrPass3SkinStructure;
     CustomOptional<bool, NoDefault> DlssNrPass3AutoMask;
+    CustomOptional<bool> DlssNrUnlockPasses { false };
+    struct NrExtraPass
+    {
+        CustomOptional<uint32_t, NoDefault> style;
+        CustomOptional<float, NoDefault> intensity, structure, tone, skin;
+        CustomOptional<bool, NoDefault> autoMask;
+    };
+    NrExtraPass DlssNrExtraPasses[27]; // pass 4..30; legacy pass 2/3 keys stay compatible
 
     // How much of the model's edit reaches the frame. Separated because detail synthesis is a luminance
     // edit and any colour shift is usually the part you do not want, and allowed past 1.0 because
@@ -793,6 +807,8 @@ class Config
     // Frame Generation
     CustomOptional<FGInput> FGInput { FGInput::NoFG };
     CustomOptional<bool> ExternalFrameGeneration { false };
+    CustomOptional<bool> FGDLSSGAdaMfgUnlock { false };
+    CustomOptional<bool, NoDefault> FGDLSSGAdaBlackwellKernels;
     CustomOptional<FGOutput> FGOutput { FGOutput::NoFG };
     CustomOptional<FGNvngxReplacement> FGNvngxReplacement { FGNvngxReplacement::None };
     CustomOptional<bool> FGDrawUIOverFG { false };

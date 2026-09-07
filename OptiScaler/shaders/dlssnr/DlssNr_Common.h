@@ -49,8 +49,8 @@ constexpr uint32_t kDlssNrMeterGrid = 64;
 // choices -- preset, intensity, strengths, paper white -- stay in Config, so a caller placing this
 // pass in a new pipeline does not have to plumb a dozen sliders through it.
 //
-// Sizes are deliberately absent. The output's dimensions come from its own descriptor and the guide
-// sizes from theirs, so there is one less thing for a call site to get wrong.
+// Allocation sizes come from the resource descriptors. Before SR, the reported render subrect
+// also determines the active colour size; padded colour is copied through a compact work texture.
 struct DlssNrFrameInfo
 {
     // Which way round depth runs. The game states this when it creates its own upscaler.
@@ -97,6 +97,7 @@ struct DlssNrFrameInfo
     float PreExposure = 1.0f;
 
     // How much of the depth and motion vector textures the game actually rendered into.
+    // Before SR this also selects the origin-zero active colour rectangle, not its allocation.
     //
     // Not the same thing as how big those textures are, and the difference is the whole point. A game
     // with dynamic resolution allocates its guides once at the largest size it will ever need and
@@ -192,6 +193,13 @@ struct alignas(256) DlssNrConstants
     // preExposure * trim, so the live white point is ExposurePreMul / exposure. Mirrored in the cbuffer.
     uint32_t UseGameExposure;
     float ExposurePreMul;
+    // Optional colour-based final-composition mask. Not the runtime's semantic mask.
+    uint32_t SkinProtection;
+    uint32_t ShowSkinMask;
+    float SkinDetail;
+    float SkinColour;
+    float EnvironmentDetail;
+    float EnvironmentColour;
 };
 
 class DlssNr_Common

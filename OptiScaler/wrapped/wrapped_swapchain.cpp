@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "wrapped_swapchain.h"
+#include <hooks/DxgiSwapchainSizing.h>
 
 #include <Util.h>
 #include <Config.h>
@@ -541,8 +542,8 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 }
 
 WrappedIDXGISwapChain4::WrappedIDXGISwapChain4(IDXGISwapChain* real, IUnknown* pDevice, HWND hWnd, UINT flags,
-                                               bool isUWP)
-    : _real(real), _device(pDevice), _handle(hWnd), _refcount(1), _uwp(isUWP)
+                                               bool isUWP, bool isComposition)
+    : _real(real), _device(pDevice), _handle(hWnd), _refcount(1), _uwp(isUWP), _composition(isComposition)
 {
     _id = ++scCount;
     _lastFlags = flags;
@@ -769,6 +770,11 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present(UINT SyncInterval, UIN
     OwnedLockGuard lock(_localMutex, 4);
 #endif
 
+    if (_composition && !IsCompositionWindow(_handle))
+        _handle = FindCompositionWindow();
+    if (_composition && _handle == nullptr)
+        return _real->Present(SyncInterval, Flags);
+
     HRESULT result;
 
     if ((Flags & DXGI_PRESENT_TEST) == 0)
@@ -891,7 +897,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers(UINT BufferCount
 
     State::Instance().scChanged = true;
 
-    if (Config::Instance()->OverrideVsync.value_or_default() && !State::Instance().SCExclusiveFullscreen &&
+    if (!_composition && Config::Instance()->OverrideVsync.value_or_default() && !State::Instance().SCExclusiveFullscreen &&
         State::Instance().currentFG == nullptr)
     {
         LOG_DEBUG("Overriding flags");
@@ -1127,6 +1133,11 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present1(UINT SyncInterval, UI
     OwnedLockGuard lock(_localMutex, 5);
 #endif
 
+    if (_composition && !IsCompositionWindow(_handle))
+        _handle = FindCompositionWindow();
+    if (_composition && _handle == nullptr)
+        return _real1->Present1(SyncInterval, Flags, pPresentParameters);
+
     HRESULT result;
 
     if ((Flags & DXGI_PRESENT_TEST) == 0)
@@ -1326,7 +1337,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers1(UINT BufferCoun
 
     State::Instance().scChanged = true;
 
-    if (Config::Instance()->OverrideVsync.value_or_default() && !State::Instance().SCExclusiveFullscreen &&
+    if (!_composition && Config::Instance()->OverrideVsync.value_or_default() && !State::Instance().SCExclusiveFullscreen &&
         State::Instance().currentFG == nullptr)
     {
         LOG_DEBUG("Overriding flags");

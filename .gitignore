@@ -447,3 +447,7 @@ release
 .ai-os/memory/episodic/last_session.json
 .ai-os/memory/episodic/session_override.json
 .ai-os/progress.md
+
+# Official NVIDIA SDK download/extraction cache; provenance is in redist/streamline/manifest.json.
+/.dependencies/
+/OptiScaler/streamline/

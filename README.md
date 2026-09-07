@@ -11,7 +11,9 @@ The upstream fork already provided experimental direct access to NVIDIA DLSS Neu
 - **Independent model strengths per pass.** Each pass has intensity, local structure, local tone,
   skin structure, and auto skin mask controls. Preset hints are grouped under a collapsed advanced
   section because their visual effect is unverified; style is the primary profile selector.
-- **Guarded fallbacks.** Ray Reconstruction remains post-SR, and padded or offset dynamic-resolution inputs fall back to the existing post-SR path instead of using unsafe dimensions.
+- **Padded pre-SR inputs.** Origin-zero active images inside larger colour textures run NR at the
+  active resolution. Ray Reconstruction, non-zero colour offsets and invalid rectangles retain the
+  post-SR fallback. This is not restricted to standard 1080p/1440p/4K sizes.
 - **Matching overlay and INI controls.** `RunBeforeSR` and `Passes` are exposed in both configuration and the OptiScaler overlay.
 - **Optional NR after native Ray Reconstruction (DX12).** Enable `ApplyAfterRR` separately;
   `RRPasses` defaults to 1 and `RRWorkingScale` to 0.5 of RR's output dimensions. RR keeps its
@@ -20,12 +22,59 @@ The upstream fork already provided experimental direct access to NVIDIA DLSS Neu
 
 Downloads:
 
+- [Latest release — v0.6.2](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/releases/tag/v0.6.2-swapchain-fixes) — rebuilt complete package including janblade's window-sized swapchain fix and the reviewed DirectComposition hook, plus the previous padded pre-SR and skin/MFG changes. Build and native API smoke-tested; in-game validation of the new hooks is pending. NVIDIA NR/FG runtimes are not bundled.
 - [Per-pass controls preview](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/releases/tag/v0.5.0-pass-controls-preview) — reorganized pass sections and independent model strengths, including the RR controls. Runtime validation is pending.
 - [Native RR controls preview](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/releases/tag/v0.4.0-rr-preview) — compiled experimental build with independent NR-after-RR controls. In-game RR/NR validation is pending.
 - [Portable cross-generation package](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/releases/tag/v0.3.0-crossgen-portable) — the complete installer and backend layout, with game-neutral defaults and RTX 20/30/40/50 runtime guidance.
 - The earlier `general-per-pass-profiles-facc24f6` and `bg3-presr-multipass-e16d5866` packages are retained only as historical validation artifacts. They are incomplete for a clean installation and should not be redistributed.
 
 NVIDIA's proprietary `nvngx_dlssnr.dll` is required but is **not redistributed** here.
+
+### Optional DLSS Frame Generation dependencies
+
+**The NVIDIA Streamline/FG DLLs are not hosted in this repo or uploaded with this change.**
+The DLSS runtime has separate redistribution conditions; the Streamline source licence does not
+cover the whole DLL set. See the [licence review and official sources](docs/DLSS-FRAME-GENERATION.md#licences-and-distribution).
+
+Get the files from NVIDIA's [Streamline 2.12.0 release](https://github.com/NVIDIA-RTX/Streamline/releases/tag/v2.12.0)
+([official SDK ZIP](https://github.com/NVIDIA-RTX/Streamline/releases/download/v2.12.0/streamline-sdk-v2.12.0.zip)).
+Our helper downloads that exact ZIP and verifies its checksum, all six DLL hashes and NVIDIA signatures.
+
+1. Install a complete OptiScaler release first. The v0.6.1 release includes this helper; v0.5 and earlier do not.
+2. If your release lacks the helper, download this repo's [source ZIP](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/archive/refs/heads/main.zip)
+   and extract it into a **separate working folder**, not over the game. Open PowerShell in the
+   folder containing `get_streamline.ps1` and `redist` (the installed release folder if already present).
+3. Close the game, back up its OptiScaler setup, read the linked NVIDIA licences, then run the
+   following command with your game's real executable directory in place of the example:
+
+   ```powershell
+   .\get_streamline.ps1 -Destination 'D:\Path\To\Game\OptiScaler\streamline' -AcceptNvidiaLicenses
+   ```
+
+4. Follow the [FG setup instructions](docs/DLSS-FRAME-GENERATION.md#choose-one-fg-owner).
+   Downloading the DLLs does **not** enable FG or unlock RTX 40 MFG. Existing different DLLs are
+   never overwritten. Do not replace a game's working native Streamline stack.
+
+Prefer manual installation? The [manual download instructions](docs/DLSS-FRAME-GENERATION.md#manual-download-without-the-helper)
+list the exact production files and their destination. The source ZIP is not a compiled OptiScaler
+release. This supplies dependencies, not a guarantee of injected FG compatibility in every game.
+
+### New compatibility work (not yet game-validated)
+
+- v0.6.2 incorporates janblade's NBA 2K26 window-sized swapchain fix, diagnostic
+  logging and a reviewed DirectComposition hook. [Review and validation](docs/PR-2-REVIEW.md).
+  These changes are included in the v0.6.2 ZIP; the historical v0.6.1 ZIP is unchanged.
+- Padded pre-SR colour inputs, including the reported 2558x1439-in-2560x1440 case, no longer fall
+  back to 4K NR merely because the allocation is larger. [Details and testing](docs/PADDED-PRESR.md).
+- Optional skin-colour protection with separate skin/environment lighting and colour controls.
+  This is a colour-based filter, not a face detector. The model's AutoMask remains a separate control.
+- An **External frame generation / MFG unlocker** mode that leaves Streamline and Reflex to the game
+  or external mod. [RTX 40 unlocker instructions and optional pinned source build](docs/RTX40-MFG.md).
+- The retail Onimusha executable gets the same engine-state workaround as the demo. NR model creation
+  is now inside the graphics-state restore envelope as well as evaluation.
+
+See [what changed, limitations and tests](docs/NR-COMPATIBILITY.md). These changes are not in the older
+v0.5 download listed above. The RTX 40 unlocker is a separate optional component, not enabled by default.
 
 ### GPU and runtime compatibility
 
@@ -72,7 +121,7 @@ Implementation details and safety invariants are documented in [the pre-SR multi
 
 The implementation contains no BG3-specific executable names, offsets, or shaders. It is designed for 64-bit games whose DLSS Super Resolution call reaches OptiScaler's Direct3D 12 path, including its Direct3D 11/Vulkan-to-DX12 bridges. It has also run in Hogwarts Legacy and Cyberpunk 2077. Compatibility still depends on the game exposing valid colour, depth, motion-vector, resolution, and command-submission data through its upscaler integration.
 
-Ray Reconstruction deliberately uses the post-SR path. Native Vulkan currently retains the upstream post-SR implementation. Games with unusual loaders, multiple swapchains, offset/padded dynamic-resolution textures, anti-cheat, or another `dxgi.dll` mod may need a different OptiScaler proxy name or will use the guarded post-SR fallback.
+Ray Reconstruction deliberately uses the post-SR path. Native Vulkan currently retains the upstream post-SR implementation. Games with unusual loaders, multiple swapchains, non-zero colour offsets, invalid render rectangles, anti-cheat, or another `dxgi.dll` mod may need a different OptiScaler proxy name or will use the guarded post-SR fallback. Origin-zero allocation padding is supported on the DX12 pre-SR path and its bridges.
 
 ---
 

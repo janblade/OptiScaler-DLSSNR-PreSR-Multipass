@@ -49,19 +49,18 @@ class DxgiFactoryHooks
                                                 const DXGI_SWAP_CHAIN_DESC1* pDesc, IDXGIOutput* pRestrictToOutput,
                                                 IDXGISwapChain1** ppSwapChain);
 
-    // Diagnosed 2026-09-06 (NBA 2K26 menu/overlay investigation, see
-    // memory/plans/2026-09-06-optiscaler-reshade-addon64.md): HookToFactory hooked CreateSwapChain,
-    // CreateSwapChainForHwnd and CreateSwapChainForCoreWindow but never IDXGIFactory2::
-    // CreateSwapChainForComposition -- a game creating its real swapchain that way (DirectComposition,
-    // common for HDR/compositor-hosted presentation) would never get wrapped at all: no crash, no
-    // error, just total silence, exactly matching the live symptom (DLSS works fine since it never
-    // touches the swapchain; the menu, driven off the wrapped swapchain's Present, never initializes).
+    static HRESULT DLSSGCreateSwapChain(IDXGIFactory* realFactory, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc,
+                                        IDXGISwapChain** ppSwapChain);
+
+    // The one DXGI swapchain-creation entry point HookToFactory previously left unhooked
+    // (CreateSwapChain, CreateSwapChainForHwnd and CreateSwapChainForCoreWindow all were). A game
+    // creating its real swapchain via DirectComposition (common for HDR/compositor-hosted
+    // presentation) would never get wrapped at all: no crash, no error, just silence -- DLSS keeps
+    // working since it never touches the swapchain, but the menu, driven off the wrapped
+    // swapchain's Present, never initializes.
     static HRESULT CreateSwapChainForComposition(IDXGIFactory2* realFactory, IUnknown* pDevice,
                                                  const DXGI_SWAP_CHAIN_DESC1* pDesc, IDXGIOutput* pRestrictToOutput,
                                                  IDXGISwapChain1** ppSwapChain);
-
-    static HRESULT DLSSGCreateSwapChain(IDXGIFactory* realFactory, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc,
-                                        IDXGISwapChain** ppSwapChain);
 
     static HRESULT DLSSGCreateSwapChainForHwnd(IDXGIFactory2* realFactory, IUnknown* pDevice, HWND hWnd,
                                                const DXGI_SWAP_CHAIN_DESC1* pDesc,

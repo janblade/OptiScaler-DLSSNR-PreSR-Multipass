@@ -3,6 +3,7 @@
 - Branch: experiment/dlssnr-presr-jitter-mv  (off main; main is protected — no direct commits)
 - Created: 2026-09-07
 - Status: in-progress      # draft | approved | in-progress | done | abandoned
+- PR: janblade/OptiScaler-DLSSNR-PreSR-Multipass#2 (experiment/dlssnr-presr-jitter-mv -> main), opened 2026-09-08. Landing default-off; step-9 in-game sweep continues against main.
 - Task file: memory/tasks/main.md
 
 ## Context
@@ -159,7 +160,14 @@ not do MV-driven history reprojection in a way this helps) — step 9 decides ke
    verified equal to the `.cso`/`.spv` byte sizes. First build caught a name mismatch: the VK header
    array is `dlssnr_spv` (lowercase) while the DX one is `DlssNr_cso` — regenerated to match.
 
-9. [ ] **In-game A/B + verdict.** Pre-SR, a slow camera pan and a near-static shot (jitter
+9. [~] **In-game A/B + verdict.** IN PROGRESS. First pass: effect **"barely noticeable"** on the
+   titles tried (scale not yet fully swept; unknown whether those titles even feed NGX jitter to
+   the NR evaluate -- the one-shot warning added post-review will say). User decision 2026-09-08:
+   land it **default-off** via PR #2 into janblade/main rather than block on the verdict (self-
+   contained block, byte-for-byte no-op when off). Sweep +1/-1/+2 and more titles continue against
+   main; if it stays a no-op everywhere, a follow-up pulls steps 3-7 and keeps step 1 only if the
+   jitter capture is independently useful.
+   ORIGINAL STEP TEXT: Pre-SR, a slow camera pan and a near-static shot (jitter
    delta is most visible in low-motion content). Flag off vs on; sweep `DlssNrJitterCancelScale`
    through +1, -1, +2 to find the sign/magnitude that helps, if any. Check: (a) does pre-SR
    sharpness / temporal stability improve; (b) any new ghosting or smear during real motion

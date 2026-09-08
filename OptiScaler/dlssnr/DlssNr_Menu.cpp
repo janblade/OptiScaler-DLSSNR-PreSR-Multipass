@@ -189,6 +189,35 @@ void RenderMenu(Config* config, float menuResScale)
         ImGui::EndDisabled();
         ImGui::EndDisabled();
 
+        if (beforeSr)
+        {
+            ScopedIndent jitterIndent {};
+
+            bool jitterCancel = config->DlssNrJitterCancel.value_or_default();
+            if (ImGui::Checkbox("Cancel jitter in the model's motion vectors", &jitterCancel))
+                config->DlssNrJitterCancel = jitterCancel;
+
+            HelpMarker("Experimental, pre-SR only, Direct3D 12. The retail model has no jitter"
+                       "\nparameter, so the render-resolution frame's per-frame sub-pixel jitter"
+                       "\nshift is folded into a private copy of the motion vectors handed only to"
+                       "\nthe model -- its history reprojection then aligns despite not being told"
+                       "\nthe jitter. The game's own vectors, and the ones Super Resolution reads,"
+                       "\nare untouched. Off = the model gets the game's vectors unchanged.");
+
+            if (jitterCancel)
+            {
+                float jitterScale = config->DlssNrJitterCancelScale.value_or_default();
+                if (ImGui::SliderFloat("Jitter cancel amount", &jitterScale, -4.0f, 4.0f, "%.2fx"))
+                    config->DlssNrJitterCancelScale = jitterScale;
+
+                HelpMarker("Multiplies the applied shift. The sign and units of the jitter offset"
+                           "\nversus the game's motion-vector encoding vary by engine, so dial this"
+                           "\nin-game: 1.0 to start, flip to negative if it adds smear during motion"
+                           "\ninstead of removing it, raise the magnitude if the effect is too weak."
+                           "\n0 disables the shift while leaving the extra pass running.");
+            }
+        }
+
         bool afterRR = config->DlssNrApplyAfterRR.value_or_default();
         if (ImGui::Checkbox("Apply after Ray Reconstruction (DX12)", &afterRR))
             config->DlssNrApplyAfterRR = afterRR;

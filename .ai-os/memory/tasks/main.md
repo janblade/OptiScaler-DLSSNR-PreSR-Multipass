@@ -21,12 +21,18 @@ NR experiments **default-off**. wilsjo2 carries no `.ai-os/` / `CLAUDE.md` / `AG
 - Debug|x64 + Release|x64 both build clean, 0 errors. New NR experiment paths are auto-merge +
   compile-verified only — validate in-game before relying on them.
 
-**jitter-cancel prototype** (`memory/plans/2026-09-07-dlssnr-presr-jitter-cancel-mv.md`): committed
-`639a58ec` on `experiment/dlssnr-presr-jitter-mv`, pushed; **PR janblade#2 (experiment -> main)
-open**. First in-game pass "barely noticeable"; landing default-off, sweep continues. **PR #2 now
-conflicts with the wilsjo2 NR changes** (`dlssnr.hlsl`, `DlssNr_Dx12.cpp`, precompiled shaders,
-`Config.*`, `DlssNr_Menu.cpp`) — needs `experiment` rebased onto the new `main` before it merges
-cleanly. Not done (not requested).
+**jitter-cancel prototype** (`memory/plans/2026-09-07-dlssnr-presr-jitter-cancel-mv.md`): **PR
+janblade#2 (experiment -> main) open**, `experiment/dlssnr-presr-jitter-mv` **rebased onto the
+post-wilsjo2 `main` 2026-09-08** (was `639a58ec`+`1035a2d6` → now `d4fbe294`+`351ac35b`,
+force-pushed). Rebase conflicts resolved: shader mode renumbered `DlssNrMode_JitterCancelMv` 5 -> 12
+(wilsjo2 claimed 5-11 for its residual/motion modes); `dlssnr.hlsl` `gMode == 5` -> `gMode == 12`;
+4 precompiled shader artifacts regenerated from the merged `dlssnr.hlsl` with the bundled `dxc`
+(CSO 16848b — smaller than main's 29144b only because bundled dxc != wilsjo2's toolchain, same
+source + our extra mode); `DlssNr_Menu.cpp` keeps both wilsjo2's deferred/async/residual block and
+our jitter block; `decisions.jsonl` / `tasks/main.md` bookkeeping conflicts merged. Both x64 configs
+build clean, 0 errors (63/64 total warnings = the wilsjo2-tree full-build baseline, none in the
+resolution files). First in-game pass "barely noticeable"; landing default-off, step-9 sweep
+continues. PR #2 is now a clean fast-forward descendant of `main`.
 
 **AI-OS framework v2.8.0** committed `91603612`. `docs/dlssnr-binary-dump/` still untracked (1.5MB).
 

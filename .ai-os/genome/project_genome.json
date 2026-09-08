@@ -1,0 +1,31 @@
+{
+  "detected_at": "2026-09-06T00:00:00+08:00",
+  "scan_version": "1.0.0",
+  "languages": ["C++", "C"],
+  "primary_language": "C++",
+  "frameworks": ["DirectX", "Vulkan", "DLSS", "FidelityFX-SDK", "XeSS"],
+  "package_managers": ["git submodules"],
+  "build_tools": ["MSBuild", "Visual Studio Solution"],
+  "ci_cd": ["GitHub Actions"],
+  "architecture_pattern": "native-graphics-library",
+  "project_maturity": "established",
+  "estimated_complexity": "high",
+  "entry_points": ["OptiScaler/dllmain.cpp", "OptiScaler.sln"],
+  "test_frameworks": [],
+  "config_files_found": ["OptiScaler.sln", ".clang-format", ".gitmodules", "OptiScaler.ini"],
+  "indicators": {
+    "has_readme": true,
+    "has_license": true,
+    "has_contributing": true,
+    "has_changelog": true,
+    "has_ci": true,
+    "has_docker": false,
+    "has_tests": false,
+    "has_linter": false,
+    "has_formatter": true,
+    "has_type_checking": false,
+    "git_initialized": true,
+    "estimated_contributors": 1
+  },
+  "notes": "Detected during AI OS First-Boot Wizard. OptiScaler is a native C++ graphics-mod DLL that intercepts DX11/DX12/Vulkan upscaler calls to redirect between DLSS, FSR, XeSS, and neural-rendering paths. No automated test suite; CI runs build + clang-format checks."
+}

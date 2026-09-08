@@ -1,0 +1,27 @@
+{
+  "version": "1.0.0",
+  "workflows": [],
+  "schema": {
+    "workflow": {
+      "id": "string — unique identifier",
+      "name": "string — human-readable name",
+      "description": "string — what this workflow accomplishes",
+      "trigger": "string — when to use this workflow",
+      "steps": [
+        {
+          "order": "number",
+          "action": "string — what to do",
+          "tool": "string — which skill/command to use",
+          "parameters": "object — input parameters",
+          "success_criteria": "string — how to verify this step worked",
+          "fallback": "string — what to do if this step fails"
+        }
+      ],
+      "learned_from": "string — session or context where this was learned",
+      "success_count": "number — how many times this workflow has been successfully executed",
+      "last_used": "string — ISO 8601 timestamp",
+      "pinned": "boolean — if true, exempt from forgetting policy"
+    }
+  },
+  "notes": "Workflows are added when the agent successfully completes a multi-step procedure and determines it may be useful again."
+}

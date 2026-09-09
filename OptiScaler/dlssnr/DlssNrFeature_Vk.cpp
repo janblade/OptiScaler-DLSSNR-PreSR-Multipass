@@ -88,6 +88,7 @@ struct VkState
     OwnedImage keep;
     OwnedImage preColor;
     bool beforeSr = false;
+    bool rayReconstruction = false;
 
     // The proxy at the model's working size, when that is below the frame. The model -- 98% of the
     // cost -- then runs on this instead of the full proxy, which is the whole point of the working
@@ -517,13 +518,13 @@ bool ExposureOfferedVk() { return g_vk.exposureOffered; }
 std::optional<double> LastGpuTimeVk() { return g_vk.lastGpuTime; }
 
 static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* params, VkInstance instance,
-                             VkPhysicalDevice physicalDevice, VkDevice device, bool beforeSr, bool forcePost,
+                             VkPhysicalDevice physicalDevice, VkDevice device, bool beforeSr, bool rayReconstruction,
                              bool& applied, bool* handled = nullptr)
 {
     applied = false;
     auto& cfg = *Config::Instance();
 
-    if (cfg.DlssNrDeferredDlss.value_or_default())
+    if (cfg.DlssNrDeferredDlss.value_or_default() && !rayReconstruction)
     {
         static bool warnedDeferred = false;
         if (!warnedDeferred)
@@ -536,9 +537,6 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
     }
 
     if (!cfg.DlssNrEnabled.value_or_default())
-        return;
-
-    if (forcePost && !cfg.DlssNrApplyAfterRR.value_or_default())
         return;
 
     if (cmdBuffer == VK_NULL_HANDLE || params == nullptr || device == VK_NULL_HANDLE ||
@@ -708,14 +706,12 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
     // reduced path below never runs, so the default is byte-for-byte what it was.
     // Above 1 the model supersamples (up to 2x): the proxy is enlarged, the model runs above native,
     // and superDown averages the answer back. Vulkan matches the D3D12 cap.
-    float workScale = forcePost ? cfg.DlssNrRRWorkingScale.value_or_default()
-                               : cfg.DlssNrWorkingScale.value_or_default();
+    float workScale = cfg.DlssNrWorkingScale.value_or_default();
     workScale = std::isfinite(workScale) ? std::clamp(workScale, 0.25f, 2.0f) : 1.0f;
     const uint32_t workWidth = std::max(1u, (uint32_t) (width * workScale + 0.5f));
     const uint32_t workHeight = std::max(1u, (uint32_t) (height * workScale + 0.5f));
     const bool reduced = workWidth != width || workHeight != height;
-    const unsigned int passes = std::clamp(forcePost ? cfg.DlssNrRRPasses.value_or_default()
-                                                     : cfg.DlssNrPasses.value_or_default(),
+    const unsigned int passes = std::clamp(cfg.DlssNrPasses.value_or_default(),
                                            1u, cfg.DlssNrUnlockPasses.value_or_default() ? DlssNr::MaxPassCount
                                                                                        : DlssNr::DefaultMaxPassCount);
 
@@ -838,7 +834,8 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
                           g_vk.builtPreset[pass] != Profiles::PassPreset(cfg, pass) ||
                           g_vk.builtStyle[pass] != Profiles::PassStyle(cfg, pass);
     if (g_vk.width != width || g_vk.height != height || g_vk.workWidth != workWidth ||
-        g_vk.workHeight != workHeight || g_vk.beforeSr != beforeSr || profileChanged)
+        g_vk.workHeight != workHeight || g_vk.beforeSr != beforeSr ||
+        g_vk.rayReconstruction != rayReconstruction || profileChanged)
     {
         // This block releases the feature and frees the surfaces below IMMEDIATELY. A frame-size
         // change is already fenced by the game -- it recreates the swapchain around it -- but moving
@@ -899,6 +896,7 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
         g_vk.workWidth = workWidth;
         g_vk.workHeight = workHeight;
         g_vk.beforeSr = beforeSr;
+        g_vk.rayReconstruction = rayReconstruction;
         g_vk.activePasses = passes;
         for (unsigned int pass = 0; pass < passes; ++pass)
         {
@@ -1332,23 +1330,24 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
 }
 
 NVSDK_NGX_Resource_VK* EvaluateBeforeUpscaleVk(VkCommandBuffer cmd, NVSDK_NGX_Parameter* params,
-                                             VkInstance instance, VkPhysicalDevice pd, VkDevice device, bool& handled)
+                                             VkInstance instance, VkPhysicalDevice pd, VkDevice device, bool& handled,
+                                             bool rayReconstruction)
 {
     handled = false;
     if (!Config::Instance()->DlssNrRunBeforeSr.value_or_default())
         return nullptr;
     bool applied = false;
-    EvaluateAtSeamVk(cmd, params, instance, pd, device, true, false, applied, &handled);
+    EvaluateAtSeamVk(cmd, params, instance, pd, device, true, rayReconstruction, applied, &handled);
     return applied ? &g_vk.preColor.ngx : nullptr;
 }
 
 void EvaluateAfterUpscaleVk(VkCommandBuffer cmd, NVSDK_NGX_Parameter* params, VkInstance instance,
-                            VkPhysicalDevice pd, VkDevice device, bool forcePost, bool ranBefore)
+                            VkPhysicalDevice pd, VkDevice device, bool rayReconstruction, bool ranBefore)
 {
     if (ranBefore)
         return; // per-evaluate result, not a global frame counter that can suppress a different feature
     bool applied = false;
-    EvaluateAtSeamVk(cmd, params, instance, pd, device, false, forcePost, applied);
+    EvaluateAtSeamVk(cmd, params, instance, pd, device, false, rayReconstruction, applied);
 }
 
 void ShutdownVk(bool deviceAlive)

@@ -1077,8 +1077,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_VULKAN_EvaluateFeature(VkCommandBuffer 
     void* originalColor = nullptr;
     InParameters->Get(NVSDK_NGX_Parameter_Color, &originalColor);
     bool nrHandled = false;
-    auto nrColor = !bridged && !rayReconstruction
-                       ? DlssNr::EvaluateBeforeUpscaleVk(InCmdList, InParameters, vkInstance, vkPD, vkDevice, nrHandled)
+    auto nrColor = !bridged
+                       ? DlssNr::EvaluateBeforeUpscaleVk(InCmdList, InParameters, vkInstance, vkPD, vkDevice, nrHandled, rayReconstruction)
                        : nullptr;
     if (nrColor)
         InParameters->Set(NVSDK_NGX_Parameter_Color, (void*) nrColor);

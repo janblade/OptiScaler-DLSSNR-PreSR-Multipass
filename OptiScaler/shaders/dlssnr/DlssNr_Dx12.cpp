@@ -16,6 +16,7 @@
 #include "DlssNr_Dx12.h"
 #include "DlssNr_ActiveColor.h"
 #include "DlssNr_Guides.h"
+#include "DlssNr_SeamClock.h"
 
 #include <Config.h>
 #include <State.h>
@@ -349,7 +350,7 @@ struct NrState
     unsigned int width = 0;
     unsigned int height = 0;
     bool beforeUpscale = false;
-    bool afterRayReconstruction = false;
+    bool rayReconstruction = false;
     bool reset = true;
 
     // Dimensions of the guides as the upscaler handed them over, kept for the present path, which runs
@@ -435,43 +436,8 @@ void ClearCaptureDirectory()
 
 unsigned long long g_frames = 0;
 
-// The epoch the deferred NR seams key their per-frame bookkeeping on.
-//
-// The obvious source, State::Instance().frameCount, counts *presented* frames: wrapped_swapchain
-// skips its increment on a DXGI_PRESENT_TEST -- an occlusion probe that flip-model games issue
-// between real frames, and that DXGI asks for after DXGI_STATUS_OCCLUDED. When it stalls, two
-// consecutively rendered frames hand DeferredSr::Before the same epoch; the Before guard reads that
-// as a duplicate upscale, resets NR history and skips the contribution for that frame -- a visible
-// flash, alternating with the frames where it does run. (The DX11/Vulkan bridges pass their own
-// submitted-frame counter and do not have this. The in-place NR path below is left on the raw
-// counter -- it does not bracket a private SR and has no history-continuity gate.)
-//
-// So: follow the real epoch whenever it moves, and on a Before seam synthesise a +1 tick when it
-// does not. Strictly monotonic, advances by exactly one per rendered frame in the common case --
-// which is also what the "epoch == last + 1" history-continuity checks want.
-unsigned long long g_nrRawEpoch = ~0ull;
-unsigned long long g_nrSeamEpoch = 0;
-
-unsigned long long NrSeamEpoch(bool beginSeam, ID3D12CommandQueue* timingQueue, unsigned long long submissionEpoch)
-{
-    const unsigned long long raw = timingQueue != nullptr ? submissionEpoch : State::Instance().frameCount;
-
-    if (raw != g_nrRawEpoch)
-    {
-        // Follow a forward jump (real frames genuinely elapsed -- e.g. the menu was open); never
-        // repeat or rewind.
-        g_nrSeamEpoch = raw > g_nrSeamEpoch ? raw : g_nrSeamEpoch + 1;
-        g_nrRawEpoch = raw;
-    }
-    else if (beginSeam)
-    {
-        // Raw epoch stalled between two rendered frames (a test-present) -- synthesise the tick so
-        // the NR seam is not misread as a duplicate.
-        ++g_nrSeamEpoch;
-    }
-
-    return g_nrSeamEpoch;
-}
+// Logical frame identity for deferred pairing; feature readiness keeps the raw submission counter.
+DlssNrSeamClock g_nrSeamClock;
 
 // A capture requested from outside the game: when the render path has no fence of its own, the write
 // waits until this frame count, by which point the GPU is certainly past the copies.
@@ -1760,17 +1726,15 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // the model runs reduced and cheaper; above 1 it SUPERSAMPLES -- the proxy is upscaled to a larger
     // working size so the model denoises a super-native input, which the resolve then samples back down.
     // Capped at 2x: cost grows with the area and NGX acceptance above native is what this probe tests.
-    float workScale = frame.AfterRayReconstruction ? cfg.DlssNrRRWorkingScale.value_or_default()
-                                                  : cfg.DlssNrWorkingScale.value_or_default();
+    float workScale = cfg.DlssNrWorkingScale.value_or_default();
     if (!std::isfinite(workScale))
-        workScale = frame.AfterRayReconstruction ? 0.5f : 1.0f;
+        workScale = 1.0f;
     workScale = workScale < 0.25f ? 0.25f : (workScale > 2.0f ? 2.0f : workScale);
     const auto workWidth = (unsigned int) (width * workScale + 0.5f);
     const auto workHeight = (unsigned int) (height * workScale + 0.5f);
     const bool reduced = workWidth != width || workHeight != height;
     const unsigned int configuredPasses =
-        std::clamp(frame.AfterRayReconstruction ? cfg.DlssNrRRPasses.value_or_default()
-                                               : cfg.DlssNrPasses.value_or_default(),
+        std::clamp(cfg.DlssNrPasses.value_or_default(),
                    1u, cfg.DlssNrUnlockPasses.value_or_default() ? DlssNr::MaxPassCount
                                                                : DlssNr::DefaultMaxPassCount);
     const bool proxyBackend = cfg.DlssNrUseProxy.value_or_default();
@@ -1793,7 +1757,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                                    g_nr.workWidth != workWidth || g_nr.workHeight != workHeight;
     const bool placementChanged = g_nr.feature != nullptr &&
         (g_nr.beforeUpscale != frame.BeforeUpscale ||
-         g_nr.afterRayReconstruction != frame.AfterRayReconstruction);
+         g_nr.rayReconstruction != frame.RayReconstruction);
 
     // The model reads its tuning once, while the feature is built, so a changed setting only takes
     // effect when the feature is rebuilt. TuningMatchesFeature was written to notice that and then
@@ -1961,7 +1925,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         g_nr.width = width;
         g_nr.height = height;
         g_nr.beforeUpscale = frame.BeforeUpscale;
-        g_nr.afterRayReconstruction = frame.AfterRayReconstruction;
+        g_nr.rayReconstruction = frame.RayReconstruction;
         g_nr.reset = true;
         g_nr.featurePendingSubmission = true;
         g_nr.featureCreateEpoch = frame.SubmissionEpoch;
@@ -1969,7 +1933,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         LOG_INFO("DLSS-NR model feature created from {}", snippet->string());
         LOG_INFO("DLSS-NR running {}: target {}x{}, model {}x{}, guides {}x{} "
                  "(preset {}, intensity {}, style {}, build epoch {})",
-                 frame.AfterRayReconstruction ? "after Ray Reconstruction" :
+                 frame.RayReconstruction ? (frame.BeforeUpscale ? "before RR+SR" : "after RR+SR") :
                      (frame.BeforeUpscale ? "before SR" : "after SR"),
                  width, height, workWidth, workHeight,
                  guideWidth, guideHeight, g_nr.builtPreset[0], g_nr.builtIntensity, g_nr.builtStyle[0],
@@ -2921,7 +2885,7 @@ void RetryAfterFailure()
 // reprojection stage, a frame generation path, anything that is not the upscaler seam -- calls
 // RunPass directly and never touches an NGX parameter block.
 void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
-                      bool beforeUpscale, ID3D12CommandQueue* timingQueue, bool forcePost,
+                      bool beforeUpscale, ID3D12CommandQueue* timingQueue, bool rayReconstruction,
                       unsigned long long submissionEpoch)
 {
     std::lock_guard<std::recursive_mutex> nrLock(g_nrMutex);
@@ -2935,15 +2899,16 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
         lastPrecision = precision;
     }
     DlssNrNative::SetPrecision(precision);
-    if (!cfg.DlssNrEnabled.value_or_default() || !cfg.DlssNrDeferredDlss.value_or_default() || forcePost)
+    if (!cfg.DlssNrEnabled.value_or_default() || !cfg.DlssNrDeferredDlss.value_or_default() || rayReconstruction)
         DeferredSr::Cancel();
     else
     {
         if (cmdList != nullptr && params != nullptr)
         {
-            const auto epoch = NrSeamEpoch(beforeUpscale, timingQueue, submissionEpoch);
+            const auto submitted = timingQueue != nullptr ? submissionEpoch : State::Instance().frameCount;
+            const auto epoch = g_nrSeamClock.AtSeam(beforeUpscale, timingQueue != nullptr, submitted);
             if (beforeUpscale)
-                DeferredSr::Before(cmdList, params, epoch, timingQueue);
+                DeferredSr::Before(cmdList, params, epoch, submitted, timingQueue);
             else
                 DeferredSr::After(cmdList, params, epoch);
         }
@@ -2962,20 +2927,11 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
         return;
     }
 
-    // forcePost is supplied only for a native RR feature by the NGX and bridge callers.
-    // RR already reconstructs and upscales; never edit its noisy input or inherit SR's multipass cost.
-    if (forcePost && !cfg.DlssNrApplyAfterRR.value_or_default())
-    {
-        ReportSkipOnce("Ray Reconstruction is active; enable ApplyAfterRR to process its output");
-        return;
-    }
-
-    // Ray Reconstruction is explicitly forced post: PR #6 reports that pre-SR placement does not work
-    // with DLSSD's input contract. Origin-zero padded inputs are staged at their active size; offset,
-    // malformed or unsupported allocations still stay post. Rechecking on the post call makes this
-    // a real fallback rather than dropping NR.
+    // Both SR and RR+SR use the same placement control. Unsupported colour subrects
+    // retain the common post-upscale fallback; RR identity only separates history
+    // and prevents using the SR-only deferred-residual experiment on an RR feature.
     bool preSrCompatible = true;
-    if (cfg.DlssNrRunBeforeSr.value_or_default() && !forcePost)
+    if (cfg.DlssNrRunBeforeSr.value_or_default())
     {
         ID3D12Resource* preColor = GetResource(params, NVSDK_NGX_Parameter_Color, "DLSSD.Color");
         unsigned int renderWidth = 0, renderHeight = 0, colorBaseX = 0, colorBaseY = 0;
@@ -3024,7 +2980,7 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
         }
     }
 
-    const bool configuredBefore = cfg.DlssNrRunBeforeSr.value_or_default() && !forcePost &&
+    const bool configuredBefore = cfg.DlssNrRunBeforeSr.value_or_default() &&
                                   preSrCompatible;
     if (configuredBefore != beforeUpscale)
         return;
@@ -3084,7 +3040,7 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
         frame.OutputHeight = outputHeight;
     }
     frame.BeforeUpscale = beforeUpscale;
-    frame.AfterRayReconstruction = forcePost;
+    frame.RayReconstruction = rayReconstruction;
     frame.SubmissionEpoch = timingQueue != nullptr ? submissionEpoch : State::Instance().frameCount;
 
     // Color and Output may use different formats even though DLSS treats them as the same frame colour
@@ -3251,16 +3207,17 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
 }
 
 void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
-                          ID3D12CommandQueue* timingQueue, bool forcePost,
+                          ID3D12CommandQueue* timingQueue, bool rayReconstruction,
                           unsigned long long submissionEpoch)
 {
-    EvaluateInternal(cmdList, params, false, timingQueue, forcePost, submissionEpoch);
+    EvaluateInternal(cmdList, params, false, timingQueue, rayReconstruction, submissionEpoch);
 }
 
 void EvaluateBeforeUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
-                           ID3D12CommandQueue* timingQueue, unsigned long long submissionEpoch)
+                           ID3D12CommandQueue* timingQueue, unsigned long long submissionEpoch,
+                           bool rayReconstruction)
 {
-    EvaluateInternal(cmdList, params, true, timingQueue, false, submissionEpoch);
+    EvaluateInternal(cmdList, params, true, timingQueue, rayReconstruction, submissionEpoch);
 }
 
 // The pass. Resources in, nothing read from anywhere the caller cannot see.

@@ -4,9 +4,9 @@ Protected-branch working notes. Drained by `MEMORY_CONSOLIDATE`, not `TASK_CLOSE
 
 ## State @ 2026-09-09 (wilsjo2 v0.7.2 + v0.7.3 sync; then v0.7.4 + v0.7.5)
 
-`main` HEAD = `66571fd3` (Merge wilsjo2/main v0.7.4/v0.7.5) ← `eebbd2c5` (ai-os record) ←
-`21308d32` (Merge wilsjo2/main v0.7.2/v0.7.3). **All local — NOT pushed.** `origin/main`
-still `b9a50ea4`; recover with `git reset --hard b9a50ea4`.
+`main` HEAD = `bbfd9547` (ai-os record) ← `66571fd3` (Merge wilsjo2/main v0.7.4/v0.7.5) ←
+`eebbd2c5` (ai-os record) ← `21308d32` (Merge wilsjo2/main v0.7.2/v0.7.3). **Pushed to
+`origin/main` 2026-09-09** (`b9a50ea4..bbfd9547`). Pre-sync HEAD was `b9a50ea4`.
 
 **wilsjo2 v0.7.4 + v0.7.5 sync — DONE (local), 2026-09-09.** `git merge --no-ff`, 8 commits
 off `cb1f7aa3`:

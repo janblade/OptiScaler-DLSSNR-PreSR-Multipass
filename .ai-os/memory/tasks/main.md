@@ -2,10 +2,39 @@
 
 Protected-branch working notes. Drained by `MEMORY_CONSOLIDATE`, not `TASK_CLOSE`.
 
-## State @ 2026-09-09 (wilsjo2 v0.7.2 + v0.7.3 sync)
+## State @ 2026-09-09 (wilsjo2 v0.7.2 + v0.7.3 sync; then v0.7.4 + v0.7.5)
 
-`main` HEAD = `21308d32` (Merge wilsjo2/main). **Local only — NOT pushed.** Prior HEAD
-`b9a50ea4`; recover with `git reset --hard b9a50ea4` if needed.
+`main` HEAD = `66571fd3` (Merge wilsjo2/main v0.7.4/v0.7.5) ← `eebbd2c5` (ai-os record) ←
+`21308d32` (Merge wilsjo2/main v0.7.2/v0.7.3). **All local — NOT pushed.** `origin/main`
+still `b9a50ea4`; recover with `git reset --hard b9a50ea4`.
+
+**wilsjo2 v0.7.4 + v0.7.5 sync — DONE (local), 2026-09-09.** `git merge --no-ff`, 8 commits
+off `cb1f7aa3`:
+- `b7484ef9` v0.7.4-unified-nr: unify NR controls for SR and RR, simplify menu descriptions
+  (`DlssNr_Menu.cpp` −274 lines); drop `DlssNrApplyAfterRR` / `DlssNrRRPasses` /
+  `DlssNrRRWorkingScale` (RR now shares the SR pass/working-scale settings).
+- `4a96e741` + PR #8: fix NR submission epoch on DXVK presentations; new
+  `DlssNr_SeamClock.h` + `nr_seam_clock_smoke.cpp`.
+- PR #11 + `fc87c566`: stabilize deferred NR frame pairing without bypassing submission
+  guards (`DlssNr_DeferredSr.inl` +67).
+- PR #13: NR control clarification (absorbed our tooltip commit `98e8d48f` upstream, then
+  `b7484ef9` trimmed it).
+- docs: `INSTALL-DLSSNR.md`, `docs/releases/v0.7.{4,5}.md`, `docs/PR-REVIEW-20260909.md`.
+- **1 conflict:** `DlssNr_Menu.cpp` — took **wilsjo2's wholesale** (user decision). Their
+  v0.7.4 deliberately simplified the NR tooltips after absorbing our DLSS-5-grounded
+  version; staying lockstep stops this file re-conflicting every sync. Our verbose text is
+  in history (`09e3cd4b`).
+- `DlssNrNative.cpp` untouched by this range — no hybrid conflict.
+- Debug|x64 + Release|x64 **Build succeeded, 0 errors**; Debug warnings 63 (baseline).
+  Forced recompile of the merge-touched NR TUs → 0 warnings in any changed file.
+- Still owed from the v0.7.2/v0.7.3 sync: re-port PR #4 async device init onto wilsjo2's
+  `DlssNrNative.cpp` (their promoted candidate-path structure).
+
+---
+
+### v0.7.2/v0.7.3 sync record (superseded HEAD, kept for context)
+
+`main` HEAD was `21308d32` (Merge wilsjo2/main). Prior HEAD `b9a50ea4`.
 
 **wilsjo2/main sync — DONE (local).** `git merge --no-ff` (established pattern: main is
 shared + has merge commits, never rebase). 2 incoming commits off merge-base `ec96f42f`:

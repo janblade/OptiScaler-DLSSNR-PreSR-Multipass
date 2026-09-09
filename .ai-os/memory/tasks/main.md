@@ -2,6 +2,58 @@
 
 Protected-branch working notes. Drained by `MEMORY_CONSOLIDATE`, not `TASK_CLOSE`.
 
+## State @ 2026-09-09 (wilsjo2 v0.7.2 + v0.7.3 sync)
+
+`main` HEAD = `21308d32` (Merge wilsjo2/main). **Local only — NOT pushed.** Prior HEAD
+`b9a50ea4`; recover with `git reset --hard b9a50ea4` if needed.
+
+**wilsjo2/main sync — DONE (local).** `git merge --no-ff` (established pattern: main is
+shared + has merge commits, never rebase). 2 incoming commits off merge-base `ec96f42f`:
+- `d2b65cda` v0.7.2-hybrid: promote combined NVFP4 hybrid, keep previous path for
+  comparison; `DlssNrPrecision` hybrid value `2 -> 4`; new "candidate" split-half
+  contraction path in `DlssNrNative.cpp`.
+- `cb1f7aa3` v0.7.3-kcd2 (co-authored cmh1448): wilsjo2's own adaptation of cmh1448's
+  `6446cc8d` NR motion-vector metadata fix — pre-SR + multipass + native Vulkan; new
+  `OptiScaler/shaders/dlssnr/DlssNr_Guides.h` (`ResolveGuideRegions`/`GuideSubrect`) +
+  `tests/nr_guides_smoke.cpp`; `DlssNrFrameInfo` gains `Depth/MotionSubrectBaseX/Y`,
+  `MotionVectorsLowResolution`, `OutputWidth/OutputHeight`; forwarder ABI versioned as
+  `dlssnr_{call,vk}_evaluate_v2`. Plus KCD2 output-cap docs, DLSSG/NvApiHooks tweaks,
+  Streamline 2.14.1 pin.
+- New/changed: `DlssNr_Guides.h`, `nr_guides_smoke.cpp`, `docs/{HYBRID-V072-VALIDATION,
+  NR-MOTION-METADATA,releases/v0.7.3}.md`, `Config.{h,cpp}`, `OptiScaler.ini`,
+  `redist/streamline/manifest.json`, `package_release.ps1`.
+- **2 conflicts:**
+  - `DlssNrNative.cpp` — took **wilsjo2's wholesale** (user decision). Their promoted line
+    adds the candidate split-half path + `(device,candidate)`-keyed maps + sync `Prepare`.
+    **Our `c37c185d` (PR #4: async device init off the render thread, no-restart recovery
+    from latched failure, LRU session-map bounding + graveyard) is DROPPED from the merge.**
+    FOLLOW-UP OWED: re-port those 3 improvements onto the new `DlssNrNative.cpp` structure
+    as a separate reviewed change.
+  - `DlssNr_Menu.cpp` — took wilsjo2's precision-combo structure (`== 4`/`4u`,
+    "NVIDIA (FP8)" / "Experimental (FP8+NVFP4 hybrid)" labels, `precisionChoice > 0` status
+    check); kept our always-shown DLSS-5-grounded `HelpMarker`, folded in their
+    "1440p rounding" caveat.
+- `.ai-os/` (55 files) preserved — wilsjo2 carries none. `CLAUDE.md`/`AGENTS.md`/`.claude/`
+  were already absent from `b9a50ea4` (not a merge effect).
+- Debug|x64 + Release|x64 both **Build succeeded, 0 errors**; warnings at baseline
+  (Release 26 / Debug 63 whole-solution). NR MV + hybrid candidate paths are
+  auto-merge/compile-verified only — validate in-game (hybrid needs Blackwell + nvfp4
+  assets).
+- **NOT pushed.** `main` push (protected, shared) needs explicit go-ahead.
+
+**`fix/dlssnr-mv-subrect-metadata` — ABANDONED + deleted.** It was our own port of the same
+cmh1448 fix; v0.7.3's is the superset (pre-SR, shared guides header + smoke test, explicit
+`OutputWidth/Height`, `_v2` ABI). Plan `memory/plans/2026-09-09-dlssnr-mv-subrect-metadata.md`
+marked `abandoned` with the finding. No code from it lands.
+
+Queued epic (approved, not started): memory/plans/2026-09-09-neural-manhwa-restyle.md
+(epic approved, 0/5 stories) — "reverse-NR": train our own real-time model to restyle game
+frames toward a Solo Leveling colored-manhwa look, run through OptiScaler in the NR slot.
+NOT retraining nvngx_dlssnr.dll (closed engine). Method default CUT->distilled feed-forward
+(diffusion-distill fallback); runtime default ONNX Runtime + DirectML behind `IStyleInference`.
+Story 2 (offline stills quality) is the go/no-go gate. Training in a new `tools/style-transfer/`
+(PyTorch, outside OptiScaler.sln); long-horizon, mostly offline.
+
 ## State @ 2026-09-08 (post wilsjo2 sync)
 
 `main` HEAD = `32563ad2` (Merge wilsjo2/main), pushed to origin. Lineage: `c3897a78` (PR #1) ->

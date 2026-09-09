@@ -27,8 +27,15 @@ off `cb1f7aa3`:
 - `DlssNrNative.cpp` untouched by this range — no hybrid conflict.
 - Debug|x64 + Release|x64 **Build succeeded, 0 errors**; Debug warnings 63 (baseline).
   Forced recompile of the merge-touched NR TUs → 0 warnings in any changed file.
-- Still owed from the v0.7.2/v0.7.3 sync: re-port PR #4 async device init onto wilsjo2's
-  `DlssNrNative.cpp` (their promoted candidate-path structure).
+- **PR #4 re-port — DONE (branch, not pushed).** `fix/hybrid-async-init-report` off
+  `75ad586c`, 2 commits: `eb3f8c15` async device init (concern 1), `a769526a` recoverable
+  `restartRequired` + bounded session map (concerns 2+3). All 3 confirmed still applicable
+  against wilsjo2's v0.7.2 code (nothing upstream addressed them; v0.7.3-v0.7.5 didn't
+  touch `DlssNrNative.cpp`). Adapted to the `(device,candidate)` keying, 4-tuple session
+  key, `SetPrecision` entry point, and candidate `Prepare` branch. Debug + Release x64
+  clean rebuild, 0 errors, 63/26 warnings (baseline), 0 in `DlssNrNative.cpp`. Compile-only
+  — `Precision=4` needs Blackwell + `OptiScaler/nvfp4/hybrid` assets to run; stays draft
+  until hardware-measured. No PR opened yet.
 
 ---
 

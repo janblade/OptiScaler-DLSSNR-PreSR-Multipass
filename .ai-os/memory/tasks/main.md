@@ -240,3 +240,183 @@ it never touches jitter/MVecScale/subrects. The unmodified block is handed to SR
 per-backend dispatch-desc copies). So SR gets the game's jitter regardless of pre-SR.
 The earlier "NR drops jitter" finding is about NR's *own* model input (retail
 nvngx_dlssnr.dll has no jitter slot), not a broken NR→SR forward. No plumbing bug.
+
+### 2026-09-09 — reference doc: NR requirements matrix (API x GPU gen)
+
+User asked for a requirements mapping table: what it takes for DLSS-NR to be usable across
+DX9/DX11/DX12 x RTX 50/40/30, standalone and with DLSS RR. Wrote `docs/NR-REQUIREMENTS-MATRIX.md`
+(not committed). Key findings from the code, not just docs:
+- **DX9 = N/A** everywhere — OptiScaler has no D3D9 hooks and no DX9 game has a temporal upscaler.
+- **DX11 = bridge only** — NR needs the D3D12 seam (`IFeature_Dx11wDx12.cpp` call site); native
+  pure-D3D11 FSR2/XeSS backends don't carry the pass. Run via `with_dx12`.
+- **DX12 = full** — native seam, all placements (post-SR / pre-SR multipass 1-3 / DeferredDLSS).
+- **Vulkan native = yes** for post-SR + pre-SR (`DlssNrFeature_Vk.cpp`); **DeferredDLSS is
+  D3D12-only** (Vk logs a diagnostic, leaves frame unchanged, `DlssNrFeature_Vk.cpp:527`).
+  Vulkan-via-D3D12-bridge = full incl. DeferredDLSS.
+- **GPU gen only changes the `nvngx_dlssnr.dll` you supply**: RTX 50 = original NVIDIA-signed
+  310.8; RTX 20/30/40 = ShortFuse cross-gen 310.8 (auto Ada vs FP16 path; sig reports invalid,
+  verify by SHA-256). Hardware gate = `architecture_id >= TU100`.
+- **NR + RR**: NR runs on the RR+SR seam, supported placement = **after RR+SR**; `rayReconstruction`
+  flag threads through `EvaluateInternal` / `EvaluateAtSeamVk`. **DeferredDLSS hard-disabled when
+  RR is active** (`DlssNr_Dx12.cpp:2902`). Pre-RR ("before RR+SR") path exists but design doc
+  flags post-RR as the contract -> experimental. Needs the game to actually integrate RR + a
+  `nvngx_dlssd.dll` runtime. No DX11 game ships RR -> N/A in practice.
+- RTX 30/20 fragility carried over from `docs/NR-COMPATIBILITY.md` (Onimusha/RE Engine, candidate
+  fix only).
+
+Extended 2026-09-09: added §3 (NR + Frame Generation) and §4 (NR + Multi-Frame Generation)
+to `docs/NR-REQUIREMENTS-MATRIX.md`. FG/MFG facts: OptiFG output is DX12-only (DX11/Vk =
+bridge/experimental); NVIDIA DLSS-G needs RTX 40/50 + Streamline 2.14.1 + `nvngx_dlssg.dll`;
+RTX 30/20 get FG/MFG only via FSR replacement (`FGNvngxReplacement=Nukems/Arturs/FFX/Combo`).
+Native MFG = RTX 50 (`[DLSSG] InterpolationCount` 2-5). RTX 40 MFG = `AdaMfgUnlock` in-memory
+patch (from `MfgUnlock.h`, y4my4my4m-derived, ceiling 6x) or external Dashdogy ASI — neither
+hardware-verified. NR runs alongside FG (separate subsystem); bring FG up first, then add one
+NR pass. `[FrameGen] External=true` keeps NR but drops OptiScaler FG routing. ResidualFG
+(`DeferredDLSS`+`ResidualFG`) is a distinct half-rate-NR experiment, D3D12/DX11-bridge only.
+Doc still uncommitted.
+
+Extended again 2026-09-09: added §5 (file placement table: source -> destination -> what it
+enables) and §6 (menu control -> INI key, by goal) to `docs/NR-REQUIREMENTS-MATRIX.md`.
+Verified INI keys against Config.cpp: `[DlssNr]` Enabled/RunBeforeSR/DeferredDLSS/ResidualFG/
+Precision(0|4)/Passes/WorkingScale; `[FrameGen]` Enabled/External/FGInput(upscaler)/FGOutput
+(fsrfg|xefg|dlssg)/FGNvngxReplacement(None|Nukems|Arturs|FFX|Combo); `[DLSSG]` InterpolationCount
+(1-6)/AdaMfgUnlock/AdaBlackwellKernels/ForceDMFG/FramerateTargetDMFG. Menu labels from
+menu_common.cpp: "FG Input"/"FG Output"/"FG Nvngx Replacement" combos, "Override DLSSG Ratio",
+"Built-in RTX 40 MFG unlock (experimental; restart)", "External frame generation / MFG unlocker".
+DLL search: NR DLLs = g_dllDir then exe dir; Nukems/Arturs = MainDllPath (OptiDllPath);
+streamline/ = <OptiDllPath>/streamline. Doc = 7 sections now, still uncommitted.
+
+### 2026-09-09 — applied independent-reviewer findings to NR-REQUIREMENTS-MATRIX.md
+
+Spawned general-purpose subagent (independent Review Pass, cohesiveness/flow/navigation lens).
+8 findings, all applied via full rewrite:
+1. Added "## How to read this document" (Contents TOC + Matrix legend + Key concepts glossary)
+   between intro and §0. Legend now defines 4 tokens incl. **Experimental**; every §1-§4 cell
+   prefixed with one bold token; one-line legend repeated under each matrix.
+2. Fixed all "(see §3)" fragility pointers -> "(see [§7](#7-caveats))" anchor links.
+3. TOC added; every matrix has a "-> File placement / Menu-INI / Caveats" anchor-link footer;
+   §4 Path table has a "Menu / INI" column linking to §6 goal sub-sections.
+4. Key concepts glossary: post-SR, pre-SR multipass, DeferredDLSS, ResidualFG, hybrid precision,
+   forwarder vs model DLL, ShortFuse cross-gen runtime, bridge - each links to its deep section.
+5. All 4 matrices now identical shape: same column headers "RTX 50 (Blackwell)|40 (Ada)|30
+   (Ampere)", same 5 API row labels ("Vulkan (D3D12 bridge)" everywhere).
+6. Repeated constraints (DeferredDLSS limits x5, RTX30-replacement-provider x3) collapsed:
+   §7 is now authoritative, elsewhere = short tag + §7 link.
+7. Intro source dump moved to "## Sources" at end.
+8. Minor: "FG runs at frame-present time"; §1 runtime table moved before its matrix; RTX 20
+   scope stated once in the legend ("behaves like RTX 30 everywhere").
+Section headings renamed to punctuation-free forms for clean GitHub anchors. Doc still
+uncommitted. Reviewer praised §0 device, per-section "extra requirements" scaffolding, §6
+goal structure, cross-doc terminology - all preserved.
+
+### 2026-09-09 — second reviewer pass applied to NR-REQUIREMENTS-MATRIX.md
+
+Fresh general-purpose subagent, same lens. 10 findings + minors, all addressed:
+1. "Builds on" chain unified: §1 labelled the NR baseline ("§0 + model runtime"); §2/§3/§4 all
+   open "Extra requirements on top of §1"; §4 says "§3 (= §1 + FG)".
+2. New "### Frame Generation provider reference" table in §6 (menu label <-> INI value <-> DLL
+   <-> result); §3 bullets + §5 footer + §6 subsections now point to it; dropped ad-hoc name
+   variants ("DLSS Enabler (Artur)" -> "DLSS Enabler").
+3. §7 claim narrowed to "each constraint a matrix *cell* tags"; §3/§4 scenario-wide notes
+   relabelled "Scenario-wide notes (not cell-specific, stay here)".
+4. Default placement canonical = "post-SR": §6 heading renamed "NR post-SR (baseline
+   placement)"; Key concepts + §1 footer links updated to #nr-post-sr-baseline-placement.
+5. FSR-based MFG for RTX 40: new §6 heading "NR with FSR-based MFG (any GPU)"
+   (#nr-with-fsr-based-mfg-any-gpu, was "RTX 30 and older"); §4 RTX 40/30 DX12 cells and the
+   RTX 40-unlock subsection now link to it.
+6. Sources: `INSTALL-DLSSNR.md` -> "`INSTALL-DLSSNR.md` (repo root)" (it's repo-root, not docs/).
+7. "Extra requirements" block shape unified: bullets -> matrix -> supplementary table for
+   §1/§4; §1 runtime table moved after the matrix.
+8. Dropped the duplicate Key concepts "Bridge" row (kept legend's); §5 closing 2 paragraphs
+   -> 1-line pointer to Key concepts.
+9. TOC: added indented §6 sub-list (provider reference + 11 goal subsections, grouped 3 lines).
+10. Key concepts "DeferredDLSS" More-link repointed §7 -> §6 subsection for parity.
+Minor: "feature-18" -> "NGX feature 18" glossed in intro; §4 compound cells rewritten to lead
+with one legend token; pre-sr-multipass.md path made consistent (full path in §7).
+Validated: all 82 internal anchor refs resolve, no duplicate heading slugs (python check).
+Doc still uncommitted.
+
+### 2026-09-09 — NR-REQUIREMENTS-MATRIX.md review loop (user: cycle until no actionable comments, max 5)
+
+Cycle 1 — applied review #3 (8 items):
+1. Intro "builds on" fixed: §1 = baseline; §2/§3 add to §1; §4 also needs §3. (was "each builds
+   on the one before it" — false)
+2. Uniform scenario template: every §1-§4 now = 1 intro sentence + "**Builds on:** [§X]" +
+   "Extra requirements on top of §X:" bullets + legend + matrix + table + footer. §4 got the
+   bulleted skeleton it lacked; §2 got an intro sentence.
+3. RTX 20 naming canonicalised to "RTX 30 / 20" in prose/cells; legend defines the bucket;
+   "Ampere / Turing" kept only in the FP16-path note. Matrix "fragile on Ampere" -> "Fragile
+   ([§7])" (column already says Ampere).
+4. §7 named in the intro's "links down to" sentence (kept §7 last rather than renumber — the
+   reviewer's lightweight alternative).
+5. Contents: added "How to read this document" row w/ Matrix legend + Key concepts sub-links.
+6. §6 Contents quick-links now one labelled "*§6 quick links*" dot-separated line.
+7. §6 DeferredDLSS constraint pre-summary trimmed to bare "Constraints: [§7]".
+8. Opening sentence split into two.
+Also: dropped GPU parentheticals from 4 §6 headings for cleaner anchors
+(#nr-with-fsr-frame-generation, #nr-with-real-nvidia-dlss-g, #nr-with-fsr-replacement-fg,
+#nr-with-fsr-based-mfg); all inbound links updated; §6 cross-refs between subsections now
+hyperlinked. Validated: 93 anchor refs resolve, no dup slugs.
+Review #4 dispatched (general-purpose, cold).
+
+Cycle 2 — applied review #4 (verdict "it succeeds"; 1 Should-fix + 5 polish, all done):
+1. (Should fix) §7 now backs every cell that links to it: added "Ray Reconstruction adds
+   further GPU cost" to the fragility bullet, and a new bullet "RTX 40 MFG unlock is
+   experimental / unverified on Ada" (folded in the don't-run-on-RTX-30/20 line).
+2. Trimmed §6 "FSR replacement FG" / "FSR-based MFG" subsections to point at the provider
+   reference instead of restating label<->INI mappings.
+3. Pre-matrix legend link text "How to read" -> "Matrix legend" (x4) so text matches target.
+4. §6 Contents quick-links: one 12-link middot line -> 3 grouped indented lines
+   (placement / frame gen / multi-frame).
+5. DX9 rows: added "([§7])" pointer to the first cell of all 4 DX9 matrix rows.
+6. "ShortFuse cross-gen" unified to "ShortFuse cross-generation runtime" everywhere
+   (KC term + §5 + runtime table "..., 310.8"); KC row notes the canonical name.
+Validated: 98 anchor refs resolve, no dup slugs; greps confirm no leftover "cross-gen ",
+"How to read](#", "fragile on Ampere", "RTX 30 and older".
+Review #5 dispatched (general-purpose, cold; also asked to verify §7 pointers back their claims).
+
+Cycle 3 — applied review #5 (verdict "it succeeds"; 1 low Should-fix + 7 polish, all done):
+1. KC "Hybrid precision" More-link §7 -> "§6 · §7" (was routing to constraints not the toggle).
+2. Legend: added sentence that a bridge path shows as **Experimental** in §3-§4 (FG-unvalidated).
+3. Legend: RTX 30/20 bucket note now says the column header abbreviates it.
+4. Intro reading-order: "How to read" listed before §0 (it physically precedes it).
+5. §5 "Put it" column normalised to one label ("beside OptiScaler"); intro para rewritten to
+   define it first and note OptiDllPath is the only case where locations differ.
+6. Forwarder DLL: one term "forwarder shim" (KC + §0 + §5); "caller-gate" kept once as alias.
+7. §6 order: "NR with DeferredDLSS" moved above "NR with Ray Reconstruction" (group §1-placement
+   items); Contents quick-link order matched.
+8. Intro scenario links "[2]/[3]/[4]" -> "[§2]/[§3]/[§4]".
+Validated: 99 anchor refs resolve, no dup slugs, greps clean.
+Review #6 dispatched (cold; told to report "no should-fix" if only cosmetic nits remain, cap 3).
+This is cycle 3 of 5; reviews have trended to "it succeeds" for three passes running.
+
+Cycle 4 — applied review #6 (verdict "strong"; 2 Should-fix contradictions + 2 polish, all done):
+1. InterpolationCount ceiling reconciled: mapping stated once in §4 intro ("generated frames;
+   multiplier = count+1; 2->3x, 3->4x, 5->6x; config accepts 1-6, runtime clamps, treat 5=6x as
+   ceiling"). §4 matrix "2-5 runtime-clamped", §4 Ada row "ceiling InterpolationCount 5 = 6x",
+   §6 RTX50 "up to 5 (6x)", §6 RTX40 "2...5 (3x-6x)" — all agree now (was 2-5 / up to 6 / 2...6).
+2. §6 "FSR replacement FG" INI line: added missing `FFX` -> `Nukems | Arturs | FFX | Combo`.
+3. §3 + §4 "Menu / INI" footer links -> section head #6-menu-settings-and-their-ini-keys
+   (was landing on one sub-case; §1/§2 keep their single-subsection targets).
+4. §0 row label "The seam must reach D3D12" -> "...reach a supported backend" (its own detail
+   names the native-Vulkan path, which doesn't reach D3D12).
+Validated: 99 anchor refs resolve, no dup slugs.
+Review #7 dispatched — cycle 5 (final). If clean / polish-only, loop stops.
+
+Cycle 5 (final, cap reached) — applied review #7 (verdict "in good shape"; 1 Should-fix + 2 polish):
+1. Streamline path self-contradiction: §5 row now says `OptiScaler/streamline/` (matches §6 +
+   docs/DLSS-FRAME-GENERATION.md); §5 intro rewritten — "beside OptiScaler" = folder the renamed
+   proxy loads from; dropped the false "OptiDllPath defaults to the exe folder" claim; noted the
+   `OptiScaler/` backend folder + streamline nesting inside it.
+2. "Menu" vs "Overlay" vs "panel" -> standardised on "Overlay". §6 retitled "Overlay settings
+   and their INI keys" (anchor #6-overlay-settings-and-their-ini-keys); Contents + intro + all
+   4 footers + MFG-paths table header + "panel reports" -> "overlay".
+3. §1 "Overlay / INI" footer repointed from #nr-post-sr-baseline-placement to the §6 section
+   head (§1 matrix spans 3 placements); §2 keeps its single-subsection target.
+Validated: 99 anchor refs resolve, no dup slugs, grep-clean.
+
+REVIEW LOOP COMPLETE — 5 cycles run (reviews #3-#7). Trend: structural findings in #3-#4,
+narrowing to 1-2 localized self-contradictions per pass by #6-#7; every pass verdict "succeeds
+/ good shape". Doc = 8 sections (How-to-read + §0-§7 + Sources), all internal anchors verified
+each cycle. STILL UNCOMMITTED — user has not asked to commit; `docs/NR-REQUIREMENTS-MATRIX.md`
+is the only tracked change beyond the ai-os task memory.

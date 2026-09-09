@@ -35,7 +35,8 @@ off `cb1f7aa3`:
   key, `SetPrecision` entry point, and candidate `Prepare` branch. Debug + Release x64
   clean rebuild, 0 errors, 63/26 warnings (baseline), 0 in `DlssNrNative.cpp`. Compile-only
   — `Precision=4` needs Blackwell + `OptiScaler/nvfp4/hybrid` assets to run; stays draft
-  until hardware-measured. No PR opened yet.
+  until hardware-measured. **Draft PR janblade#5** open (fix/hybrid-async-init-report ->
+  main), branch + main pushed to origin. `main` = `285f09e2` on origin.
 
 ---
 

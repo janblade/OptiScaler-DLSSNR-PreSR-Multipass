@@ -22,6 +22,8 @@
 #include <array>
 #include <tuple>
 #include <cstring>
+#include <thread>
+#include <atomic>
 #include "DlssNrHybridBuilder.h"
 #include "DlssNrHybridAssets.h"
 #pragma comment(lib,"bcrypt.lib")
@@ -48,8 +50,11 @@ Template LoadTemplate(const fs::path&dir){Template t;std::ifstream f(dir/"manife
  return t;}
 struct Weight{uint64_t ep=0,es=0,cp=0,cs=0,cos=0;};
 struct Buffer{ComPtr<ID3D12Resource>gpu;uint64_t bytes=0;UINT64 address()const{return gpu->GetGPUVirtualAddress();}};
+// NVAPI CU entrypoints, snapshotted under S().mutex so the async init worker can call them
+// without re-entering the lock.
+struct NvApi{decltype(&NvAPI_D3D12_CreateCuModule)createModule=nullptr;decltype(&NvAPI_D3D12_CreateCuFunction)createFunction=nullptr;};
 struct Device{FusedBuilder splitBuilder;NVDX_ObjectHandle split=nullptr,splitEpilogue=nullptr;FusedBuilder builder;Buffer norm;NVDX_ObjectHandle fused=nullptr;ComPtr<ID3D12Device>owner;std::map<uint64_t,Template> contracts;std::array<Weight,8>w{};Buffer weights;std::vector<ComPtr<ID3D12Resource>>uploads;std::vector<NVDX_ObjectHandle>modules;
- NVDX_ObjectHandle pack=nullptr,epilogue=nullptr;float gateInv=1;bool ready=false;std::string failure;};
+ NVDX_ObjectHandle pack=nullptr,epilogue=nullptr;float gateInv=1;std::atomic<int> init{0};std::string failure;}; // init: 0 idle, 1 running, 2 ready, 3 failed
 struct Session{Buffer partials;std::array<Blob,8>splitParams;std::array<FusedInfo,8>splitInfo{};std::array<Blob,8> fusedParams;std::array<FusedInfo,8> fusedInfo{};uint64_t tokens=0;unsigned block=31,pairs=0;bool active=false,pending=false;UINT64 x=0,y=0,done=0;unsigned width=0,height=0;ID3D12Device*device=nullptr;
  Buffer xp,xs,yp,ys,c,cw;ComPtr<ID3D12Resource>zero;uint64_t zeroBytes=0;bool allocated=false;};
 struct Target{ID3D12Device*device;NVDX_ObjectHandle module;unsigned kind;bool supported;};
@@ -68,29 +73,47 @@ void Transition(ID3D12GraphicsCommandList*c,ID3D12Resource*r,D3D12_RESOURCE_STAT
 ComPtr<ID3D12Resource>Resource(ID3D12Device*d,uint64_t bytes,D3D12_HEAP_TYPE type,D3D12_RESOURCE_STATES state){D3D12_RESOURCE_DESC r{};r.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;r.Width=bytes;r.Height=1;r.DepthOrArraySize=1;r.MipLevels=1;r.SampleDesc.Count=1;r.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;if(type==D3D12_HEAP_TYPE_DEFAULT)r.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;D3D12_HEAP_PROPERTIES h{};h.Type=type;ComPtr<ID3D12Resource>out;Check(d->CreateCommittedResource(&h,D3D12_HEAP_FLAG_NONE,&r,state,nullptr,IID_PPV_ARGS(&out)));return out;}
 Buffer Allocate(ID3D12Device*d,uint64_t bytes){return {Resource(d,std::max<uint64_t>(bytes,256),D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_UNORDERED_ACCESS),std::max<uint64_t>(bytes,256)};}
 void CopyZero(ID3D12GraphicsCommandList*c,Buffer&b,ID3D12Resource*z,uint64_t n){if(!n)return;Transition(c,b.gpu.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COPY_DEST);c->CopyBufferRegion(b.gpu.Get(),0,z,0,n);Transition(c,b.gpu.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);}
-NVDX_ObjectHandle Module(Device&d,const fs::path&p){auto b=Read(p);NVDX_ObjectHandle m=nullptr;NvCheck(S().createModule(d.owner.Get(),b.data(),(unsigned)b.size(),&m));d.modules.push_back(m);return m;}
-NVDX_ObjectHandle Function(Device&d,NVDX_ObjectHandle m,const char*n){NVDX_ObjectHandle f=nullptr;NvCheck(S().createFunction(d.owner.Get(),m,n,&f));return f;}
+NVDX_ObjectHandle Module(Device&d,const fs::path&p,const NvApi&nv){auto b=Read(p);NVDX_ObjectHandle m=nullptr;NvCheck(nv.createModule(d.owner.Get(),b.data(),(unsigned)b.size(),&m));d.modules.push_back(m);return m;}
+NVDX_ObjectHandle Function(Device&d,NVDX_ObjectHandle m,const char*n,const NvApi&nv){NVDX_ObjectHandle f=nullptr;NvCheck(nv.createFunction(d.owner.Get(),m,n,&f));return f;}
 fs::path Assets(){wchar_t path[32768]{};HMODULE module=nullptr;if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&Assets),&module)||!GetModuleFileNameW(module,path,32768))throw std::runtime_error("Cannot locate OptiScaler module");return fs::path(path).parent_path()/"OptiScaler"/"nvfp4"/"hybrid";}
 fs::path FusedDir(){return Assets()/"expansion";}
-void VerifyAssets(){static bool verified=false;if(verified)return;auto root=Assets();for(auto&e:HybridAssets::files){auto blob=Read(root/e.path);unsigned char sha[32]{};if(blob.size()!=e.bytes||BCryptHash(BCRYPT_SHA256_ALG_HANDLE,nullptr,0,blob.data(),(ULONG)blob.size(),sha,32)!=0||memcmp(sha,e.sha,32))throw std::runtime_error(std::string("Hybrid asset checksum mismatch: ")+e.path);}verified=true;}
-void VerifyCandidateAssets(){static bool verified=false;if(verified)return;
+void VerifyAssets(){static std::atomic<bool> verified{false};if(verified.load(std::memory_order_acquire))return;auto root=Assets();for(auto&e:HybridAssets::files){auto blob=Read(root/e.path);unsigned char sha[32]{};if(blob.size()!=e.bytes||BCryptHash(BCRYPT_SHA256_ALG_HANDLE,nullptr,0,blob.data(),(ULONG)blob.size(),sha,32)!=0||memcmp(sha,e.sha,32))throw std::runtime_error(std::string("Hybrid asset checksum mismatch: ")+e.path);}verified.store(true,std::memory_order_release);}
+void VerifyCandidateAssets(){static std::atomic<bool> verified{false};if(verified.load(std::memory_order_acquire))return;
  {auto blob=Read(Assets()/"candidate/split-half/fused_expand.cubin");const unsigned char expected[32]={0xd5,0x16,0xfe,0x1a,0xc3,0x87,0xd5,0x9f,0x83,0xb0,0x97,0x21,0x4c,0xa9,0xb8,0x9f,0xce,0xbc,0x86,0xf2,0x63,0x67,0xf9,0xdd,0xc7,0xe8,0xcb,0x69,0x2e,0x77,0x66,0x59};unsigned char sha[32]{};if(blob.size()!=5013480||BCryptHash(BCRYPT_SHA256_ALG_HANDLE,nullptr,0,blob.data(),(ULONG)blob.size(),sha,32)!=0||memcmp(sha,expected,32))throw std::runtime_error("Candidate asset checksum mismatch: candidate/split-half/fused_expand.cubin");}
  {auto blob=Read(Assets()/"candidate/split-half/params_builder.dll");const unsigned char expected[32]={0x59,0xc9,0xda,0x12,0x7e,0xf3,0xfe,0xb5,0x69,0x39,0x63,0x20,0x04,0xed,0x09,0x21,0x62,0x1d,0xcb,0x6b,0xe5,0xf8,0x63,0x0c,0x00,0xe7,0xac,0x89,0xf7,0x76,0x3a,0x04};unsigned char sha[32]{};if(blob.size()!=55808||BCryptHash(BCRYPT_SHA256_ALG_HANDLE,nullptr,0,blob.data(),(ULONG)blob.size(),sha,32)!=0||memcmp(sha,expected,32))throw std::runtime_error("Candidate asset checksum mismatch: candidate/split-half/params_builder.dll");}
-verified=true;}
+verified.store(true,std::memory_order_release);}
 struct UploadBatch{ComPtr<ID3D12CommandQueue>queue;ComPtr<ID3D12CommandAllocator>allocator;ComPtr<ID3D12GraphicsCommandList>cmd;ComPtr<ID3D12Fence>fence;UploadBatch(ID3D12Device*d){D3D12_COMMAND_QUEUE_DESC desc{};desc.Type=D3D12_COMMAND_LIST_TYPE_DIRECT;Check(d->CreateCommandQueue(&desc,IID_PPV_ARGS(&queue)));Check(d->CreateCommandAllocator(desc.Type,IID_PPV_ARGS(&allocator)));Check(d->CreateCommandList(0,desc.Type,allocator.Get(),nullptr,IID_PPV_ARGS(&cmd)));Check(d->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&fence)));}void Finish(){Check(cmd->Close());ID3D12CommandList*lists[]={cmd.Get()};queue->ExecuteCommandLists(1,lists);Check(queue->Signal(fence.Get(),1));HANDLE event=CreateEventW(nullptr,FALSE,FALSE,nullptr);if(!event)throw std::runtime_error("Hybrid upload event failed");auto rc=fence->SetEventOnCompletion(1,event);if(FAILED(rc)){CloseHandle(event);Check(rc);}auto waited=WaitForSingleObject(event,10000);CloseHandle(event);if(waited!=WAIT_OBJECT_0)throw std::runtime_error("Hybrid upload completion wait failed");}}
 ;
 const std::map<uint64_t,fs::path>&ContractPaths(){static const std::map<uint64_t,fs::path> paths{{960,Assets()/"contract"},{2160,Assets()/"contract_m2160"},{3840,Assets()/"contract_m3840"}};return paths;}
-void Prepare(Device&d,ID3D12Device*device,ID3D12GraphicsCommandList*c){if(!d.failure.empty())throw std::runtime_error(d.failure);if(d.ready)return;VerifyAssets();if(S().candidate)VerifyCandidateAssets();auto&uploadBatch=*new UploadBatch(device);c=uploadBatch.cmd.Get();d.owner=device;auto root=Assets();for(auto&entry:ContractPaths())d.contracts.emplace(entry.first,LoadTemplate(entry.second));
+// Runs on the async init worker (see KickDeviceInit). Records only into its own private
+// UploadBatch command list, and its only GPU wait (uploadBatch.Finish) is off the render
+// thread. Touches no shared State; the caller publishes d via the d.init release store.
+void Prepare(Device&d,ID3D12Device*device,const NvApi&nv,bool candidate){VerifyAssets();if(candidate)VerifyCandidateAssets();auto&uploadBatch=*new UploadBatch(device);ID3D12GraphicsCommandList*c=uploadBatch.cmd.Get();d.owner=device;auto root=Assets();for(auto&entry:ContractPaths())d.contracts.emplace(entry.first,LoadTemplate(entry.second));
  auto blob=Read(root/"weights.bin");std::ifstream f(root/"weights.txt");if(!f)throw std::runtime_error("Missing weights.txt");std::string line;std::array<bool,8>seen{};
  while(std::getline(f,line)){std::istringstream in(line);std::string k;in>>k;if(k.empty()||k[0]=='#')continue;if(k=="gate_inverse_tensor_scale"){in>>d.gateInv;continue;}unsigned block;std::string a,b,cname,ep,es,cp,cs,co;in>>block>>a>>ep>>es>>b>>cp>>cs>>cname>>co;if(k!="block"||block<31||block>38||a!="expand"||b!="contract"||cname!="cosine"||seen[block-31])throw std::runtime_error("Invalid weights mapping");d.w[block-31]={Num(ep),Num(es),Num(cp),Num(cs),Num(co)};seen[block-31]=true;}
  for(unsigned i=0;i<8;++i){if(!seen[i])throw std::runtime_error("Missing block weights");auto w=d.w[i];for(auto p:std::array<std::pair<uint64_t,uint64_t>,5>{{{w.ep,4096ull*1024/2},{w.es,4096ull*1024/16},{w.cp,1024ull*4096/2},{w.cs,1024ull*4096/16},{w.cos,2048}}})if(p.first>blob.size()||p.second>blob.size()-p.first)throw std::runtime_error("Weight range out of bounds");}
  d.weights=Allocate(device,blob.size());auto upload=Resource(device,blob.size(),D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);void*p=nullptr;Check(upload->Map(0,nullptr,&p));memcpy(p,blob.data(),blob.size());upload->Unmap(0,nullptr);Transition(c,d.weights.gpu.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COPY_DEST);c->CopyBufferRegion(d.weights.gpu.Get(),0,upload.Get(),0,blob.size());Transition(c,d.weights.gpu.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);d.uploads.push_back(upload);
- for(auto&entry:d.contracts){auto&t=entry.second;t.fn=Function(d,Module(d,t.cubin),t.name.c_str());}
- fs::path io=root/"original_io.cubin";auto m=Module(d,io);
- d.pack=Function(d,m,"pack_original_fp8");d.epilogue=Function(d,m,"contract_epilogue_unsplit_f16_pair_publish");auto fusedDir=FusedDir();d.builder.init(fusedDir);d.fused=Function(d,Module(d,fusedDir/"fused_expand.cubin"),"fused_expand");
+ for(auto&entry:d.contracts){auto&t=entry.second;t.fn=Function(d,Module(d,t.cubin,nv),t.name.c_str(),nv);}
+ fs::path io=root/"original_io.cubin";auto m=Module(d,io,nv);
+ d.pack=Function(d,m,"pack_original_fp8",nv);d.epilogue=Function(d,m,"contract_epilogue_unsplit_f16_pair_publish",nv);auto fusedDir=FusedDir();d.builder.init(fusedDir);d.fused=Function(d,Module(d,fusedDir/"fused_expand.cubin",nv),"fused_expand",nv);
  d.norm=Allocate(device,256);auto normUpload=Resource(device,256,D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);void*np=nullptr;Check(normUpload->Map(0,nullptr,&np));memset(np,0,256);float one=1;memcpy(np,&one,4);normUpload->Unmap(0,nullptr);Transition(c,d.norm.gpu.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_COPY_DEST);c->CopyBufferRegion(d.norm.gpu.Get(),0,normUpload.Get(),0,256);Transition(c,d.norm.gpu.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);d.uploads.push_back(normUpload);
- if(S().candidate){auto dir=Assets()/"candidate/split-half";d.splitBuilder.init(dir);d.split=Function(d,Module(d,dir/"fused_expand.cubin"),"fused_expand");d.splitEpilogue=Function(d,m,"contract_epilogue_split4_f16_publish");}
- uploadBatch.Finish();d.ready=true;}
+ if(candidate){auto dir=Assets()/"candidate/split-half";d.splitBuilder.init(dir);d.split=Function(d,Module(d,dir/"fused_expand.cubin",nv),"fused_expand",nv);d.splitEpilogue=Function(d,m,"contract_epilogue_split4_f16_publish",nv);}
+ uploadBatch.Finish();}
+// Spawn the one-shot async device init. Caller holds S().mutex. Publishes d.init with a
+// release store so a Ready observer in Launch sees all of Prepare's writes.
+void KickDeviceInit(State&s,Device&d,ID3D12Device*device,bool candidate){
+ NvApi nv{s.createModule,s.createFunction};
+ d.init.store(1,std::memory_order_relaxed);
+ device->AddRef();
+ std::thread([&s,&d,device,nv,candidate]{
+  std::string err;
+  try{Prepare(d,device,nv,candidate);}catch(const std::exception&e){err=e.what();}catch(...){err="unknown hybrid init failure";}
+  {std::lock_guard<std::recursive_mutex>g(s.mutex);
+   if(err.empty()){d.init.store(2,std::memory_order_release);}
+   else{d.failure=err;d.init.store(3,std::memory_order_release);fprintf(stderr,"Hybrid device init failed: %s\n",err.c_str());}}
+  device->Release();
+ }).detach();
+}
 void AllocateSession(Session&s,Device&d,ID3D12GraphicsCommandList*c){if(s.allocated)return;auto dev=d.owner.Get();auto&uploadBatch=*new UploadBatch(dev);c=uploadBatch.cmd.Get();const uint64_t P=((s.tokens+127)/128)*128;
  if(S().candidate&&s.tokens==960)s.partials=Allocate(dev,4ull*960*1024*2);s.xp=Allocate(dev,P*1024/2);s.xs=Allocate(dev,P*1024/16);s.yp=Allocate(dev,P*4096/2);s.ys=Allocate(dev,P*4096/16);s.c=Allocate(dev,P*1024*2);s.cw=Allocate(dev,d.contracts.at(s.tokens).workspaceBytes);
  s.zeroBytes=std::max<uint64_t>(s.partials.bytes,std::max<uint64_t>(P*4096/2,s.cw.bytes));s.zero=Resource(dev,s.zeroBytes,D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);void*p=nullptr;Check(s.zero->Map(0,nullptr,&p));memset(p,0,s.zeroBytes);s.zero->Unmap(0,nullptr);
@@ -110,7 +133,15 @@ NvAPI_Status __cdecl Launch(ID3D12GraphicsCommandList*c,const NVAPI_CU_KERNEL_LA
  if(t.kind==0){if(cycle.pending)throw std::runtime_error("New publish before pending contraction");cycle.block=31;cycle.pairs=0;cycle.active=eligible;cycle.device=t.device;}
  if(t.kind<2){if(cycle.pending)throw std::runtime_error("Expansion while pair pending");if(!cycle.active||!eligible){fallback();return s.launch(c,k,count);}if(cycle.block>38||cycle.device!=t.device)throw std::runtime_error("FFN block/device sequence mismatch");
  if(k->gridDim.x!=32*((tokens+127)/128)||k->gridDim.y!=1||k->gridDim.z!=1||k->blockDim.x!=32||k->blockDim.y!=4||k->blockDim.z!=1||k->dynSharedMemBytes)throw std::runtime_error("Original expansion geometry mismatch");
- auto&d=s.devices[{t.device,s.candidate}];try{Prepare(d,t.device,c);AllocateSession(cycle,d,c);for(unsigned preflightBlock=0;preflightBlock<8;++preflightBlock){
+ auto&d=s.devices[{t.device,s.candidate}];
+ const int di=d.init.load(std::memory_order_acquire);
+ if(di!=2){ // device init runs on a worker; record FP8 until it publishes Ready
+  if(di==0)KickDeviceInit(s,d,t.device,s.candidate);
+  cycle.active=false;
+  s.status=di==3?("Original FP8 fallback: hybrid init failed: "+d.failure):"Hybrid device initialising; FP8 this frame";
+  return s.launch(c,k,count);
+ }
+ try{AllocateSession(cycle,d,c);for(unsigned preflightBlock=0;preflightBlock<8;++preflightBlock){
  auto wi=preflightBlock;auto&w=d.w[wi];auto&blob=cycle.fusedParams[wi];auto&info=cycle.fusedInfo[wi];
  if(blob.empty()){FusedInput input{(int)tokens,4096,1024,170,cycle.xp.address(),d.weights.address()+w.ep,cycle.xs.address(),d.weights.address()+w.es,0,cycle.yp.address(),cycle.ys.address(),d.norm.address(),0};d.builder.encode(input,blob,info);if(info.sfa_bytes>cycle.xs.bytes||info.sfb_bytes>262144||info.sfd_bytes>cycle.ys.bytes)throw std::runtime_error("Fused scale allocation too small");fprintf(stderr,"Fused block%u Params%llu shared%llu grid%u,%u,%u block%u,%u,%u; D3D addresses encoded\n",preflightBlock+31,info.params_bytes,info.shared_bytes,info.grid[0],info.grid[1],info.grid[2],info.block[0],info.block[1],info.block[2]);}
 }

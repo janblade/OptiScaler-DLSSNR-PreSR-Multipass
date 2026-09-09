@@ -10,6 +10,7 @@
 #include <NVNGX_Parameter.h>
 
 #include <shaders/dlssnr/DlssNr_Vk.h>
+#include <shaders/dlssnr/DlssNr_Guides.h>
 #include <shaders/output_scaling/OS_Vk.h>
 
 #include <algorithm>
@@ -32,6 +33,7 @@ using PFN_VkInit = int(__cdecl*)(const wchar_t*, const wchar_t*, void*, void*, v
 using PFN_VkCreate = void*(__cdecl*)(void*, void*, unsigned int, unsigned int, int, float, int, float, float, float,
                                      int, int);
 using PFN_VkEvaluate = int(__cdecl*)(void*, void*, void*, void*, void*, void*, void*, unsigned int, unsigned int,
+                                     unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int,
                                      unsigned int, unsigned int, int, int, float, int, float, float, float, int, float,
                                      float);
 using PFN_VkRelease = void(__cdecl*)(void*);
@@ -422,7 +424,7 @@ void TransitionForeign(VkCommandBuffer cmd, VkImage image, VkImageSubresourceRan
 bool LoadForwarder()
 {
     if (g_vk.forwarder != nullptr)
-        return g_vk.create != nullptr;
+        return g_vk.init != nullptr && g_vk.create != nullptr && g_vk.evaluate != nullptr;
 
     auto path = Util::FindFilePath(Util::DllPath().remove_filename(), "nvngx.dll_dlssnr.dll");
 
@@ -446,12 +448,12 @@ bool LoadForwarder()
     g_vk.probe = (PFN_VkProbe) GetProcAddress(g_vk.forwarder, "dlssnr_vk_probe");
     g_vk.init = (PFN_VkInit) GetProcAddress(g_vk.forwarder, "dlssnr_vk_init");
     g_vk.create = (PFN_VkCreate) GetProcAddress(g_vk.forwarder, "dlssnr_vk_create");
-    g_vk.evaluate = (PFN_VkEvaluate) GetProcAddress(g_vk.forwarder, "dlssnr_vk_evaluate");
+    g_vk.evaluate = (PFN_VkEvaluate) GetProcAddress(g_vk.forwarder, "dlssnr_vk_evaluate_v2");
     g_vk.release = (PFN_VkRelease) GetProcAddress(g_vk.forwarder, "dlssnr_vk_release");
 
     if (g_vk.init == nullptr || g_vk.create == nullptr || g_vk.evaluate == nullptr)
     {
-        Fail("the forwarder is missing its Vulkan entry points");
+        Fail("Update nvngx.dll_dlssnr.dll from the complete release (NR v2 exports required)");
         return false;
     }
 
@@ -666,12 +668,36 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
             height = renderHeight;
         }
     }
-    const uint32_t guideWidth = renderWidth ? renderWidth : depth->Resource.ImageViewInfo.Width;
-    const uint32_t guideHeight = renderHeight ? renderHeight : depth->Resource.ImageViewInfo.Height;
-    if (!guideWidth || !guideHeight || guideWidth > depth->Resource.ImageViewInfo.Width ||
-        guideHeight > depth->Resource.ImageViewInfo.Height || guideWidth > motion->Resource.ImageViewInfo.Width ||
-        guideHeight > motion->Resource.ImageViewInfo.Height)
+    const unsigned int createFlags = GameCreateFlags(params);
+    uint32_t depthX = 0, depthY = 0, motionX = 0, motionY = 0;
+    params->Get(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, &depthX);
+    params->Get(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y, &depthY);
+    params->Get(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X, &motionX);
+    params->Get(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y, &motionY);
+    NVSDK_NGX_Resource_VK* output = nullptr;
+    params->Get(NVSDK_NGX_Parameter_Output, (void**) &output);
+    uint32_t outputWidth = 0, outputHeight = 0;
+    if (output != nullptr && output->Type == NVSDK_NGX_RESOURCE_VK_TYPE_VK_IMAGEVIEW)
+    {
+        outputWidth = output->Resource.ImageViewInfo.Width;
+        outputHeight = output->Resource.ImageViewInfo.Height;
+    }
+    uint32_t declaredWidth = 0, declaredHeight = 0;
+    params->Get(NVSDK_NGX_Parameter_OutWidth, &declaredWidth);
+    params->Get(NVSDK_NGX_Parameter_OutHeight, &declaredHeight);
+    if (declaredWidth && declaredHeight)
+    {
+        outputWidth = declaredWidth;
+        outputHeight = declaredHeight;
+    }
+    const auto guides = ResolveGuideRegions(
+        { depth->Resource.ImageViewInfo.Width, depth->Resource.ImageViewInfo.Height },
+        { motion->Resource.ImageViewInfo.Width, motion->Resource.ImageViewInfo.Height },
+        { renderWidth, renderHeight }, { outputWidth, outputHeight },
+        (createFlags & NVSDK_NGX_DLSS_Feature_Flags_MVLowRes) != 0, depthX, depthY, motionX, motionY);
+    if (!guides.depth.valid() || !guides.motion.valid())
         return;
+    const auto guideWidth = guides.depth.width, guideHeight = guides.depth.height;
 
     if (width == 0 || height == 0)
         return;
@@ -929,7 +955,6 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
     // Encode: the frame the upscaler wrote -> a display-referred proxy, plus an untouched copy
     // -----------------------------------------------------------------------------------------
 
-    const unsigned int createFlags = GameCreateFlags(params);
     const bool gameSaysHdr = (createFlags & NVSDK_NGX_DLSS_Feature_Flags_IsHDR) != 0;
     const bool depthInverted = (createFlags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0;
 
@@ -1198,7 +1223,8 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
         evaluated = g_vk.evaluate(
             (void*) cmdBuffer, pass == 0 ? g_vk.feature : g_vk.laterFeatures[pass], g_vk.capabilityParams,
             &input->ngx, depth, motion, &answer->ngx, workWidth, workHeight, guideWidth, guideHeight,
-            depthInverted ? 1 : 0, g_vk.reset ? 1 : 0, tuning.intensity,
+            guides.motion.width, guides.motion.height, guides.depth.x, guides.depth.y,
+            guides.motion.x, guides.motion.y, depthInverted ? 1 : 0, g_vk.reset ? 1 : 0, tuning.intensity,
             (int) Profiles::PassStyle(cfg, pass), tuning.structure, tuning.tone, tuning.skin,
             tuning.autoMask ? 1 : 0, mvX, mvY);
         if (evaluated != 1)

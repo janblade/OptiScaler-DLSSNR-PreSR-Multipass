@@ -150,19 +150,20 @@ void RenderMenu(Config* config, float menuResScale)
                    "\nDirect3D 11/Vulkan bridges; native Vulkan keeps the post-upscale path.");
 
         bool deferredDlss = config->DlssNrDeferredDlss.value_or_default();
-        int precisionChoice = config->DlssNrPrecision.value_or_default() == 2 ? 1 : 0;
-        const char* precisions[] = { "FP8 (NVIDIA DLL)", "attempt at NVFP4 hybrid" };
+        int precisionChoice = config->DlssNrPrecision.value_or_default() == 4 ? 1 : 0;
+        const char* precisions[] = { "NVIDIA (FP8)", "Experimental (FP8+NVFP4 hybrid)" };
         if (ImGui::Combo("Model precision", &precisionChoice, precisions, IM_ARRAYSIZE(precisions)))
-            config->DlssNrPrecision = precisionChoice == 1 ? 2u : 0u;
+            config->DlssNrPrecision = precisionChoice == 1 ? 4u : 0u;
         HelpMarker("NVIDIA's shipped model runs most of its matrix maths in FP8 and keeps a few"
                    "\nnumerically sensitive multiplies at FP16, and the whole thing is tuned for"
                    "\nBlackwell. Their own figures put FP8 within a small quality difference of full"
                    "\nFP16 at roughly twice the speed, so FP8 here is the reference path."
-                   "\n\nNVFP4 is not part of that design -- it is this fork's own experiment at pushing"
-                   "\nsome layers to 4-bit on Blackwell, for VERY minor gains and only there.");
+                   "\n\nThe Experimental hybrid pushes some layers to NVFP4 (4-bit) on Blackwell for"
+                   "\nVERY minor gains and only there; it is not part of NVIDIA's design, and small"
+                   "\nrounding differences show up around 1440p input.");
         const auto hybridStatus = DlssNrNative::Status();
         if (hybridStatus.rfind("Restart required:", 0) == 0 ||
-            (precisionChoice == 1 && hybridStatus.find("fallback") != std::string::npos))
+            (precisionChoice > 0 && hybridStatus.find("fallback") != std::string::npos))
             ImGui::TextWrapped("%s", hybridStatus.c_str());
         if (ImGui::Checkbox("Generate before SR, apply after SR (DLSS)", &deferredDlss))
             config->DlssNrDeferredDlss = deferredDlss;

@@ -57,6 +57,7 @@ static bool inputFG = false;
 static bool inputFps = false;
 static bool inputFpsCycle = false;
 static uint64_t lastInputTick = 0;
+static uint64_t lastShortcutFireTick = 0;
 constexpr uint64_t debounceThreshold = 1000;
 
 static bool hasGamepad = false;
@@ -252,6 +253,16 @@ void MenuCommon::UpdateManualInput(HWND targetHwnd)
 
     const auto config = Config::Instance();
 
+    const auto currentTick = GetTickCount64();
+
+    // A shortcut fires on key release. Under some input stacks (notably Assetto Corsa + CSP) the
+    // same physical tap is observed by more than one acquisition path (WndProc hook, message-queue
+    // hook, GetAsyncKeyState poll) on different frames, which produces a second spurious release
+    // edge and makes the menu "close then immediately re-open". Require a fresh press edge between
+    // fires, plus a short cooldown, so one tap can only toggle once.
+    static bool shortcutArmed[256] = {};
+    constexpr uint64_t shortcutCooldown = 250;
+
     auto CheckShortcut = [&](int vk, bool& inputFlag, const char* logMessage)
     {
         if (inputFlag)
@@ -260,8 +271,19 @@ void MenuCommon::UpdateManualInput(HWND targetHwnd)
         if (vk <= 0 || vk >= 256)
             return;
 
+        if (OptiInput::IsKeyPressed(vk))
+            shortcutArmed[vk] = true;
+
+        if (!shortcutArmed[vk])
+            return;
+
+        if (currentTick - lastShortcutFireTick < shortcutCooldown)
+            return;
+
         if (OptiInput::IsKeyReleased(vk))
         {
+            shortcutArmed[vk] = false;
+            lastShortcutFireTick = currentTick;
             lastKey = vk;
             // receivingWmInputs = false;
             inputFlag = true;
@@ -269,7 +291,6 @@ void MenuCommon::UpdateManualInput(HWND targetHwnd)
         }
     };
 
-    const auto currentTick = GetTickCount64();
     const bool canAcceptInputs = lastInputTick + debounceThreshold < currentTick;
 
     if (!capturingKey && canAcceptInputs)

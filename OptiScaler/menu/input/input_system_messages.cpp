@@ -568,7 +568,12 @@ bool HandleWindowMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, Inpu
         SetKeyDown(vk, GetMessageTime(), _state.BlockKeyboard);
         OPTIINPUT_LOG_VERBOSE("key down vk:{} blocked:{}", vk, _state.BlockKeyboard ? 1 : 0);
 
-        shouldBlock = _state.BlockKeyboard;
+        // Never swallow Alt+F4. If we consume it the original WndProc / DefWindowProc never runs,
+        // so no WM_SYSCOMMAND/SC_CLOSE is synthesized and the game cannot be closed while the
+        // overlay is open.
+        const bool isAltF4 = msg == WM_SYSKEYDOWN && vk == VK_F4;
+
+        shouldBlock = _state.BlockKeyboard && !isAltF4;
         break;
     }
 

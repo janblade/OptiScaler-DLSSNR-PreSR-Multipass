@@ -51,8 +51,9 @@ bool ShouldBlockDirectInputMouseLocked()
 
 bool ShouldBlockDirectInputOtherLocked()
 {
-    return _state.Initialized && _state.Focused && ShouldApplyBlockingPolicyLocked() &&
-           (_state.BlockKeyboard || _state.BlockMouse);
+    // Gamepads / wheels / other DirectInput devices stay blocked for as long as the overlay is
+    // visible (BlockGamepad tracks visibility), not gated on the conditional mouse/keyboard block.
+    return _state.Initialized && _state.Focused && ShouldApplyBlockingPolicyLocked() && _state.BlockGamepad;
 }
 
 bool ShouldBlockDirectInputDeviceLocked(DirectInputDeviceKind kind)
@@ -700,14 +701,51 @@ HRESULT WINAPI hkDirectInputCreateDeviceW(void* directInput, REFGUID guid, void*
     return result;
 }
 
+// Byte offset of rgbButtons[] inside DIMOUSESTATE / DIMOUSESTATE2 (lX, lY, lZ come first).
+constexpr DWORD DirectInputMouseButtonsOffset = 3 * sizeof(LONG);
+
+// Feed the overlay's ImGui mouse-button state from a DirectInput c_dfDIMouse / c_dfDIMouse2 read.
+// A button is down when the high bit of its byte is set; index 0=left, 1=right, 2=middle, which is
+// exactly our MouseButtons layout. Called with _state.Mutex held.
+void FeedOverlayMouseFromDirectInputStateLocked(const void* data, DWORD dataSize)
+{
+    if (data == nullptr || dataSize <= DirectInputMouseButtonsOffset)
+        return;
+
+    const BYTE* buttons = static_cast<const BYTE*>(data) + DirectInputMouseButtonsOffset;
+    DWORD count = dataSize - DirectInputMouseButtonsOffset;
+    if (count > _state.MouseButtons.size())
+        count = static_cast<DWORD>(_state.MouseButtons.size());
+
+    const DWORD time = GetTickCount();
+
+    for (DWORD i = 0; i < count; i++)
+    {
+        const bool down = (buttons[i] & 0x80) != 0;
+
+        if (down)
+            SetMouseDown(static_cast<int>(i), time, _state.BlockMouse);
+        else if (_state.MouseButtons[i].Down)
+            SetMouseUpStateOnly(static_cast<int>(i), time);
+    }
+}
+
 HRESULT WINAPI hkDirectInputGetDeviceState(void* device, DWORD dataSize, LPVOID data)
 {
+    bool blocking = false;
+    bool feedOverlay = false;
+
     {
         std::unique_lock lock(_state.Mutex);
         const DirectInputDeviceKind kind = GetDirectInputDeviceKindLocked(device);
         _state.DirectInputGetDeviceStateCallCount++;
 
-        if (ShouldBlockDirectInputDeviceLocked(kind))
+        blocking = ShouldBlockDirectInputDeviceLocked(kind);
+        feedOverlay = _state.MenuVisible && kind == DirectInputDeviceKind::Mouse && data != nullptr;
+
+        // Fast path: blocking and the overlay does not need this device -- zero it and return
+        // without ever calling the real read, exactly as before.
+        if (blocking && !feedOverlay)
         {
             if (data != nullptr && dataSize > 0)
                 std::memset(data, 0, dataSize);
@@ -718,25 +756,56 @@ HRESULT WINAPI hkDirectInputGetDeviceState(void* device, DWORD dataSize, LPVOID 
             return DI_OK;
         }
 
-        _state.DirectInputGetDeviceStatePassedCount++;
+        if (!blocking)
+            _state.DirectInputGetDeviceStatePassedCount++;
     }
 
     if (o_DirectInputDeviceGetDeviceState == nullptr)
         return DIERR_GENERIC;
 
-    ScopedHookBypass bypass;
-    return o_DirectInputDeviceGetDeviceState(device, dataSize, data);
+    HRESULT hr;
+    {
+        ScopedHookBypass bypass;
+        hr = o_DirectInputDeviceGetDeviceState(device, dataSize, data);
+    }
+
+    // The game reads its mouse through DirectInput (common in Assetto Corsa + CSP). Read the real
+    // state first so the overlay learns the click, then hide it from the game if the menu owns the
+    // mouse this frame.
+    if (feedOverlay && SUCCEEDED(hr))
+    {
+        std::unique_lock lock(_state.Mutex);
+        FeedOverlayMouseFromDirectInputStateLocked(data, dataSize);
+
+        if (blocking)
+        {
+            if (data != nullptr && dataSize > 0)
+                std::memset(data, 0, dataSize);
+            _state.DirectInputGetDeviceStateBlockedCount++;
+        }
+    }
+
+    return hr;
 }
 
 HRESULT WINAPI hkDirectInputGetDeviceData(void* device, DWORD objectDataSize, LPDIDEVICEOBJECTDATA data, LPDWORD inOut,
                                           DWORD flags)
 {
+    bool blocking = false;
+    bool feedOverlay = false;
+
     {
         std::unique_lock lock(_state.Mutex);
         const DirectInputDeviceKind kind = GetDirectInputDeviceKindLocked(device);
         _state.DirectInputGetDeviceDataCallCount++;
 
-        if (ShouldBlockDirectInputDeviceLocked(kind))
+        blocking = ShouldBlockDirectInputDeviceLocked(kind);
+        // Only mirror real buffered reads (data != null, not a PEEK): a PEEK leaves the events in
+        // the buffer for a later real read, and feeding both would double-count the click.
+        feedOverlay = _state.MenuVisible && kind == DirectInputDeviceKind::Mouse && data != nullptr &&
+                      inOut != nullptr && (flags & DIGDD_PEEK) == 0 && objectDataSize >= 2 * sizeof(DWORD);
+
+        if (blocking && !feedOverlay)
         {
             if (inOut != nullptr)
                 *inOut = 0;
@@ -747,14 +816,53 @@ HRESULT WINAPI hkDirectInputGetDeviceData(void* device, DWORD objectDataSize, LP
             return DI_OK;
         }
 
-        _state.DirectInputGetDeviceDataPassedCount++;
+        if (!blocking)
+            _state.DirectInputGetDeviceDataPassedCount++;
     }
 
     if (o_DirectInputDeviceGetDeviceData == nullptr)
         return DIERR_GENERIC;
 
-    ScopedHookBypass bypass;
-    return o_DirectInputDeviceGetDeviceData(device, objectDataSize, data, inOut, flags);
+    HRESULT hr;
+    {
+        ScopedHookBypass bypass;
+        hr = o_DirectInputDeviceGetDeviceData(device, objectDataSize, data, inOut, flags);
+    }
+
+    if (feedOverlay && SUCCEEDED(hr))
+    {
+        std::unique_lock lock(_state.Mutex);
+
+        const DWORD entries = *inOut;
+        const DWORD time = GetTickCount();
+
+        for (DWORD i = 0; i < entries; i++)
+        {
+            const auto* entry = reinterpret_cast<const DIDEVICEOBJECTDATA*>(reinterpret_cast<const BYTE*>(data) +
+                                                                            static_cast<size_t>(i) * objectDataSize);
+
+            // Mouse button offsets are DIMOFS_BUTTON0..7 == rgbButtons[] offset + index.
+            if (entry->dwOfs < DirectInputMouseButtonsOffset ||
+                entry->dwOfs >= DirectInputMouseButtonsOffset + _state.MouseButtons.size())
+                continue;
+
+            const int button = static_cast<int>(entry->dwOfs - DirectInputMouseButtonsOffset);
+            const bool down = (entry->dwData & 0x80) != 0;
+
+            if (down)
+                SetMouseDown(button, time, _state.BlockMouse);
+            else if (_state.MouseButtons[button].Down)
+                SetMouseUpStateOnly(button, time);
+        }
+
+        if (blocking)
+        {
+            *inOut = 0;
+            _state.DirectInputGetDeviceDataBlockedCount++;
+        }
+    }
+
+    return hr;
 }
 
 ULONG WINAPI hkDirectInputDeviceRelease(void* device)

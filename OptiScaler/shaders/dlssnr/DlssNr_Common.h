@@ -239,6 +239,19 @@ struct alignas(256) DlssNrConstants
     float SkinColour;
     float EnvironmentDetail;
     float EnvironmentColour;
+
+    // ResidualAcrossRR v2 only (dlssnr_residual.hlsl). History blend rate for the MV-reprojected
+    // accumulator, 0..1. Read only by that separate shader; dlssnr.hlsl never declares it. Appended
+    // here rather than in a new struct so DispatchResidualPass reuses the existing constant upload --
+    // it lands inside the 256-byte alignas padding, so sizeof(DlssNrConstants) is unchanged.
+    float ResidualBlend;
+};
+
+// Local mode numbering for dlssnr_residual.hlsl (a separate blob / PSO from the DlssNrMode shader).
+enum DlssNrResidualMode : uint32_t
+{
+    DlssNrResidualMode_Accumulate = 0, // (edited - original) blended into the reprojected history
+    DlssNrResidualMode_Apply = 1,      // base + delta * TransferStrength, after RR+SR
 };
 
 class DlssNr_Common

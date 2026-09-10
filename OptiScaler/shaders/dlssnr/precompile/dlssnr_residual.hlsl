@@ -9,11 +9,14 @@
 // fits inside DlssNrConstants' existing 256-byte alignment with no size change.
 //
 //   gMode == 0  Accumulate: (edited - original) blended into the MV-reprojected history layer.
-//               history_t = lerp( reproject(history_{t-1}), edited - original, blend )
+//               history_t = lerp( clamp(reproject(history_{t-1})), edited - original, blend )
 //               The per-frame ray-trace noise term of (edited - original) is temporally
 //               uncorrelated and averages to zero; the enhancement term follows geometry and
-//               persists. Invalid reprojection (disocclusion / off-screen / bad MV) -> the
-//               history is treated as zero at that pixel and rebuilds over the next frames.
+//               persists. The reprojected history is clamped to mean +/- 1.5*sigma of the 3x3
+//               neighbourhood of the current edit before the blend -- a TAA-style neighbourhood
+//               clamp that collapses reprojection smear at motion boundaries and, because it also
+//               snaps zero history into range, fills disocclusions (off-screen / bad MV) without
+//               the slow crawl. It is what lets the blend rate stay low without trailing.
 //   gMode == 1  Apply: base + delta * gTransferStrength, clamped non-negative. Run after RR+SR
 //               with the upscaled history layer as the delta.
 
@@ -98,6 +101,13 @@ float3 SanitizeFinite3(float3 v, float3 fallback)
                   SanitizeFinite(v.z, fallback.z));
 }
 
+// The model's edit for one pixel: the edited frame minus the untouched one.
+float3 LoadDelta(int2 p)
+{
+    return SanitizeFinite3(gModel.Load(int3(p, 0)).rgb - gSource.Load(int3(p, 0)).rgb,
+                           float3(0.0, 0.0, 0.0));
+}
+
 [numthreads(8, 8, 1)]
 void CSMain(uint3 id : SV_DispatchThreadID)
 {
@@ -106,8 +116,30 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 
     if (gMode == 0)
     {
-        float3 delta = SanitizeFinite3(gModel.Load(int3(id.xy, 0)).rgb -
-                                       gSource.Load(int3(id.xy, 0)).rgb, float3(0.0, 0.0, 0.0));
+        float3 delta = LoadDelta(int2(id.xy));
+
+        // Mean and spread of the edit over the 3x3 neighbourhood. The edit is noise-dominated per
+        // frame (delta ~ enhancement - n_t), so a hard min/max box would be as wide as the noise;
+        // mean +/- k*sigma tracks the local enhancement and only opens up where the neighbourhood
+        // genuinely disagrees (an edge, a thin feature).
+        float3 m1 = float3(0.0, 0.0, 0.0);
+        float3 m2 = float3(0.0, 0.0, 0.0);
+        [unroll] for (int oy = -1; oy <= 1; ++oy)
+        {
+            [unroll] for (int ox = -1; ox <= 1; ++ox)
+            {
+                int2 p = clamp(int2(id.xy) + int2(ox, oy), int2(0, 0),
+                               int2((int) gWidth - 1, (int) gHeight - 1));
+                float3 n = LoadDelta(p);
+                m1 += n;
+                m2 += n * n;
+            }
+        }
+        m1 /= 9.0;
+        m2 /= 9.0;
+        float3 sigma   = sqrt(max(m2 - m1 * m1, float3(0.0, 0.0, 0.0)));
+        float3 loClamp = m1 - 1.5 * sigma;
+        float3 hiClamp = m1 + 1.5 * sigma;
 
         float2 uv = (float2(id.xy) + 0.5) / float2(gWidth, gHeight);
         float4 mv = gMotion.Load(int3(id.xy, 0));
@@ -119,9 +151,14 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         float3 history = valid ? gOriginal.SampleLevel(gLinear, prevUV, 0).rgb : float3(0.0, 0.0, 0.0);
         history = SanitizeFinite3(history, float3(0.0, 0.0, 0.0));
 
-        // Invalid reprojection: history is 0, so the pixel fades in from no edit at the normal blend
-        // rate over the next frames -- it never takes the noisy current delta whole. The cold start
-        // (first frame / post-cut) is handled by the host passing gResidualBlend = 1 for that frame.
+        // Pull the (reprojected, or zero-on-disocclusion) history back into the range this frame's
+        // edit supports. Where the reprojection was following the geometry this is a no-op; at a
+        // motion boundary it collapses the smear instead of carrying the old edit forward, and at a
+        // disocclusion it snaps the empty history straight to the plausible local edit so the pixel
+        // does not crawl in over a dozen frames. This clamp is what lets the blend rate stay low.
+        history = clamp(history, loClamp, hiClamp);
+
+        // Cold start (first frame / post-cut) is handled by the host passing gResidualBlend = 1.
         float a = clamp(gResidualBlend, 0.0, 1.0);
 
         gTarget[id.xy] = float4(lerp(history, delta, a), 1.0);

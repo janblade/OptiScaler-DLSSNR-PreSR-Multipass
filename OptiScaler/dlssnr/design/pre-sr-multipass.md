@@ -77,10 +77,19 @@ the game's RR both active) works around it:
   uncorrelated and averages to zero; the useful `enhancement_t` term follows geometry and
   persists. So a persistent render-res **enhancement layer** is kept, reprojected each frame by
   the game's motion vectors (mode 8 + `dlssnr_residual.hlsl` Accumulate) and blended with the
-  new `Δ` at `ResidualAcrossRRBlend` (default `0.08`). Where the reprojection is invalid
-  (disocclusion, off-screen, non-finite MV) the layer takes the current `Δ` whole and rebuilds
-  over the next frames — it never carries stale content across a discontinuity. A camera cut
+  new `Δ` at `ResidualAcrossRRBlend` (default `0.08`). Before the blend the reprojected history
+  is clamped to `mean ± 1.5σ` of the current `Δ` over its 3×3 neighbourhood — a TAA-style
+  neighbourhood clamp. Where the reprojection was tracking the geometry it does nothing; at a
+  motion boundary it collapses the smear rather than carrying the old edit forward, and because
+  it also pulls zero history into range it fills disocclusions (off-screen, non-finite MV)
+  without the slow crawl. It is what lets the blend rate stay low without trailing. A camera cut
   (`Reset`) drops the layer entirely.
+- The reprojection normalizes and samples the motion vectors the same way
+  `DlssNr_DeferredSr`'s half-rate path does — at render size, 1:1 — so it requires
+  **render-resolution, origin-aligned** motion (`MVLowRes`). A display-resolution or
+  subrect-offset motion atlas would need the general resample the resolve path threads through
+  `mvToWork`/guide bases; when the guides do not match, this run falls back to plain pre-SR NR
+  (logged) instead of reprojecting with vectors that do not line up.
 - The post-SR seam upscales the layer to output size and adds it onto the finished RR+SR frame
   (`dlssnr_residual.hlsl` Apply, scaled by `TransferStrength`; strength `0` is byte-identical).
 
@@ -89,7 +98,9 @@ class's root signature. It exists so the main NR shader — which every path dep
 regenerated; a current `dxc` produces materially different DXIL from the committed
 `DlssNr_Shader.cso`.
 
-Known limits by construction: the enhancement lags on fast motion, fades briefly at
-disocclusions, and view-dependent detail (moving speculars) is smeared by the temporal mean.
-The ceiling is *complementary to* post-RR NR, not better than it — pre-SR NR and RR are
-overlapping neural reconstructors. DX12 only; native Vulkan wiring is a later change.
+Known limits by construction: the enhancement still lags somewhat on fast motion (the clamp
+bounds the smear, it does not erase the accumulator's latency), and view-dependent detail
+(moving speculars) is smeared by the temporal mean. The ceiling is *complementary to* post-RR
+NR, not better than it — pre-SR NR and RR are overlapping neural reconstructors. DX12 only, and
+only where the game's motion vectors are render-resolution and origin-aligned; native Vulkan
+wiring is a later change.

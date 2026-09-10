@@ -1754,6 +1754,29 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     g_nr.guideHeight = guideHeight;
     g_nr.guideDepthInverted = frame.DepthInverted;
 
+    // The v2 residual accumulator reprojects its enhancement layer with the game's motion vectors
+    // exactly the way DlssNr_DeferredSr's half-rate path does -- normalize at render size, divide the
+    // scale by render size, sample the vector 1:1 -- which only holds when motion is render-resolution
+    // and origin-aligned (that path bails on desc.Width < g.w). A display-resolution or subrect-offset
+    // motion atlas would need the general resample the resolve path threads through mvToWork and the
+    // guide bases, which this pass does not carry; reprojecting anyway drags the history off the
+    // geometry and shows up as a camera-motion smear. Fall back to plain pre-SR NR in that case.
+    if (residualAcrossRr &&
+        (!frame.MotionVectorsLowResolution || motionWidth < width || motionHeight < height ||
+         motionBaseX != 0 || motionBaseY != 0))
+    {
+        static bool warnedResidualMotion = false;
+        if (!warnedResidualMotion)
+        {
+            warnedResidualMotion = true;
+            LOG_WARN("DLSS-NR ResidualAcrossRR: motion is {}{}x{} at ({},{}), need render-res {}x{} "
+                     "origin-aligned; carrying the edit across RR is off this run (plain pre-SR NR).",
+                     frame.MotionVectorsLowResolution ? "" : "full-res ", motionWidth, motionHeight,
+                     motionBaseX, motionBaseY, width, height);
+        }
+        residualAcrossRr = false;
+    }
+
     // The game's own encoding, passed through. Every resource already carries a subrect saying how
     // big it is, so scaling by the resolution ratio on top of that counts it twice -- vectors come
     // out too long and the model warps its history past where the surface went.

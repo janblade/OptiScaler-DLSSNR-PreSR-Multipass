@@ -263,6 +263,11 @@ class Config
     // Generate NR before SR, upscale its signed contribution with a private DLSS feature,
     // and apply it after the game's upscaler. Takes precedence over RunBeforeSR; opt-in.
     CustomOptional<bool> DlssNrDeferredDlss { false };
+    // Experimental (additive v1): with RunBeforeSR and the game's Ray Reconstruction both on,
+    // run NR before SR but leave the colour input untouched, capture the model's edit as a
+    // signed residual, and add it back onto the RR+SR output -- so the edit survives RR's
+    // denoise instead of being washed out. Inert unless RunBeforeSR + RR are both active. Opt-in.
+    CustomOptional<bool> DlssNrResidualAcrossRr { false };
     CustomOptional<bool> DlssNrResidualFg { false };
     CustomOptional<uint32_t> DlssNrPrecision { 0 }; // 0 NVIDIA FP8 (default), 4 Experimental NVFP4 hybrid
     CustomOptional<bool> DlssNrResidualFgApproxCamera { false };

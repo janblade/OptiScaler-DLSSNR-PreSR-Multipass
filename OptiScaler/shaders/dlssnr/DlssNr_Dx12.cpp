@@ -297,6 +297,11 @@ struct NrState
     void* residualSrFeature = nullptr;             // NVSDK_NGX_Handle*; void* so it parks like every feature here
     unsigned long long residualSrCreateEpoch = 0;
     bool residualSrFailed = false;
+    // g_nr.reset is consumed and cleared by the model evaluate on the pre-SR seam, which always runs
+    // first within the same frame -- so the post-SR seam could never observe it and the private
+    // feature never saw Reset=1 across a cut. Latched here before that clear and held until the
+    // private feature actually evaluates, so a cut is not lost to seam ordering.
+    bool residualSrReset = false;
     float residualWhitePoint = 1.0f;               // last resolved white point, for the carrier's ExposurePreMul
 
     // Frame hold (design/frame-hold.md): a persistent copy of the output taken on hold-on and restored
@@ -2449,6 +2454,10 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // delta lives in that same domain (residualEdited - hdrCopy, both in the game's native units).
     g_nr.residualWhitePoint = whitePoint;
 
+    // Latched before the model evaluate below clears g_nr.reset, so the post-SR seam can still see a
+    // cut that happened this frame. Held (not overwritten) until the private feature consumes it.
+    g_nr.residualSrReset = g_nr.residualSrReset || g_nr.reset;
+
     // Zero-latency exposure (D3D12, source 1): when the game hands us a live exposure texture, the
     // white point is recomputed in-shader every frame from it (ExposurePreMul / exposure) instead of
     // the 3-4 frame CPU meter readback. whitePoint above still rides along in gWhitePoint as the
@@ -3009,8 +3018,15 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             accum.GuideHeight = motionHeight;
             accum.ResidualMotionBaseX = motionBaseX;
             accum.ResidualMotionBaseY = motionBaseY;
-            accum.MvScaleX = frame.MvScaleX / (float) width;
-            accum.MvScaleY = frame.MvScaleY / (float) height;
+            // Divided by the motion texture's OWN extent, not the pre-SR colour's. MvScale converts a
+            // raw motion sample into pixels of the space the motion texture lives in, and
+            // ResolveGuideRegions sizes that region as `lowResolutionMotion ? render : output` -- so
+            // with display-resolution motion vectors (MVLowRes clear) the divisor has to be the
+            // output extent. Dividing by the render width there overstated every reprojection by
+            // outputW/renderW, fetching history from the wrong place on every frame. Identical to the
+            // old expression in the MVLowRes case, where motionWidth == width by construction.
+            accum.MvScaleX = frame.MvScaleX / (float) motionWidth;
+            accum.MvScaleY = frame.MvScaleY / (float) motionHeight;
             const bool accumulated = resolved && DispatchResidualPass(cmdList, accum, g_nr.hdrCopy,
                 g_nr.residualEdited, g_nr.residualHistory[prev], motionIn, g_nr.residualHistory[cur]);
             Barrier(cmdList, g_nr.residualHistory[cur], D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
@@ -3180,6 +3196,35 @@ bool UpscaleResidualCarrier(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parame
     if (depth == nullptr || motion == nullptr)
         return false;
 
+    // Every subrect base must be zero. This feature binds the game's own depth and motion textures
+    // but describes them to NGX with only Render_Subrect_Dimensions -- an origin-aligned rectangle.
+    // A game that offsets any of its guides would have them read from the wrong place, silently.
+    // DlssNr_DeferredSr.inl refuses the same way rather than trying to forward eight offsets, so this
+    // matches the path that is already proven. Not latched: an offset is a per-frame property of the
+    // game's parameter block, so a frame that stops using one recovers on its own.
+    for (const char* key : { NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_X,
+                            NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y,
+                            NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X,
+                            NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y,
+                            NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X,
+                            NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y,
+                            NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_X,
+                            NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_Y })
+    {
+        if (DeferredSr::UInt(params, key) == 0)
+            continue;
+
+        static bool warnedSubrect = false;
+        if (!warnedSubrect)
+        {
+            warnedSubrect = true;
+            LOG_WARN("DLSS-NR ResidualAcrossRR: the game offsets a colour/guide/output subrect; the "
+                     "private DLSS SR upscale needs origin-aligned guides, so the carried edit falls "
+                     "back to a plain resample.");
+        }
+        return false;
+    }
+
     const unsigned int renderW = g_nr.width;
     const unsigned int renderH = g_nr.height;
     if (renderW == 0 || renderH == 0 || outW == 0 || outH == 0)
@@ -3218,11 +3263,17 @@ bool UpscaleResidualCarrier(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parame
             perfQuality = NVSDK_NGX_PerfQuality_Value_MaxPerf;
         createParams->Set(NVSDK_NGX_Parameter_PerfQualityValue, (int) perfQuality);
 
-        // The caller guarantees render-resolution, origin-aligned motion before this ever runs
-        // (DlssNr_Dx12.cpp's motion-layout guard on the before-upscale seam).
-        unsigned int createFlags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
-        if (g_nr.guideDepthInverted)
-            createFlags |= NVSDK_NGX_DLSS_Feature_Flags_DepthInverted;
+        // Inherited from the game's own create flags, masked to the three bits that describe guide
+        // layout -- exactly as DlssNr_DeferredSr.inl derives its equivalent. This previously asserted
+        // MVLowRes unconditionally, on the strength of a comment citing a "motion-layout guard on the
+        // before-upscale seam" that no longer exists: that guard was dropped when this file took the
+        // upstream rewrite, while the private-feature code that depended on it was re-applied. A game
+        // with display-resolution or jittered motion vectors was therefore handing the private feature
+        // motion it had been told was render-resolution and unjittered.
+        const unsigned int createFlags =
+            DeferredSr::UInt(params, NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags) &
+            (NVSDK_NGX_DLSS_Feature_Flags_DepthInverted | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
+             NVSDK_NGX_DLSS_Feature_Flags_MVJittered);
         createParams->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, createFlags);
 
         NVSDK_NGX_Handle* feature = nullptr;
@@ -3259,6 +3310,7 @@ bool UpscaleResidualCarrier(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parame
         }
 
         g_nr.residualSrCreateEpoch = submissionEpoch;
+        g_nr.residualSrReset = true; // a fresh feature has no history; its first evaluate says so
         device->Release();
         return false; // this frame's layer is dropped; the feature isn't ready yet
     }
@@ -3296,7 +3348,15 @@ bool UpscaleResidualCarrier(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parame
     evalParams->Set(NVSDK_NGX_Parameter_ExposureTexture, g_nr.residualSrExposure);
     evalParams->Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, renderW);
     evalParams->Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, renderH);
-    evalParams->Set(NVSDK_NGX_Parameter_Reset, (unsigned int) (g_nr.reset ? 1u : 0u));
+    // The latched cut flag, not g_nr.reset -- that one is already false by the time this seam runs
+    // (the pre-SR model evaluate clears it earlier in the same frame), so the private feature used to
+    // carry its temporal history straight across every camera cut.
+    evalParams->Set(NVSDK_NGX_Parameter_Reset, (unsigned int) (g_nr.residualSrReset ? 1u : 0u));
+    // DLSS SR weights its temporal history by elapsed time; DlssNr_DeferredSr.inl forwards this and
+    // this path was omitting it, leaving the feature on whatever the freshly-allocated block defaulted
+    // to rather than the game's real frame time.
+    evalParams->Set(NVSDK_NGX_Parameter_FrameTimeDeltaInMsec,
+                   DeferredSr::Float(params, NVSDK_NGX_Parameter_FrameTimeDeltaInMsec, 16.67f));
     // The real per-frame TAA jitter the game's own RR/SR evaluate is using this frame -- DLSS SR
     // relies on this to align the current sample against its own internal temporal history, so a
     // wrong (here: always-zero) value breaks that alignment every single frame regardless of camera
@@ -3331,6 +3391,11 @@ bool UpscaleResidualCarrier(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parame
                  "falls back to a plain resample upscale.", (unsigned) evalResult);
         return false;
     }
+
+    // Consumed only now that the feature has actually been evaluated with it. An earlier return --
+    // the creation-delay frame, a failed encode, a refused subrect -- leaves the cut latched for the
+    // next attempt rather than dropping it.
+    g_nr.residualSrReset = false;
 
     return true;
 }

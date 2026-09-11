@@ -206,7 +206,33 @@ try
     result = run(c, base, model, history, motion);
     for (unsigned i = 0; i < 4; ++i)
         expect(result[i].r == base[i].r && result[i].a == base[i].a, "Zero strength changed output");
-    std::puts("PASS: residual seam identity, cold/warm history, MV subrect, signed upscale, alpha and zero strength");
+
+    // DebugAmplifyPlain (mode 5): shows the delta itself, amplified and centred on grey, instead of
+    // adding it -- same base/model as the Apply case above, so the un-amplified deltas are known
+    // (-2, -1, 1, 2 at pixels 0-3): saturate(0.5 + delta*20) clips to 0 for the negative pair and 1
+    // for the positive pair here, well past either side of grey.
+    c.Mode = DlssNrResidualMode_DebugAmplifyPlain;
+    result = run(c, base, model, history, motion);
+    const float expectedAmplifyPlain[] = { 0.0f, 0.0f, 1.0f, 1.0f };
+    for (unsigned i = 0; i < 4; ++i)
+        expect(closeFloat(result[i].r, expectedAmplifyPlain[i]) && result[i].a == base[i].a,
+               "DebugAmplifyPlain wrong");
+
+    // DebugAmplifyCarrier (mode 4): decodes the signed carrier same as ApplyCarrier, but shows the
+    // delta amplified instead of adding it. encoded 0.5 decodes to delta 0 (grey, no change); encoded
+    // 0.75 decodes to signedEdit 0.5 -> delta 1*ExposurePreMul -> well past the amplified saturate.
+    c.Mode = DlssNrResidualMode_DebugAmplifyCarrier;
+    c.Width = 2;
+    c.ExposurePreMul = 1.0f;
+    base = { { 0, 0, 0, 0.7f }, { 0, 0, 0, 0.9f } };
+    model = { { 0.5f, 0.5f, 0.5f, 1 }, { 0.75f, 0.75f, 0.75f, 1 } };
+    result = run(c, base, model, history, motion);
+    expect(closeFloat(result[0].r, 0.5f) && closeFloat(result[0].a, 0.7f) && closeFloat(result[1].r, 1.0f) &&
+               closeFloat(result[1].a, 0.9f),
+           "DebugAmplifyCarrier wrong");
+
+    std::puts("PASS: residual seam identity, cold/warm history, MV subrect, signed upscale, debug amplify, alpha "
+              "and zero strength");
     return 0;
 }
 catch (const std::exception& e)

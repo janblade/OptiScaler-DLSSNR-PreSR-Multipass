@@ -2864,7 +2864,14 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         resolveParams.EnvironmentDetail = strength(cfg.DlssNrEnvironmentDetail.value_or_default());
         resolveParams.EnvironmentColour = strength(cfg.DlssNrEnvironmentColour.value_or_default());
         resolveParams.ColourStrength = cfg.DlssNrColourStrength.value_or_default();
-        resolveParams.DebugView = cfg.DlssNrDebugView.value_or_default();
+        // ResidualAcrossRR's resolve target is residualEdited, not Color -- an internal scratch the
+        // accumulator reads as "the real edit" (delta = residualEdited - hdrCopy). Any Debug view mode
+        // short-circuits the resolve and overwrites that target with a visualization instead, which
+        // would then get accumulated, upscaled and added as if it were the real edit. Forced off here
+        // regardless of the user's setting so the accumulator's input can never be corrupted by it;
+        // ApplyResidualAcrossRr below renders its own, safe debug visualization of the carried delta
+        // on the post-SR seam instead, from data that was never fed through this resolve.
+        resolveParams.DebugView = residualAcrossRr ? 0u : cfg.DlssNrDebugView.value_or_default();
         resolveParams.MaxRatio = cfg.DlssNrMaxRatio.value_or_default();
         resolveParams.Transfer = cfg.DlssNrTransfer.value_or_default();
         resolveParams.DebugScale = cfg.DlssNrWhitePointScale.value_or_default();
@@ -3367,7 +3374,22 @@ void ApplyResidualAcrossRr(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramet
     apply.Height = desc.Height;
     apply.TransferStrength = std::clamp(strength, 0.0f, 1.0f);
     bool composed;
-    if (upscaledByModel)
+    // Debug view 3 (Difference amplified) only: 1 (Proxy) and 2 (Model output) have no equivalent
+    // for a residual-only layer -- there is no from-scratch model answer here, only a delta on top of
+    // an already-finished frame -- so they fall through to the normal apply below, same as Off. The
+    // pre-SR resolve already forces its OWN Debug view off for this mode (see DlssNr_Dx12.cpp's
+    // resolveParams.DebugView), so reading it here is always safe: it can only ever pick which of two
+    // real outcomes to render, never re-introduce the corruption that guard exists to prevent.
+    if (cfg.DlssNrDebugView.value_or_default() == 3)
+    {
+        apply.Mode = upscaledByModel ? DlssNrResidualMode_DebugAmplifyCarrier
+                                     : DlssNrResidualMode_DebugAmplifyPlain;
+        apply.ExposurePreMul = std::max(g_nr.residualWhitePoint, 1e-4f);
+        composed = g_compose->DispatchResidualPass(
+            cmdList, apply, output, upscaledByModel ? g_nr.residualCarrierOut : history, nullptr,
+            nullptr, g_nr.residualComposed);
+    }
+    else if (upscaledByModel)
     {
         // The private feature already upscaled the carrier at output resolution; ApplyCarrier just
         // decodes and adds it. gModel is Load-sampled at 1:1, not resampled again.
@@ -3584,12 +3606,18 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
     const bool residualAcrossRr =
         cfg.DlssNrResidualAcrossRr.value_or_default() && configuredBefore && rayReconstruction;
 
+    // Debug view is NOT in this list: the resolve dispatch above forces it off for residualAcrossRr's
+    // own target (residualEdited), so it can no longer corrupt the accumulator regardless of the
+    // user's setting, and ApplyResidualAcrossRr renders its own safe visualization of the carried
+    // delta on the post-SR seam instead. Compare and Show skin mask remain blocked: both overwrite the
+    // resolve's final composited value with something other than the real per-pixel edit (a frozen
+    // half-frame, a mask), which the accumulator would otherwise treat as if it were genuine content.
     if (residualAcrossRr && beforeUpscale &&
-        (cfg.DlssNrHoldFrame.value_or_default() || cfg.DlssNrDebugView.value_or_default() != 0 ||
-         cfg.DlssNrCompare.value_or_default() != 0 || cfg.DlssNrShowSkinMask.value_or_default()))
+        (cfg.DlssNrHoldFrame.value_or_default() || cfg.DlssNrCompare.value_or_default() != 0 ||
+         cfg.DlssNrShowSkinMask.value_or_default()))
     {
         g_nr.residualHistoryPrimed = false;
-        ReportSkipOnce("disable Hold frame, Compare and Debug view for residual-across-RR");
+        ReportSkipOnce("disable Hold frame, Compare and Show skin mask for residual-across-RR");
         return;
     }
 

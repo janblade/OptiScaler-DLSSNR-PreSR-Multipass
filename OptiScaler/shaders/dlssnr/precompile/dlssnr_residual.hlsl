@@ -30,6 +30,12 @@
 //   gMode == 3  ApplyCarrier: decode the private feature's upscaled carrier (same decompression as
 //               dlssnr.hlsl's ApplyResidual) and add it to the finished RR+SR frame, scaled by
 //               gTransferStrength, clamped non-negative.
+//   gMode == 4  DebugAmplifyCarrier: decode the same as ApplyCarrier, but show the delta itself --
+//               amplified 20x, centred on grey -- instead of adding it. The safe equivalent of
+//               dlssnr.hlsl's Debug view 3 for the carried, RR-surviving delta; DlssNr_Dx12.cpp
+//               forces the pre-SR resolve's own Debug view off for this mode so the accumulator's
+//               input is never a debug visualization instead of the real edit.
+//   gMode == 5  DebugAmplifyPlain: same, for the plain-resample fallback path (mode 1's source).
 
 #ifdef VK_MODE
 [[vk::binding(0, 0)]]
@@ -215,6 +221,32 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         float3 delta = signedEdit / (1.0 - abs(signedEdit)) * max(gExposurePreMul, 1e-4);
 
         gTarget[id.xy] = float4(max(base.rgb + delta * gTransferStrength, 0.0), base.a);
+        return;
+    }
+
+    // Debug view 3 (Difference amplified) on the post-SR seam, once the carried delta is known to be
+    // real (the pre-SR resolve never runs any debug view for this mode -- see DlssNr_Dx12.cpp). Shows
+    // the delta itself, amplified and centred on grey, same convention as dlssnr.hlsl's own gDebugView
+    // == 3 -- but the *carried*, RR-surviving delta, not the raw pre-SR one. Pre-TransferStrength: this
+    // is about seeing whether there is an edit and where, not how strongly it will be applied.
+    if (gMode == 4)
+    {
+        float4 base = gSource.Load(int3(id.xy, 0));
+        float3 encoded = SanitizeFinite3(gModel.Load(int3(id.xy, 0)).rgb, float3(0.5, 0.5, 0.5));
+        float3 signedEdit = clamp(2.0 * encoded - 1.0, -0.999, 0.999);
+        float3 delta = signedEdit / (1.0 - abs(signedEdit)) * max(gExposurePreMul, 1e-4);
+
+        gTarget[id.xy] = float4(saturate(0.5 + delta * 20.0), base.a);
+        return;
+    }
+
+    if (gMode == 5)
+    {
+        float4 base = gSource.Load(int3(id.xy, 0));
+        float2 uv = (float2(id.xy) + 0.5) / float2(gWidth, gHeight);
+        float3 delta = SanitizeFinite3(gModel.SampleLevel(gLinear, uv, 0).rgb, float3(0.0, 0.0, 0.0));
+
+        gTarget[id.xy] = float4(saturate(0.5 + delta * 20.0), base.a);
         return;
     }
 

@@ -261,6 +261,9 @@ enum DlssNrResidualMode : uint32_t
     DlssNrResidualMode_Apply = 1,         // base + delta * TransferStrength, after RR+SR (plain resample path)
     DlssNrResidualMode_EncodeCarrier = 2, // the accumulated layer -> a [0,1] carrier for the private DLSS SR feature
     DlssNrResidualMode_ApplyCarrier = 3,  // decode the private feature's upscaled carrier and add, after RR+SR
+    DlssNrResidualMode_DebugAmplifyCarrier = 4, // Debug view 3 on the post-SR seam: show the decoded
+                                                 // carried delta amplified, instead of adding it
+    DlssNrResidualMode_DebugAmplifyPlain = 5,   // same, for the plain-resample fallback path
 };
 
 class DlssNr_Common

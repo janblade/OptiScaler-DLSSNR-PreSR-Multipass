@@ -3297,8 +3297,15 @@ bool UpscaleResidualCarrier(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parame
     evalParams->Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, renderW);
     evalParams->Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, renderH);
     evalParams->Set(NVSDK_NGX_Parameter_Reset, (unsigned int) (g_nr.reset ? 1u : 0u));
-    evalParams->Set(NVSDK_NGX_Parameter_Jitter_Offset_X, 0.0f);
-    evalParams->Set(NVSDK_NGX_Parameter_Jitter_Offset_Y, 0.0f);
+    // The real per-frame TAA jitter the game's own RR/SR evaluate is using this frame -- DLSS SR
+    // relies on this to align the current sample against its own internal temporal history, so a
+    // wrong (here: always-zero) value breaks that alignment every single frame regardless of camera
+    // motion. That surfaced as persistent grain/noise in the carried edit even with a fully static
+    // camera, since the game's jitter pattern keeps cycling every frame either way.
+    evalParams->Set(NVSDK_NGX_Parameter_Jitter_Offset_X,
+                   DeferredSr::Float(params, NVSDK_NGX_Parameter_Jitter_Offset_X, 0.0f));
+    evalParams->Set(NVSDK_NGX_Parameter_Jitter_Offset_Y,
+                   DeferredSr::Float(params, NVSDK_NGX_Parameter_Jitter_Offset_Y, 0.0f));
     evalParams->Set(NVSDK_NGX_Parameter_MV_Scale_X, g_nr.guideMvScaleX);
     evalParams->Set(NVSDK_NGX_Parameter_MV_Scale_Y, g_nr.guideMvScaleY);
     evalParams->Set(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, 1.0f);

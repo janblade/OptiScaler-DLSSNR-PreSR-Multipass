@@ -754,20 +754,34 @@ struct NrRetired
     // every feature here used to. A non-null override is for a feature of a different NGX type --
     // ResidualAcrossRR's private DLSS SR feature releases through NVNGXProxy instead.
     void (*featureRelease)(void*) = nullptr;
+    // Retired with the feature it belongs to, never before it. NGX reads a parameter block for as
+    // long as the evaluate that was handed it is still in flight, and with frame generation that is
+    // several frames after the CPU moved on -- destroying it on the spot while the feature itself sat
+    // out the usual 32-frame delay is the same use-after-free this whole retirement list exists to
+    // prevent. DlssNr_DeferredSr.inl's ~Generation tears both down together for the same reason.
+    NVSDK_NGX_Parameter* parameters = nullptr;
     int framesLeft = 32;
 };
 
 std::vector<NrRetired> g_nrRetired;
 
-void ParkNrFeature(void*& feature, void (*releaseFn)(void*) = nullptr)
+void ParkNrFeature(void*& feature, void (*releaseFn)(void*) = nullptr,
+                  NVSDK_NGX_Parameter** parameters = nullptr)
 {
-    if (feature == nullptr)
+    if (feature == nullptr && (parameters == nullptr || *parameters == nullptr))
         return;
 
     NrRetired r;
     r.feature = feature;
     r.featureRelease = releaseFn;
     feature = nullptr;
+
+    if (parameters != nullptr)
+    {
+        r.parameters = *parameters;
+        *parameters = nullptr;
+    }
+
     g_nrRetired.push_back(r);
 }
 
@@ -784,13 +798,17 @@ void ParkNrResource(ID3D12Resource*& res)
 
 void ReleaseNrFeature(const NrRetired& r)
 {
-    if (r.feature == nullptr)
-        return;
+    if (r.feature != nullptr)
+    {
+        if (r.featureRelease != nullptr)
+            r.featureRelease(r.feature);
+        else if (g_nr.release != nullptr)
+            g_nr.release(r.feature);
+    }
 
-    if (r.featureRelease != nullptr)
-        r.featureRelease(r.feature);
-    else if (g_nr.release != nullptr)
-        g_nr.release(r.feature);
+    // After the feature, never before -- same order as DlssNr_DeferredSr.inl's ~Generation.
+    if (r.parameters != nullptr && NVNGXProxy::D3D12_DestroyParameters())
+        NVNGXProxy::D3D12_DestroyParameters()(r.parameters);
 }
 
 void TickNrRetired()
@@ -829,22 +847,29 @@ void ReleaseResidualSrFeatureHandle(void* feature)
 void ReleaseResidualSr(bool deferred)
 {
     if (deferred)
-        ParkNrFeature(g_nr.residualSrFeature, ReleaseResidualSrFeatureHandle);
+    {
+        // Feature AND parameter block together, both on the 32-frame delay. The parameter block used
+        // to be destroyed here on the spot while the feature waited its turn -- but NGX keeps reading
+        // it for as long as the evaluate it was handed to is in flight, which under frame generation
+        // is several frames after this call. A surface rebuild mid-session (an inject-point or format
+        // change) therefore pulled the block out from under live GPU work and hung the device.
+        ParkNrFeature(g_nr.residualSrFeature, ReleaseResidualSrFeatureHandle, &g_nr.residualSrParams);
+    }
     else
+    {
+        // Shutdown: nothing submits after this, and the existing retirement loop in Shutdown() frees
+        // its parked entries immediately on the same reasoning.
         ReleaseResidualSrFeatureHandle(g_nr.residualSrFeature);
-
-    if (!deferred)
         g_nr.residualSrFeature = nullptr;
 
-    if (g_nr.residualSrParams != nullptr)
-    {
-        if (NVNGXProxy::D3D12_DestroyParameters())
+        if (g_nr.residualSrParams != nullptr && NVNGXProxy::D3D12_DestroyParameters())
             NVNGXProxy::D3D12_DestroyParameters()(g_nr.residualSrParams);
         g_nr.residualSrParams = nullptr;
     }
 
     g_nr.residualSrCreateEpoch = 0;
     g_nr.residualSrFailed = false;
+    g_nr.residualSrReset = true; // whatever replaces it starts without history
 }
 
 // The inject point decides which buffer is being measured -- the upscaler's linear output or the

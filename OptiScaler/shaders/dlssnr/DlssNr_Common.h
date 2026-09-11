@@ -94,6 +94,9 @@ struct DlssNrFrameInfo
     bool BeforeUpscale = false;
     // Owned copy, not the game's Color: always arrives/returns NON_PIXEL_SHADER_RESOURCE.
     bool PrivateColorCopy = false;
+    bool FinishedPicture = false;
+    uint32_t OutputArrivalState = 0;
+    float WhitePointOverride = 0.0f;
     bool IndependentCommands = false; // owned command list, no game root signature to restore
     // Reset temporal history when switching between ordinary SR and Ray Reconstruction.
     bool RayReconstruction = false;
@@ -245,7 +248,11 @@ struct alignas(256) DlssNrConstants
     // here rather than in a new struct so DispatchResidualPass reuses the existing constant upload --
     // it lands inside the 256-byte alignas padding, so sizeof(DlssNrConstants) is unchanged.
     float ResidualBlend;
+    uint32_t ResidualHistoryValid;
+    uint32_t ResidualMotionBaseX;
+    uint32_t ResidualMotionBaseY;
 };
+static_assert(sizeof(DlssNrConstants) == 256);
 
 // Local mode numbering for dlssnr_residual.hlsl (a separate blob / PSO from the DlssNrMode shader).
 enum DlssNrResidualMode : uint32_t

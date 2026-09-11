@@ -260,6 +260,7 @@ class Config
     // Run the NR pass on the upscaler's colour input, at render resolution, immediately before SR.
     // Off preserves the v0.2.0 post-upscale placement.
     CustomOptional<bool> DlssNrRunBeforeSr { false };
+    CustomOptional<bool> DlssNrFinishedPicture { false };
     // Generate NR before SR, upscale its signed contribution with a private DLSS feature,
     // and apply it after the game's upscaler. Takes precedence over RunBeforeSR; opt-in.
     CustomOptional<bool> DlssNrDeferredDlss { false };
@@ -815,6 +816,11 @@ class Config
     CustomOptional<bool> ExternalFrameGeneration { false };
     CustomOptional<bool> FGDLSSGAdaMfgUnlock { false };
     CustomOptional<bool, NoDefault> FGDLSSGAdaBlackwellKernels;
+    // Ampere/Turing (SM86/SM75) MFG unlocker — sideloads the dlssg_for_sm86 proxy
+    CustomOptional<bool> FGDLSSGAmpereMfgUnlock { false };
+    CustomOptional<int>  FGDLSSGAmpereMfgMaxFrames { 3 };       // 0-3: 0=runtime default (3X), 1=2X, 2=3X, 3=4X
+    CustomOptional<std::string, NoDefault> FGDLSSGAmpereMfgKernelImage;     // Auto / PTX / Cubin
+    CustomOptional<bool> FGDLSSGAmpereMfgHardwareBilinear { false };        // Optional approximate sampling (SM86 only)
     CustomOptional<FGOutput> FGOutput { FGOutput::NoFG };
     CustomOptional<FGNvngxReplacement> FGNvngxReplacement { FGNvngxReplacement::None };
     CustomOptional<bool> FGDrawUIOverFG { false };

@@ -9,17 +9,20 @@
 // fits inside DlssNrConstants' existing 256-byte alignment with no size change.
 //
 //   gMode == 0  Accumulate: (edited - original) blended into the MV-reprojected history layer.
-//               history_t = lerp( clamp(reproject(history_{t-1})), edited - original, blend )
+//               history_t = lerp( reproject(history_{t-1}), edited - original, blend )
 //               The per-frame ray-trace noise term of (edited - original) is temporally
 //               uncorrelated and averages to zero; the enhancement term follows geometry and
-//               persists. The reprojected history is clamped to mean +/- 1.5*sigma of the 3x3
-//               neighbourhood of the current edit before the blend -- a TAA-style neighbourhood
-//               clamp that collapses reprojection smear at motion boundaries and, because it also
-//               snaps zero history into range, fills disocclusions (off-screen / bad MV) without
-//               the slow crawl. It is what lets the blend rate stay low without trailing.
+//               persists. Invalid reprojection (off-screen / bad MV) -> the
+//               history is treated as zero at that pixel and rebuilds over the next frames.
+//               Before the blend, the reprojected history is clamped to mean +/- 1.5*sigma of the
+//               current delta's own 3x3 neighbourhood -- a TAA-style neighbourhood clamp that
+//               collapses reprojection smear at motion boundaries (it also pulls zero/invalid
+//               history into range, so it doubles as the disocclusion fade-in). This is what lets
+//               the blend rate stay low without trailing on fast camera motion.
 //   gMode == 1  Apply: base + delta * gTransferStrength, clamped non-negative. Run after RR+SR
-//               with the upscaled history layer as the delta. Plain-resample path.
-//   gMode == 2  EncodeCarrier: the accumulated layer, reversibly compressed to a neutral-0.5
+//               with the upscaled history layer as the delta. Plain-resample fallback for when the
+//               private DLSS SR carrier upscale (modes 2/3) is unavailable or fails.
+//   gMode == 2  EncodeCarrier: the accumulated history, reversibly compressed to a neutral-0.5
 //               carrier in [0,1] (same compression as dlssnr.hlsl's EncodeResidual), so a private
 //               NVIDIA DLSS SR feature can upscale it using the game's real depth and motion
 //               vectors instead of a plain resample -- genuine neural reconstruction of the
@@ -65,6 +68,9 @@ cbuffer Params : register(b0)
     float gEnvironmentDetail;
     float gEnvironmentColour;
     float gResidualBlend;   // v2 only: history blend rate, 0..1. 1 == no accumulation (== v1).
+    uint gResidualHistoryValid;
+    uint gResidualMotionBaseX;
+    uint gResidualMotionBaseY;
 };
 
 // Same registers and the same SPIR-V binding numbers as dlssnr.hlsl, including the slots these
@@ -85,7 +91,7 @@ Texture2D<float4>   gOriginal : register(t2);  // accumulate: the previous histo
 #ifdef VK_MODE
 [[vk::binding(4, 0)]]
 #endif
-Texture2D<float4>   gMotion   : register(t3);  // accumulate: normalized current->previous motion, validity in .a.
+Texture2D<float4>   gMotion   : register(t3);  // raw game motion; active size, offsets and scale come from the host.
 #ifndef VK_MODE
 Texture2D<float4>   gExposure : register(t4);  // unused here; bound for descriptor-table parity.
 #endif
@@ -150,10 +156,13 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         float3 hiClamp = m1 + 1.5 * sigma;
 
         float2 uv = (float2(id.xy) + 0.5) / float2(gWidth, gHeight);
-        float4 mv = gMotion.Load(int3(id.xy, 0));
-        float2 prevUV = uv + mv.xy;
+        uint2 guideSize = uint2(gGuideWidth, gGuideHeight);
+        uint2 guidePos = min(uint2(uv * guideSize), guideSize - 1) +
+                         uint2(gResidualMotionBaseX, gResidualMotionBaseY);
+        float2 motion = gMotion.Load(int3(guidePos, 0)).xy * float2(gMvScaleX, gMvScaleY);
+        float2 prevUV = uv + motion;
 
-        bool valid = mv.a > 0.999 && all(isfinite(mv.xy)) &&
+        bool valid = gResidualHistoryValid != 0 && all(isfinite(motion)) && all(abs(motion) < 2.0) &&
                      all(prevUV >= 0.0) && all(prevUV <= 1.0);
 
         float3 history = valid ? gOriginal.SampleLevel(gLinear, prevUV, 0).rgb : float3(0.0, 0.0, 0.0);
@@ -166,7 +175,6 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         // does not crawl in over a dozen frames. This clamp is what lets the blend rate stay low.
         history = clamp(history, loClamp, hiClamp);
 
-        // Cold start (first frame / post-cut) is handled by the host passing gResidualBlend = 1.
         float a = clamp(gResidualBlend, 0.0, 1.0);
 
         gTarget[id.xy] = float4(lerp(history, delta, a), 1.0);
@@ -176,7 +184,8 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     if (gMode == 1)
     {
         float4 base  = gSource.Load(int3(id.xy, 0));
-        float3 delta = SanitizeFinite3(gModel.Load(int3(id.xy, 0)).rgb, float3(0.0, 0.0, 0.0));
+        float2 uv = (float2(id.xy) + 0.5) / float2(gWidth, gHeight);
+        float3 delta = SanitizeFinite3(gModel.SampleLevel(gLinear, uv, 0).rgb, float3(0.0, 0.0, 0.0));
 
         gTarget[id.xy] = float4(max(base.rgb + delta * gTransferStrength, 0.0), base.a);
         return;
@@ -185,7 +194,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // Neutral 0.5 encodes zero; values below it carry darkening. A reversible signed compression
     // avoids clipping negative edits at the private DLSS feature's input, which expects an
     // LDR-biased [0,1] picture. Mirrors dlssnr.hlsl's EncodeResidual (mode 5) exactly, except the
-    // difference is already computed -- gSource here is the accumulator's own signed delta, not
+    // difference is already computed -- gSource here is the accumulator's own signed history, not
     // two frames to subtract.
     if (gMode == 2)
     {

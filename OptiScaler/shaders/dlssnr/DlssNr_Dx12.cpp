@@ -3567,7 +3567,15 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
 
     if (residualAcrossRr && !beforeUpscale)
     {
-        ApplyResidualAcrossRr(cmdList, params, submissionEpoch);
+        // Native DX12 has no timing queue and passes submissionEpoch as a literal 0 (see
+        // NVNGX_DLSS_Dx12.cpp's EvaluateBeforeUpscale/EvaluateAfterUpscale call sites) -- the real,
+        // actually-incrementing epoch on that path is State::Instance().frameCount, exactly as
+        // frame.SubmissionEpoch and g_nrSeamClock.AtSeam's `submitted` already resolve it below.
+        // Using the raw parameter here left the private feature's one-submission creation gate
+        // comparing 0 to 0 forever: created once, evaluated never, so the carried edit never
+        // rendered -- identical in effect to ApplyModel=0.
+        ApplyResidualAcrossRr(cmdList, params,
+                             timingQueue != nullptr ? submissionEpoch : State::Instance().frameCount);
 
         static bool announcedResidualAcrossRr = false;
         if (!announcedResidualAcrossRr)

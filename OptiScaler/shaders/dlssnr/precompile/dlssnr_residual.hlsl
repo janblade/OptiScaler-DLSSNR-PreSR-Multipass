@@ -18,7 +18,15 @@
 //               snaps zero history into range, fills disocclusions (off-screen / bad MV) without
 //               the slow crawl. It is what lets the blend rate stay low without trailing.
 //   gMode == 1  Apply: base + delta * gTransferStrength, clamped non-negative. Run after RR+SR
-//               with the upscaled history layer as the delta.
+//               with the upscaled history layer as the delta. Plain-resample path.
+//   gMode == 2  EncodeCarrier: the accumulated layer, reversibly compressed to a neutral-0.5
+//               carrier in [0,1] (same compression as dlssnr.hlsl's EncodeResidual), so a private
+//               NVIDIA DLSS SR feature can upscale it using the game's real depth and motion
+//               vectors instead of a plain resample -- genuine neural reconstruction of the
+//               carried edit at output resolution, not a blur of a render-resolution layer.
+//   gMode == 3  ApplyCarrier: decode the private feature's upscaled carrier (same decompression as
+//               dlssnr.hlsl's ApplyResidual) and add it to the finished RR+SR frame, scaled by
+//               gTransferStrength, clamped non-negative.
 
 #ifdef VK_MODE
 [[vk::binding(0, 0)]]
@@ -169,6 +177,33 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     {
         float4 base  = gSource.Load(int3(id.xy, 0));
         float3 delta = SanitizeFinite3(gModel.Load(int3(id.xy, 0)).rgb, float3(0.0, 0.0, 0.0));
+
+        gTarget[id.xy] = float4(max(base.rgb + delta * gTransferStrength, 0.0), base.a);
+        return;
+    }
+
+    // Neutral 0.5 encodes zero; values below it carry darkening. A reversible signed compression
+    // avoids clipping negative edits at the private DLSS feature's input, which expects an
+    // LDR-biased [0,1] picture. Mirrors dlssnr.hlsl's EncodeResidual (mode 5) exactly, except the
+    // difference is already computed -- gSource here is the accumulator's own signed delta, not
+    // two frames to subtract.
+    if (gMode == 2)
+    {
+        float3 delta = SanitizeFinite3(gSource.Load(int3(id.xy, 0)).rgb, float3(0.0, 0.0, 0.0));
+        float3 d = delta / max(gExposurePreMul, 1e-4);
+        gTarget[id.xy] = float4(0.5 + 0.5 * d / (1.0 + abs(d)), 1.0);
+        return;
+    }
+
+    // Decode the private feature's upscaled carrier and add it to the finished RR+SR frame.
+    // Mirrors dlssnr.hlsl's ApplyResidual (mode 6): the inverse of EncodeCarrier above, limited
+    // near its poles because DLSS can ring outside the carrier's [0,1] range.
+    if (gMode == 3)
+    {
+        float4 base = gSource.Load(int3(id.xy, 0));
+        float3 encoded = SanitizeFinite3(gModel.Load(int3(id.xy, 0)).rgb, float3(0.5, 0.5, 0.5));
+        float3 signedEdit = clamp(2.0 * encoded - 1.0, -0.999, 0.999);
+        float3 delta = signedEdit / (1.0 - abs(signedEdit)) * max(gExposurePreMul, 1e-4);
 
         gTarget[id.xy] = float4(max(base.rgb + delta * gTransferStrength, 0.0), base.a);
         return;

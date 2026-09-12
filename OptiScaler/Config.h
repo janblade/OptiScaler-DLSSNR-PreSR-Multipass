@@ -260,9 +260,19 @@ class Config
     // Run the NR pass on the upscaler's colour input, at render resolution, immediately before SR.
     // Off preserves the v0.2.0 post-upscale placement.
     CustomOptional<bool> DlssNrRunBeforeSr { false };
+    CustomOptional<bool> DlssNrFinishedPicture { false };
     // Generate NR before SR, upscale its signed contribution with a private DLSS feature,
     // and apply it after the game's upscaler. Takes precedence over RunBeforeSR; opt-in.
     CustomOptional<bool> DlssNrDeferredDlss { false };
+    // Experimental: with RunBeforeSR and the game's Ray Reconstruction both on, run NR before SR
+    // but leave the colour input untouched, then add the model's edit back onto the RR+SR output
+    // so it survives RR's denoise. v2 carries the edit as an MV-reprojected temporal accumulator
+    // (the per-frame ray-trace noise term averages to zero; the enhancement persists). Inert
+    // unless RunBeforeSR + RR are both active. Opt-in.
+    CustomOptional<bool> DlssNrResidualAcrossRr { false };
+    // v2 history blend rate for the accumulator above, 0.01..1. Lower = stabler but slower to
+    // appear; 1.0 = no accumulation (each frame's raw residual, which flickers). Default 0.08.
+    CustomOptional<float> DlssNrResidualAcrossRrBlend { 0.08f };
     CustomOptional<bool> DlssNrResidualFg { false };
     CustomOptional<uint32_t> DlssNrPrecision { 0 }; // 0 NVIDIA FP8 (default), 4 Experimental NVFP4 hybrid
     CustomOptional<bool> DlssNrResidualFgApproxCamera { false };
@@ -806,6 +816,11 @@ class Config
     CustomOptional<bool> ExternalFrameGeneration { false };
     CustomOptional<bool> FGDLSSGAdaMfgUnlock { false };
     CustomOptional<bool, NoDefault> FGDLSSGAdaBlackwellKernels;
+    // Ampere/Turing (SM86/SM75) MFG unlocker — sideloads the dlssg_for_sm86 proxy
+    CustomOptional<bool> FGDLSSGAmpereMfgUnlock { false };
+    CustomOptional<int>  FGDLSSGAmpereMfgMaxFrames { 3 };       // 0-3: 0=runtime default (3X), 1=2X, 2=3X, 3=4X
+    CustomOptional<std::string, NoDefault> FGDLSSGAmpereMfgKernelImage;     // Auto / PTX / Cubin
+    CustomOptional<bool> FGDLSSGAmpereMfgHardwareBilinear { false };        // Optional approximate sampling (SM86 only)
     CustomOptional<FGOutput> FGOutput { FGOutput::NoFG };
     CustomOptional<FGNvngxReplacement> FGNvngxReplacement { FGNvngxReplacement::None };
     CustomOptional<bool> FGDrawUIOverFG { false };

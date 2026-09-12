@@ -27,7 +27,8 @@ enum DlssNrMode : uint32_t
     DlssNrMode_NormalizeMotion = 8, // current-to-previous motion in normalized image coordinates
     DlssNrMode_ComposeMotion = 9, // compose two successive fields at the displaced coordinate
     DlssNrMode_ApplyInterpolatedResidual = 10, // t4: R8_UNORM NVIDIA suppression flag
-    DlssNrMode_ZeroMotion = 11 // private reset-only NR/SR guide, never passed to residual FG
+    DlssNrMode_ZeroMotion = 11, // private reset-only NR/SR guide, never passed to residual FG
+    DlssNrMode_ClampProxy = 12 // a pass's raw answer -> the same value saturated back into the proxy's valid range, before it becomes the next pass's input
 };
 
 // A successful sample may be reused only on the immediately following frame.
@@ -94,9 +95,18 @@ struct DlssNrFrameInfo
     bool BeforeUpscale = false;
     // Owned copy, not the game's Color: always arrives/returns NON_PIXEL_SHADER_RESOURCE.
     bool PrivateColorCopy = false;
+    bool FinishedPicture = false;
+    uint32_t OutputArrivalState = 0;
+    float WhitePointOverride = 0.0f;
     bool IndependentCommands = false; // owned command list, no game root signature to restore
     // Reset temporal history when switching between ordinary SR and Ray Reconstruction.
     bool RayReconstruction = false;
+
+    // ResidualAcrossRR (additive v1): this pre-SR evaluate must leave the game's Color untouched --
+    // the resolve writes an owned scratch, the model edit is captured as a signed residual, and the
+    // post-SR seam adds it back onto the RR+SR output. Only ever true on the before-upscale seam and
+    // only when RunBeforeSR + RayReconstruction are both active.
+    bool ResidualAcrossRr = false;
 
     // Submission epoch supplied by the caller. Native DX12 uses the wrapped swapchain Present count;
     // the DX11/Vulkan bridges use their successfully submitted frame counter. A feature created in an
@@ -233,6 +243,28 @@ struct alignas(256) DlssNrConstants
     float SkinColour;
     float EnvironmentDetail;
     float EnvironmentColour;
+
+    // ResidualAcrossRR v2 only (dlssnr_residual.hlsl). History blend rate for the MV-reprojected
+    // accumulator, 0..1. Read only by that separate shader; dlssnr.hlsl never declares it. Appended
+    // here rather than in a new struct so DispatchResidualPass reuses the existing constant upload --
+    // it lands inside the 256-byte alignas padding, so sizeof(DlssNrConstants) is unchanged.
+    float ResidualBlend;
+    uint32_t ResidualHistoryValid;
+    uint32_t ResidualMotionBaseX;
+    uint32_t ResidualMotionBaseY;
+};
+static_assert(sizeof(DlssNrConstants) == 256);
+
+// Local mode numbering for dlssnr_residual.hlsl (a separate blob / PSO from the DlssNrMode shader).
+enum DlssNrResidualMode : uint32_t
+{
+    DlssNrResidualMode_Accumulate = 0,    // (edited - original) blended into the reprojected history
+    DlssNrResidualMode_Apply = 1,         // base + delta * TransferStrength, after RR+SR (plain resample path)
+    DlssNrResidualMode_EncodeCarrier = 2, // the accumulated layer -> a [0,1] carrier for the private DLSS SR feature
+    DlssNrResidualMode_ApplyCarrier = 3,  // decode the private feature's upscaled carrier and add, after RR+SR
+    DlssNrResidualMode_DebugAmplifyCarrier = 4, // Debug view 3 on the post-SR seam: show the decoded
+                                                 // carried delta amplified, instead of adding it
+    DlssNrResidualMode_DebugAmplifyPlain = 5,   // same, for the plain-resample fallback path
 };
 
 class DlssNr_Common

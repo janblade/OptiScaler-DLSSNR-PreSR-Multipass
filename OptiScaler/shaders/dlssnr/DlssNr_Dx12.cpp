@@ -33,9 +33,7 @@
 #include <algorithm>
 #include <cstring>
 #include "precompile/DlssNr_Shader.h"
-#include "precompile/dlssnr_residual_Shader.h"
 #include "precompile/dlssnr_finished_color_Shader.h"
-#include "DlssNr_ResidualPair.h"
 #include "../output_scaling/OS_Dx12.h"
 
 namespace
@@ -269,47 +267,6 @@ struct NrState
     OS_Dx12* superDown = nullptr;
     Scaler nrScaler = Scaler::Count;
 
-    // ResidualAcrossRR v2 (design/pre-sr-multipass.md "Across-RR residual"). With RunBeforeSR + the
-    // game's Ray Reconstruction both on, the pre-SR seam runs the model but leaves Color untouched:
-    // the resolve writes residualEdited instead of the game buffer
-    // and dlssnr_residual.hlsl's Accumulate samples the game's active motion-vector rectangle
-    // layer by those MVs and blends (residualEdited - hdrCopy) in at ResidualBlend -> the new
-    // residualHistory. The per-frame ray-trace noise term of that delta averages to zero; the
-    // enhancement persists. The post-SR shader samples the signed history at output resolution.
-    // residualPair binds the result to its command list, parameters and output; every new pre
-    // seam invalidates the old result. residualHistoryIndex ping-pongs the two history textures.
-    ID3D12Resource* residualEdited = nullptr;      // resolve output on the pre-SR seam (render size)
-    ID3D12Resource* residualHistory[2] = {};       // accumulated enhancement layer, ping-pong (render size)
-    ID3D12Resource* residualComposed = nullptr;    // Apply output = RR frame + delta (output size)
-    unsigned int residualHistoryIndex = 0;         // which residualHistory holds the latest layer
-    bool residualHistoryPrimed = false;            // false -> take the current delta whole (post-reset)
-    bool residualStoreValid = false;
-    bool residualModeActive = false;
-    unsigned residualOutputWidth = 0, residualOutputHeight = 0;
-    DXGI_FORMAT residualOutputFormat = DXGI_FORMAT_UNKNOWN;
-    DlssNrResidualPair residualPair;
-
-    // ResidualAcrossRR: the post-SR seam upscales residualHistory with a private NVIDIA DLSS SR
-    // feature fed the game's real depth and motion vectors, instead of a plain bilinear sample -- so
-    // the carried edit gets genuine neural reconstruction at output resolution rather than a blur of
-    // a render-resolution layer. Independent of DlssNr_DeferredSr's Generation/HalfRate: that whole
-    // path is unconditionally cancelled while RR is active, so this is its own minimal feature with
-    // its own one-submission creation delay, the same NGX requires everywhere else in this file. A
-    // failed/unavailable private feature falls back to dlssnr_residual.hlsl's plain-resample Apply.
-    ID3D12Resource* residualCarrierIn = nullptr;   // render size: the layer, sigmoid-encoded to [0,1]
-    ID3D12Resource* residualCarrierOut = nullptr;  // output size: the private feature's upscaled carrier
-    ID3D12Resource* residualSrExposure = nullptr;  // 1x1 constant unit exposure for the private feature
-    NVSDK_NGX_Parameter* residualSrParams = nullptr;
-    void* residualSrFeature = nullptr;             // NVSDK_NGX_Handle*; void* so it parks like every feature here
-    unsigned long long residualSrCreateEpoch = 0;
-    bool residualSrFailed = false;
-    // g_nr.reset is consumed and cleared by the model evaluate on the pre-SR seam, which always runs
-    // first within the same frame -- so the post-SR seam could never observe it and the private
-    // feature never saw Reset=1 across a cut. Latched here before that clear and held until the
-    // private feature actually evaluates, so a cut is not lost to seam ordering.
-    bool residualSrReset = false;
-    float residualWhitePoint = 1.0f;               // last resolved white point, for the carrier's ExposurePreMul
-
     // Frame hold (design/frame-hold.md): a persistent copy of the output taken on hold-on and restored
     // over the live output before the encode reads it while held, so a setting change re-renders the
     // same frame. heldWhitePoint is the snapshot used while held -- measurement is suspended.
@@ -322,6 +279,11 @@ struct NrState
 
     unsigned int workWidth = 0;
     unsigned int workHeight = 0;
+
+    // The working scale actually used last frame -- manual, or RR + Auto's derived ratio. Read back by
+    // CurrentModelResolutionPercent() so the menu can show the live value instead of the stale manual
+    // one while Auto is in effect.
+    float appliedWorkScale = 1.0f;
 
     // The white point meter.
     //
@@ -757,8 +719,8 @@ struct NrRetired
     void* feature = nullptr;
     ID3D12Resource* resource = nullptr;
     // nullptr -> release through the DLSS-NR forwarder's own dlssnr_call_release (g_nr.release), as
-    // every feature here used to. A non-null override is for a feature of a different NGX type --
-    // ResidualAcrossRR's private DLSS SR feature releases through NVNGXProxy instead.
+    // every feature here used to. A non-null override is for a feature of a different NGX type,
+    // released through a different API entirely.
     void (*featureRelease)(void*) = nullptr;
     // Retired with the feature it belongs to, never before it. NGX reads a parameter block for as
     // long as the evaluate that was handed it is still in flight, and with frame generation that is
@@ -836,48 +798,6 @@ void TickNrRetired()
     }
 }
 
-// ResidualAcrossRR's private DLSS SR feature is a standard NVSDK_NGX_Feature_SuperSampling handle,
-// released through NVNGXProxy -- not the DLSS-NR forwarder's dlssnr_call_release, which only knows
-// the custom Neural Rendering feature type. Passed to ParkNrFeature as the override.
-void ReleaseResidualSrFeatureHandle(void* feature)
-{
-    if (feature != nullptr && NVNGXProxy::D3D12_ReleaseFeature())
-        NVNGXProxy::D3D12_ReleaseFeature()((NVSDK_NGX_Handle*) feature);
-}
-
-// The feature handle and resources are torn down together everywhere ResidualAcrossRR's other
-// scratch resources are (format/resolution/placement change, shutdown). The parameter block is
-// CPU-side metadata, not in-flight GPU work, so it is destroyed immediately either way; deferred
-// only decides whether the feature handle itself is parked (in-flight work may still reference it)
-// or released now (shutdown: nothing submits after this).
-void ReleaseResidualSr(bool deferred)
-{
-    if (deferred)
-    {
-        // Feature AND parameter block together, both on the 32-frame delay. The parameter block used
-        // to be destroyed here on the spot while the feature waited its turn -- but NGX keeps reading
-        // it for as long as the evaluate it was handed to is in flight, which under frame generation
-        // is several frames after this call. A surface rebuild mid-session (an inject-point or format
-        // change) therefore pulled the block out from under live GPU work and hung the device.
-        ParkNrFeature(g_nr.residualSrFeature, ReleaseResidualSrFeatureHandle, &g_nr.residualSrParams);
-    }
-    else
-    {
-        // Shutdown: nothing submits after this, and the existing retirement loop in Shutdown() frees
-        // its parked entries immediately on the same reasoning.
-        ReleaseResidualSrFeatureHandle(g_nr.residualSrFeature);
-        g_nr.residualSrFeature = nullptr;
-
-        if (g_nr.residualSrParams != nullptr && NVNGXProxy::D3D12_DestroyParameters())
-            NVNGXProxy::D3D12_DestroyParameters()(g_nr.residualSrParams);
-        g_nr.residualSrParams = nullptr;
-    }
-
-    g_nr.residualSrCreateEpoch = 0;
-    g_nr.residualSrFailed = false;
-    g_nr.residualSrReset = true; // whatever replaces it starts without history
-}
-
 // The inject point decides which buffer is being measured -- the upscaler's linear output or the
 // finished frame in swapchain format -- so a reading taken before a change describes a different
 // picture to one taken after. Everything else that depends on the format is invalidated here.
@@ -914,14 +834,8 @@ void ReleaseSurfacesIfFormatChanged(DXGI_FORMAT needed)
 
     for (ID3D12Resource** r :
          { &g_nr.output, &g_nr.passScratch, &g_nr.passClampScratch, &g_nr.colorCopy, &g_nr.hdrCopy,
-           &g_nr.colorSmall, &g_nr.outputNative, &g_nr.activeColor, &g_nr.residualEdited,
-           &g_nr.residualHistory[0], &g_nr.residualHistory[1], &g_nr.residualCarrierIn,
-           &g_nr.residualCarrierOut, &g_nr.residualComposed, &g_nr.residualSrExposure })
+           &g_nr.colorSmall, &g_nr.outputNative, &g_nr.activeColor })
         ParkNrResource(*r);
-    ReleaseResidualSr(/*deferred=*/true);
-    g_nr.residualStoreValid = false;
-    g_nr.residualHistoryPrimed = false;
-    g_nr.residualHistoryIndex = 0;
 
     g_nr.passScratchFailed = false;
     g_nr.passClampScratchFailed = false;
@@ -1623,15 +1537,6 @@ DlssNr_Dx12::DlssNr_Dx12(std::string InName, ID3D12Device* InDevice)
         return;
     }
 
-    // Second PSO for the ResidualAcrossRR v2 accumulator (its own blob, same root signature).
-    // A failure here is not fatal to the class -- only that experimental mode goes unavailable.
-    if (!CreateComputePipeline(InDevice, &_residualPipelineState, dlssnr_residual_cso,
-                               sizeof(dlssnr_residual_cso), nullptr))
-    {
-        _residualPipelineState = nullptr;
-        LOG_WARN("[{0}] ResidualAcrossRR compute pipeline unavailable", _name);
-    }
-
     _init = InitHeaps(InDevice, _frameHeaps, DLSSNR_NUM_OF_HEAPS);
 }
 
@@ -1704,23 +1609,17 @@ DlssNr_Dx12::~DlssNr_Dx12()
             buffer = nullptr;
         }
     }
-
-    if (_residualPipelineState != nullptr)
-    {
-        _residualPipelineState->Release();
-        _residualPipelineState = nullptr;
-    }
 }
 
 bool DlssNr_Dx12::DispatchResidualPass(ID3D12GraphicsCommandList* InCmdList,
                                        const DlssNrConstants& InConstants, ID3D12Resource* InSource,
                                        ID3D12Resource* InModel, ID3D12Resource* InOriginal,
-                                       ID3D12Resource* InMotion, ID3D12Resource* OutTarget, bool finishedColor)
+                                       ID3D12Resource* InMotion, ID3D12Resource* OutTarget)
 {
-    if (finishedColor && !_finishedColorPipelineState && _init)
+    if (!_finishedColorPipelineState && _init)
         CreateComputePipeline(_device, &_finishedColorPipelineState, dlssnr_finished_color_cso,
                               sizeof(dlssnr_finished_color_cso), nullptr);
-    auto* pipeline = finishedColor ? _finishedColorPipelineState : _residualPipelineState;
+    auto* pipeline = _finishedColorPipelineState;
     if (!_init || pipeline == nullptr || InCmdList == nullptr || _device == nullptr ||
         InSource == nullptr || OutTarget == nullptr)
         return false;
@@ -1730,8 +1629,8 @@ bool DlssNr_Dx12::DispatchResidualPass(ID3D12GraphicsCommandList* InCmdList,
 
     FrameDescriptorHeap& currentHeap = _frameHeaps[slot];
 
-    // Same table shape as DispatchPass: the residual shader reads t0..t3 + u0, and t4/u1 get the
-    // source as a stand-in so no descriptor in the table is left unbound.
+    // Same table shape as DispatchPass: the finished-colour shader reads t0..t3 + u0, and t4/u1 get
+    // the source as a stand-in so no descriptor in the table is left unbound.
     ID3D12Resource* const srvs[kSrvCount] = {
         InSource,
         InModel != nullptr ? InModel : InSource,
@@ -1840,9 +1739,6 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     const bool targetSupportsUav =
         cropColor || (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0;
 
-    // Resource/dispatch failures in this mode must preserve Color for RR.
-    const bool residualAcrossRr = frame.ResidualAcrossRr && frame.BeforeUpscale;
-
     const auto guideDesc = depth->GetDesc();
     const auto motionDesc = motion->GetDesc();
     const auto guides = DlssNr::ResolveGuideRegions(
@@ -1876,9 +1772,6 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     if (frame.Reset)
     {
         g_nr.reset = true;
-        // Drop the accumulated enhancement layer: a cut invalidates the reprojection history.
-        g_nr.residualHistoryPrimed = false;
-        g_nr.residualStoreValid = false;
 
         static unsigned long long resets = 0;
         ++resets;
@@ -1939,10 +1832,25 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // the model runs reduced and cheaper; above 1 it SUPERSAMPLES -- the proxy is upscaled to a larger
     // working size so the model denoises a super-native input, which the resolve then samples back down.
     // Capped at 2x: cost grows with the area and NGX acceptance above native is what this probe tests.
+    //
+    // Auto: derived from the render:output ratio the upscaler itself already reconstructed detail at,
+    // rather than the manual slider. This only makes sense once NR sees the upscaler's own output --
+    // pre-SR, NR is looking at the render-resolution buffer directly and there is no ratio to derive
+    // from -- so it is scoped to post-SR placement (RunBeforeSr off, or forced off by Ray
+    // Reconstruction, which always runs NR after RR+SR). Width and height are averaged rather than
+    // taking width alone, so an asymmetric render subrect (padding, non-uniform dynamic-resolution
+    // scaling) still lands on a sane single scale for this model, which -- like the manual slider --
+    // only ever works at one uniform percentage, not a separate X/Y one.
     float workScale = cfg.DlssNrWorkingScale.value_or_default();
+    if (!frame.BeforeUpscale && cfg.DlssNrModelResolutionAuto.value_or_default() &&
+        frame.RenderSubrectWidth > 0 && frame.OutputWidth > 0 &&
+        frame.RenderSubrectHeight > 0 && frame.OutputHeight > 0)
+        workScale = 0.5f * ((float) frame.RenderSubrectWidth / (float) frame.OutputWidth +
+                            (float) frame.RenderSubrectHeight / (float) frame.OutputHeight);
     if (!std::isfinite(workScale))
         workScale = 1.0f;
     workScale = workScale < 0.25f ? 0.25f : (workScale > 2.0f ? 2.0f : workScale);
+    g_nr.appliedWorkScale = workScale;
     const auto workWidth = (unsigned int) (width * workScale + 0.5f);
     const auto workHeight = (unsigned int) (height * workScale + 0.5f);
     const bool reduced = workWidth != width || workHeight != height;
@@ -1977,8 +1885,6 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // never called, which is why every one of these controls appeared to do nothing until something
     // else -- a resolution change -- happened to force a rebuild by accident.
     const bool tuningChanged = !TuningMatchesFeature(cfg, requestedPasses);
-    if (tuningChanged)
-        g_nr.residualHistoryPrimed = false;
 
     if (g_nr.feature != nullptr && (resolutionChanged || tuningChanged || placementChanged))
     {
@@ -2010,17 +1916,6 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             ParkNrResource(g_nr.colorSmall);
             ParkNrResource(g_nr.outputNative);
             ParkNrResource(g_nr.activeColor);
-            ParkNrResource(g_nr.residualEdited);
-            ParkNrResource(g_nr.residualHistory[0]);
-            ParkNrResource(g_nr.residualHistory[1]);
-            ParkNrResource(g_nr.residualCarrierIn);
-            ParkNrResource(g_nr.residualCarrierOut);
-            ParkNrResource(g_nr.residualComposed);
-            ParkNrResource(g_nr.residualSrExposure);
-            ReleaseResidualSr(/*deferred=*/true);
-            g_nr.residualStoreValid = false;
-            g_nr.residualHistoryIndex = 0;
-            g_nr.residualHistoryPrimed = false;
             g_nr.passScratchFailed = false;
             g_nr.passClampScratchFailed = false;
         }
@@ -2044,40 +1939,6 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         LOG_ERROR("DLSS-NR unavailable: {}", g_nr.reason);
         device->Release();
         return;
-    }
-
-    // All carriers rest in NPSR, including their first use. CreateScratch starts
-    // in UAV, so transition only newly allocated resources here.
-    if (residualAcrossRr)
-    {
-        auto ensureReadable = [&](ID3D12Resource*& resource, DXGI_FORMAT format, unsigned w, unsigned h)
-        {
-            if (resource == nullptr)
-            {
-                resource = CreateScratch(device, format, w, h);
-                if (resource)
-                    Barrier(cmdList, resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            }
-            return resource != nullptr;
-        };
-        if (_residualPipelineState == nullptr ||
-            !ensureReadable(g_nr.residualEdited, desc.Format, width, height) ||
-            !ensureReadable(g_nr.residualHistory[0], DXGI_FORMAT_R16G16B16A16_FLOAT, width, height) ||
-            !ensureReadable(g_nr.residualHistory[1], DXGI_FORMAT_R16G16B16A16_FLOAT, width, height) ||
-            !ensureReadable(g_nr.residualCarrierIn, DXGI_FORMAT_R16G16B16A16_FLOAT, width, height) ||
-            !ensureReadable(g_nr.residualCarrierOut, DXGI_FORMAT_R16G16B16A16_FLOAT,
-                            g_nr.residualOutputWidth, g_nr.residualOutputHeight) ||
-            !ensureReadable(g_nr.residualSrExposure, DXGI_FORMAT_R32_FLOAT, 1, 1) ||
-            !ensureReadable(g_nr.residualComposed, g_nr.residualOutputFormat,
-                            g_nr.residualOutputWidth, g_nr.residualOutputHeight))
-        {
-            ReportSkipOnce("RR residual resources unavailable; preserving the game's colour");
-            g_nr.residualStoreValid = false;
-            g_nr.residualHistoryPrimed = false;
-            device->Release();
-            return;
-        }
     }
 
     if (requestedPasses == 1)
@@ -2494,16 +2355,6 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     g_nr.gamePreExposure = frame.PreExposure;
 
     float whitePoint = frame.WhitePointOverride > 0.0f ? frame.WhitePointOverride : ResolveWhitePoint(cfg, isHdrBuffer);
-
-    // Stashed for ApplyResidualAcrossRr, a free function on the after-upscale seam that has no
-    // access to this frame's local proxy computation: the same scale that normalizes this frame's
-    // colour into the encode's proxy is the right one to normalize the residual delta by, since the
-    // delta lives in that same domain (residualEdited - hdrCopy, both in the game's native units).
-    g_nr.residualWhitePoint = whitePoint;
-
-    // Latched before the model evaluate below clears g_nr.reset, so the post-SR seam can still see a
-    // cut that happened this frame. Held (not overwritten) until the private feature consumes it.
-    g_nr.residualSrReset = g_nr.residualSrReset || g_nr.reset;
 
     // Zero-latency exposure (D3D12, source 1): when the game hands us a live exposure texture, the
     // white point is recomputed in-shader every frame from it (ExposurePreMul / exposure) instead of
@@ -2955,14 +2806,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         resolveParams.EnvironmentDetail = strength(cfg.DlssNrEnvironmentDetail.value_or_default());
         resolveParams.EnvironmentColour = strength(cfg.DlssNrEnvironmentColour.value_or_default());
         resolveParams.ColourStrength = cfg.DlssNrColourStrength.value_or_default();
-        // ResidualAcrossRR's resolve target is residualEdited, not Color -- an internal scratch the
-        // accumulator reads as "the real edit" (delta = residualEdited - hdrCopy). Any Debug view mode
-        // short-circuits the resolve and overwrites that target with a visualization instead, which
-        // would then get accumulated, upscaled and added as if it were the real edit. Forced off here
-        // regardless of the user's setting so the accumulator's input can never be corrupted by it;
-        // ApplyResidualAcrossRr below renders its own, safe debug visualization of the carried delta
-        // on the post-SR seam instead, from data that was never fed through this resolve.
-        resolveParams.DebugView = residualAcrossRr ? 0u : cfg.DlssNrDebugView.value_or_default();
+        resolveParams.DebugView = cfg.DlssNrDebugView.value_or_default();
         resolveParams.MaxRatio = cfg.DlssNrMaxRatio.value_or_default();
         resolveParams.Transfer = cfg.DlssNrTransfer.value_or_default();
         resolveParams.DebugScale = cfg.DlssNrWhitePointScale.value_or_default();
@@ -3054,19 +2898,10 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
         // Pre-SR Color is not guaranteed to have UAV support. Write directly when legal; otherwise
         // resolve into hdrCopy while the original Color remains readable, then copy the result back.
-        // ResidualAcrossRR overrides both: the resolve goes to an owned scratch and nothing is
-        // written back to Color -- the edit is carried to the after-SR seam as a residual instead.
-        ID3D12Resource* resolveOriginal =
-            residualAcrossRr ? g_nr.hdrCopy : (targetSupportsUav ? g_nr.hdrCopy : target);
-        ID3D12Resource* resolveTarget =
-            residualAcrossRr ? g_nr.residualEdited : (targetSupportsUav ? target : g_nr.hdrCopy);
+        ID3D12Resource* resolveOriginal = targetSupportsUav ? g_nr.hdrCopy : target;
+        ID3D12Resource* resolveTarget = targetSupportsUav ? target : g_nr.hdrCopy;
 
-        if (residualAcrossRr)
-        {
-            Barrier(cmdList, g_nr.residualEdited, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        }
-        else if (targetSupportsUav)
+        if (targetSupportsUav)
         {
             TransitionTarget(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         }
@@ -3076,49 +2911,10 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         }
 
-        // Apply the shared strength once, at the post-RR seam.
-        if (residualAcrossRr)
-            resolveParams.TransferStrength = 1.0f;
-        const bool resolved = DispatchPass(cmdList, resolveParams, resolveProxy, resolveAnswer,
-                                           resolveOriginal, motionIn, exposureTex, resolveTarget, nullptr);
+        DispatchPass(cmdList, resolveParams, resolveProxy, resolveAnswer, resolveOriginal, motionIn,
+                    exposureTex, resolveTarget, nullptr);
 
-        if (residualAcrossRr)
-        {
-            Barrier(cmdList, g_nr.residualEdited, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            const unsigned prev = g_nr.residualHistoryIndex & 1u;
-            const unsigned cur = prev ^ 1u;
-            Barrier(cmdList, g_nr.residualHistory[cur], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            DlssNrConstants accum {};
-            accum.Mode = DlssNrResidualMode_Accumulate;
-            accum.Width = width;
-            accum.Height = height;
-            accum.ResidualBlend = std::clamp(cfg.DlssNrResidualAcrossRrBlend.value_or_default(), 0.01f, 1.0f);
-            accum.ResidualHistoryValid = g_nr.residualHistoryPrimed ? 1u : 0u;
-            accum.GuideWidth = motionWidth;
-            accum.GuideHeight = motionHeight;
-            accum.ResidualMotionBaseX = motionBaseX;
-            accum.ResidualMotionBaseY = motionBaseY;
-            // Divided by the motion texture's OWN extent, not the pre-SR colour's. MvScale converts a
-            // raw motion sample into pixels of the space the motion texture lives in, and
-            // ResolveGuideRegions sizes that region as `lowResolutionMotion ? render : output` -- so
-            // with display-resolution motion vectors (MVLowRes clear) the divisor has to be the
-            // output extent. Dividing by the render width there overstated every reprojection by
-            // outputW/renderW, fetching history from the wrong place on every frame. Identical to the
-            // old expression in the MVLowRes case, where motionWidth == width by construction.
-            accum.MvScaleX = frame.MvScaleX / (float) motionWidth;
-            accum.MvScaleY = frame.MvScaleY / (float) motionHeight;
-            const bool accumulated = resolved && DispatchResidualPass(cmdList, accum, g_nr.hdrCopy,
-                g_nr.residualEdited, g_nr.residualHistory[prev], motionIn, g_nr.residualHistory[cur]);
-            Barrier(cmdList, g_nr.residualHistory[cur], D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            g_nr.residualHistoryPrimed = accumulated;
-            g_nr.residualStoreValid = accumulated;
-            if (accumulated)
-                g_nr.residualHistoryIndex = cur;
-        }
-        else if (!targetSupportsUav)
+        if (!targetSupportsUav)
         {
             Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                     D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -3180,8 +2976,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
     // Failed evaluations leave the game's original image intact. A successful copy-back writes
     // only the active rectangle and restores both resources before DLSS consumes the image.
-    // ResidualAcrossRR never copies back -- Color must reach RR untouched.
-    FinishColor(result == NVSDK_NGX_Result_Success && !residualAcrossRr);
+    FinishColor(result == NVSDK_NGX_Result_Success);
     if (result == NVSDK_NGX_Result_Success)
         ++g_nr.successfulDispatches;
 
@@ -3261,328 +3056,6 @@ void RetryAfterFailure()
 
 }
 
-// Best-effort: upscale the accumulated history with a private NVIDIA DLSS SR feature fed the game's
-// own real depth and motion vectors, so the carried edit gets genuine neural reconstruction at
-// output resolution instead of a blur of a render-resolution layer. Independent of
-// DlssNr_DeferredSr's Generation/HalfRate (that path is unconditionally cancelled while RR is
-// active) -- its own minimal feature, with its own one-submission creation delay, the same NGX
-// requires everywhere else in this file. Returns false on ANY failure (runtime unavailable, missing
-// guides, creation/evaluation failure, still inside the creation delay) -- the caller falls back to
-// dlssnr_residual.hlsl's plain-resample Apply, never to a worse or broken picture.
-bool UpscaleResidualCarrier(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
-                            ID3D12Resource* history, unsigned int outW, unsigned int outH,
-                            unsigned long long submissionEpoch)
-{
-    if (g_nr.residualSrFailed || !g_nr.residualCarrierIn || !g_nr.residualCarrierOut ||
-        !g_nr.residualSrExposure)
-        return false;
-
-    ID3D12Resource* depth = GetResource(params, NVSDK_NGX_Parameter_Depth, "DLSSD.Depth");
-    ID3D12Resource* motion = GetResource(params, NVSDK_NGX_Parameter_MotionVectors, "DLSSD.MotionVectors");
-    if (depth == nullptr || motion == nullptr)
-        return false;
-
-    // Every subrect base must be zero. This feature binds the game's own depth and motion textures
-    // but describes them to NGX with only Render_Subrect_Dimensions -- an origin-aligned rectangle.
-    // A game that offsets any of its guides would have them read from the wrong place, silently.
-    // DlssNr_DeferredSr.inl refuses the same way rather than trying to forward eight offsets, so this
-    // matches the path that is already proven. Not latched: an offset is a per-frame property of the
-    // game's parameter block, so a frame that stops using one recovers on its own.
-    for (const char* key : { NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_X,
-                            NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y,
-                            NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X,
-                            NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y,
-                            NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X,
-                            NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y,
-                            NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_X,
-                            NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_Y })
-    {
-        if (DeferredSr::UInt(params, key) == 0)
-            continue;
-
-        static bool warnedSubrect = false;
-        if (!warnedSubrect)
-        {
-            warnedSubrect = true;
-            LOG_WARN("DLSS-NR ResidualAcrossRR: the game offsets a colour/guide/output subrect; the "
-                     "private DLSS SR upscale needs origin-aligned guides, so the carried edit falls "
-                     "back to a plain resample.");
-        }
-        return false;
-    }
-
-    const unsigned int renderW = g_nr.width;
-    const unsigned int renderH = g_nr.height;
-    if (renderW == 0 || renderH == 0 || outW == 0 || outH == 0)
-        return false;
-
-    ID3D12Device* device = nullptr;
-    if (FAILED(history->GetDevice(IID_PPV_ARGS(&device))) || device == nullptr)
-        return false;
-
-    if (g_nr.residualSrFeature == nullptr)
-    {
-        ScopedNrStateEnvelope envelope(cmdList);
-        if (!NVNGXProxy::InitDx12(device) || !NVNGXProxy::D3D12_AllocateParameters() ||
-            !NVNGXProxy::D3D12_DestroyParameters() || !NVNGXProxy::D3D12_CreateFeature() ||
-            !NVNGXProxy::D3D12_EvaluateFeature() || !NVNGXProxy::D3D12_ReleaseFeature() ||
-            NVNGXProxy::D3D12_AllocateParameters()(&g_nr.residualSrParams) != NVSDK_NGX_Result_Success ||
-            g_nr.residualSrParams == nullptr)
-        {
-            LOG_WARN("DLSS-NR ResidualAcrossRR: NVIDIA DLSS SR runtime unavailable; carrying the "
-                     "edit across RR falls back to a plain resample upscale.");
-            g_nr.residualSrFailed = true;
-            device->Release();
-            return false;
-        }
-
-        auto* createParams = g_nr.residualSrParams;
-        createParams->Set(NVSDK_NGX_Parameter_Width, renderW);
-        createParams->Set(NVSDK_NGX_Parameter_Height, renderH);
-        createParams->Set(NVSDK_NGX_Parameter_OutWidth, outW);
-        createParams->Set(NVSDK_NGX_Parameter_OutHeight, outH);
-        createParams->Set(NVSDK_NGX_Parameter_CreationNodeMask, 1u);
-        createParams->Set(NVSDK_NGX_Parameter_VisibilityNodeMask, 1u);
-
-        unsigned int perfQuality = 0;
-        if (params->Get(NVSDK_NGX_Parameter_PerfQualityValue, &perfQuality) != NVSDK_NGX_Result_Success)
-            perfQuality = NVSDK_NGX_PerfQuality_Value_MaxPerf;
-        createParams->Set(NVSDK_NGX_Parameter_PerfQualityValue, (int) perfQuality);
-
-        // Inherited from the game's own create flags, masked to the three bits that describe guide
-        // layout -- exactly as DlssNr_DeferredSr.inl derives its equivalent. This previously asserted
-        // MVLowRes unconditionally, on the strength of a comment citing a "motion-layout guard on the
-        // before-upscale seam" that no longer exists: that guard was dropped when this file took the
-        // upstream rewrite, while the private-feature code that depended on it was re-applied. A game
-        // with display-resolution or jittered motion vectors was therefore handing the private feature
-        // motion it had been told was render-resolution and unjittered.
-        const unsigned int createFlags =
-            DeferredSr::UInt(params, NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags) &
-            (NVSDK_NGX_DLSS_Feature_Flags_DepthInverted | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
-             NVSDK_NGX_DLSS_Feature_Flags_MVJittered);
-        createParams->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, createFlags);
-
-        NVSDK_NGX_Handle* feature = nullptr;
-        const auto createResult = NVNGXProxy::D3D12_CreateFeature()(
-            cmdList, NVSDK_NGX_Feature_SuperSampling, createParams, &feature);
-        if (createResult != NVSDK_NGX_Result_Success || feature == nullptr)
-        {
-            LOG_WARN("DLSS-NR ResidualAcrossRR: private DLSS SR creation failed (0x{:X}); carrying "
-                     "the edit across RR falls back to a plain resample upscale.", (unsigned) createResult);
-            g_nr.residualSrFailed = true;
-            device->Release();
-            return false;
-        }
-        g_nr.residualSrFeature = feature;
-
-        // Constant unit exposure: the carrier is an LDR-biased [0,1] signal, not scene radiance, and
-        // the private feature's own auto-exposure must not touch it. Mode 7 on the main shader
-        // ignores its source entirely and always writes 1.0; history just fills the unused slot.
-        // Written once here, read every frame after.
-        DlssNrConstants unit {};
-        unit.Mode = DlssNrMode_UnitExposure;
-        unit.Width = unit.Height = 1;
-        const bool exposureOk = g_compose->DispatchPass(cmdList, unit, history, nullptr, nullptr, nullptr,
-                                                       nullptr, g_nr.residualSrExposure, nullptr);
-        Barrier(cmdList, g_nr.residualSrExposure, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        if (!exposureOk)
-        {
-            LOG_WARN("DLSS-NR ResidualAcrossRR: private exposure initialization failed; carrying "
-                     "the edit across RR falls back to a plain resample upscale.");
-            g_nr.residualSrFailed = true;
-            device->Release();
-            return false;
-        }
-
-        g_nr.residualSrCreateEpoch = submissionEpoch;
-        g_nr.residualSrReset = true; // a fresh feature has no history; its first evaluate says so
-        device->Release();
-        return false; // this frame's layer is dropped; the feature isn't ready yet
-    }
-
-    device->Release();
-
-    if (submissionEpoch == g_nr.residualSrCreateEpoch)
-    {
-        // No later submission has happened yet -- evaluating now would use a feature whose creation
-        // commands may not have reached the GPU.
-        return false;
-    }
-
-    // Encode the accumulated delta into a [0,1] carrier the private feature can consume as Color.
-    Barrier(cmdList, g_nr.residualCarrierIn, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    DlssNrConstants encode {};
-    encode.Mode = DlssNrResidualMode_EncodeCarrier;
-    encode.Width = renderW;
-    encode.Height = renderH;
-    encode.ExposurePreMul = std::max(g_nr.residualWhitePoint, 1e-4f);
-    const bool encoded = g_compose->DispatchResidualPass(cmdList, encode, history, nullptr, nullptr, nullptr,
-                                                         g_nr.residualCarrierIn);
-    Barrier(cmdList, g_nr.residualCarrierIn, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-
-    if (!encoded)
-        return false;
-
-    auto* evalParams = g_nr.residualSrParams;
-    evalParams->Set(NVSDK_NGX_Parameter_Color, g_nr.residualCarrierIn);
-    evalParams->Set(NVSDK_NGX_Parameter_Output, g_nr.residualCarrierOut);
-    evalParams->Set(NVSDK_NGX_Parameter_Depth, depth);
-    evalParams->Set(NVSDK_NGX_Parameter_MotionVectors, motion);
-    evalParams->Set(NVSDK_NGX_Parameter_ExposureTexture, g_nr.residualSrExposure);
-    evalParams->Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, renderW);
-    evalParams->Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, renderH);
-    // The latched cut flag, not g_nr.reset -- that one is already false by the time this seam runs
-    // (the pre-SR model evaluate clears it earlier in the same frame), so the private feature used to
-    // carry its temporal history straight across every camera cut.
-    evalParams->Set(NVSDK_NGX_Parameter_Reset, (unsigned int) (g_nr.residualSrReset ? 1u : 0u));
-    // DLSS SR weights its temporal history by elapsed time; DlssNr_DeferredSr.inl forwards this and
-    // this path was omitting it, leaving the feature on whatever the freshly-allocated block defaulted
-    // to rather than the game's real frame time.
-    evalParams->Set(NVSDK_NGX_Parameter_FrameTimeDeltaInMsec,
-                   DeferredSr::Float(params, NVSDK_NGX_Parameter_FrameTimeDeltaInMsec, 16.67f));
-    // The real per-frame TAA jitter the game's own RR/SR evaluate is using this frame -- DLSS SR
-    // relies on this to align the current sample against its own internal temporal history, so a
-    // wrong (here: always-zero) value breaks that alignment every single frame regardless of camera
-    // motion. That surfaced as persistent grain/noise in the carried edit even with a fully static
-    // camera, since the game's jitter pattern keeps cycling every frame either way.
-    evalParams->Set(NVSDK_NGX_Parameter_Jitter_Offset_X,
-                   DeferredSr::Float(params, NVSDK_NGX_Parameter_Jitter_Offset_X, 0.0f));
-    evalParams->Set(NVSDK_NGX_Parameter_Jitter_Offset_Y,
-                   DeferredSr::Float(params, NVSDK_NGX_Parameter_Jitter_Offset_Y, 0.0f));
-    evalParams->Set(NVSDK_NGX_Parameter_MV_Scale_X, g_nr.guideMvScaleX);
-    evalParams->Set(NVSDK_NGX_Parameter_MV_Scale_Y, g_nr.guideMvScaleY);
-    evalParams->Set(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, 1.0f);
-    evalParams->Set(NVSDK_NGX_Parameter_DLSS_Exposure_Scale, 1.0f);
-    evalParams->Set(NVSDK_NGX_Parameter_Sharpness, 0.0f);
-
-    Barrier(cmdList, g_nr.residualCarrierOut, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-
-    NVSDK_NGX_Result evalResult;
-    {
-        ScopedNrStateEnvelope envelope(cmdList);
-        evalResult = NVNGXProxy::D3D12_EvaluateFeature()(
-            cmdList, (NVSDK_NGX_Handle*) g_nr.residualSrFeature, evalParams, nullptr);
-    }
-
-    Barrier(cmdList, g_nr.residualCarrierOut, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-
-    if (evalResult != NVSDK_NGX_Result_Success)
-    {
-        LOG_WARN("DLSS-NR ResidualAcrossRR: private DLSS SR evaluation failed (0x{:X}); this frame "
-                 "falls back to a plain resample upscale.", (unsigned) evalResult);
-        return false;
-    }
-
-    // Consumed only now that the feature has actually been evaluated with it. An earlier return --
-    // the creation-delay frame, a failed encode, a refused subrect -- leaves the cut latched for the
-    // next attempt rather than dropping it.
-    g_nr.residualSrReset = false;
-
-    return true;
-}
-
-// Consume only the residual produced by this exact CPU evaluate. Dispatch failures
-// leave the RR output untouched, and every exit restores the caller's bindings.
-void ApplyResidualAcrossRr(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
-                          unsigned long long submissionEpoch)
-{
-    auto* output = GetResource(params, NVSDK_NGX_Parameter_Output, "DLSSD.Output");
-    const bool paired = g_nr.residualPair.Take(cmdList, params, output);
-    const bool ready = g_nr.residualStoreValid;
-    g_nr.residualStoreValid = false;
-    if (!paired || !ready || !g_compose || !output || !g_nr.residualComposed)
-    {
-        g_nr.residualHistoryPrimed = false;
-        return;
-    }
-    const auto& cfg = *Config::Instance();
-    const float strength = cfg.DlssNrTransferStrength.value_or_default();
-    if (!cfg.DlssNrApplyModel.value_or_default() || !std::isfinite(strength) || strength <= 0.0f)
-    {
-        g_nr.residualHistoryPrimed = false;
-        return;
-    }
-    if ((cfg.RestoreComputeSignature.value_or_default() || cfg.RestoreGraphicSignature.value_or_default()) &&
-        !D3D12Hooks::CanRestoreRootSignature(cmdList))
-        return;
-    ScopedNrStateEnvelope stateEnvelope(cmdList);
-    const auto desc = output->GetDesc();
-    const auto carrier = g_nr.residualComposed->GetDesc();
-    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.SampleDesc.Count != 1 ||
-        desc.Width != carrier.Width || desc.Height != carrier.Height || desc.Format != carrier.Format ||
-        desc.DepthOrArraySize != 1 || desc.MipLevels != 1)
-        return;
-
-    ID3D12Resource* history = g_nr.residualHistory[g_nr.residualHistoryIndex & 1u];
-    const bool upscaledByModel = UpscaleResidualCarrier(cmdList, params, history, (unsigned) desc.Width,
-                                                        desc.Height, submissionEpoch);
-
-    auto arrival = cfg.OutputResourceBarrier.has_value()
-        ? (D3D12_RESOURCE_STATES) cfg.OutputResourceBarrier.value() : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    Barrier(cmdList, output, arrival, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    Barrier(cmdList, g_nr.residualComposed, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    DlssNrConstants apply {};
-    apply.Width = (unsigned) desc.Width;
-    apply.Height = desc.Height;
-    apply.TransferStrength = std::clamp(strength, 0.0f, 1.0f);
-    bool composed;
-    // Debug view 3 (Difference amplified) only: 1 (Proxy) and 2 (Model output) have no equivalent
-    // for a residual-only layer -- there is no from-scratch model answer here, only a delta on top of
-    // an already-finished frame -- so they fall through to the normal apply below, same as Off. The
-    // pre-SR resolve already forces its OWN Debug view off for this mode (see DlssNr_Dx12.cpp's
-    // resolveParams.DebugView), so reading it here is always safe: it can only ever pick which of two
-    // real outcomes to render, never re-introduce the corruption that guard exists to prevent.
-    if (cfg.DlssNrDebugView.value_or_default() == 3)
-    {
-        apply.Mode = upscaledByModel ? DlssNrResidualMode_DebugAmplifyCarrier
-                                     : DlssNrResidualMode_DebugAmplifyPlain;
-        apply.ExposurePreMul = std::max(g_nr.residualWhitePoint, 1e-4f);
-        composed = g_compose->DispatchResidualPass(
-            cmdList, apply, output, upscaledByModel ? g_nr.residualCarrierOut : history, nullptr,
-            nullptr, g_nr.residualComposed);
-    }
-    else if (upscaledByModel)
-    {
-        // The private feature already upscaled the carrier at output resolution; ApplyCarrier just
-        // decodes and adds it. gModel is Load-sampled at 1:1, not resampled again.
-        apply.Mode = DlssNrResidualMode_ApplyCarrier;
-        apply.ExposurePreMul = std::max(g_nr.residualWhitePoint, 1e-4f);
-        composed = g_compose->DispatchResidualPass(cmdList, apply, output, g_nr.residualCarrierOut,
-                                                   nullptr, nullptr, g_nr.residualComposed);
-    }
-    else
-    {
-        // Fallback: bilinear-sample the render-resolution history directly, same as before the
-        // private feature existed.
-        apply.Mode = DlssNrResidualMode_Apply;
-        composed = g_compose->DispatchResidualPass(cmdList, apply, output, history, nullptr, nullptr,
-                                                   g_nr.residualComposed);
-    }
-    if (composed)
-    {
-        Barrier(cmdList, g_nr.residualComposed, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_COPY_SOURCE);
-        Barrier(cmdList, output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
-        cmdList->CopyResource(output, g_nr.residualComposed);
-        Barrier(cmdList, output, D3D12_RESOURCE_STATE_COPY_DEST, arrival);
-        Barrier(cmdList, g_nr.residualComposed, D3D12_RESOURCE_STATE_COPY_SOURCE,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    }
-    else
-    {
-        Barrier(cmdList, output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, arrival);
-        Barrier(cmdList, g_nr.residualComposed, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        g_nr.residualHistoryPrimed = false;
-    }
-}
-
 #include "DlssNr_Late.inl"
 
 // Reads the game's parameter block and runs the pass on what it finds.
@@ -3621,9 +3094,6 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
     }
     if (finishedMode)
     {
-        g_nr.residualPair.Cancel();
-        g_nr.residualStoreValid = false;
-        g_nr.residualHistoryPrimed = false;
         if (!cfg.DlssNrEnabled.value_or_default())
         { DeferredSr::Cancel(); Late::Cancel(); return; }
         if (timingQueue || State::Instance().swapchainInteropApi != SwapchainInteropApi::None)
@@ -3648,25 +3118,6 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
         return;
     }
     Late::Cancel();
-    if (beforeUpscale)
-    {
-        // Even a disabled/skipped pre pass must invalidate the previous result.
-        if (g_nr.residualStoreValid)
-            g_nr.residualHistoryPrimed = false;
-        g_nr.residualPair.Cancel();
-        g_nr.residualStoreValid = false;
-    }
-    const bool residualMode = cfg.DlssNrEnabled.value_or_default() &&
-        cfg.DlssNrRunBeforeSr.value_or_default() && cfg.DlssNrResidualAcrossRr.value_or_default() && rayReconstruction;
-    if (residualMode != g_nr.residualModeActive)
-    {
-        g_nr.residualPair.Cancel();
-        g_nr.residualHistoryPrimed = false;
-        g_nr.residualStoreValid = false;
-        g_nr.residualModeActive = residualMode;
-        if (!residualMode)
-            ReleaseResidualSr(/*deferred=*/true); // idle while the mode is off; retried fresh if re-enabled
-    }
     if (!cfg.DlssNrEnabled.value_or_default() || !cfg.DlssNrDeferredDlss.value_or_default() || rayReconstruction)
     {
         DeferredSr::Cancel();
@@ -3702,8 +3153,10 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
     // Both SR and RR+SR use the same placement control. Unsupported colour subrects
     // retain the common post-upscale fallback; RR identity only separates history
     // and prevents using the SR-only deferred-residual experiment on an RR feature.
+    // Skipped entirely while RR is active: configuredBefore below forces post-SR regardless of
+    // this result, so there is nothing to gain from the GetResource/GetDesc work every frame.
     bool preSrCompatible = true;
-    if (cfg.DlssNrRunBeforeSr.value_or_default())
+    if (cfg.DlssNrRunBeforeSr.value_or_default() && !rayReconstruction)
     {
         ID3D12Resource* preColor = GetResource(params, NVSDK_NGX_Parameter_Color, "DLSSD.Color");
         unsigned int renderWidth = 0, renderHeight = 0, colorBaseX = 0, colorBaseY = 0;
@@ -3752,52 +3205,13 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
         }
     }
 
+    // Ray Reconstruction already denoises the frame before either NR seam runs, so placing NR
+    // before it only exposes the edit to RR's own denoise pass -- which cannot tell a deliberate
+    // edit from noise it is trained to remove unless the edit is motion-consistent across frames
+    // the way real scene detail is. Running NR after RR sidesteps that entirely: RR active forces
+    // post-SR placement unconditionally, regardless of the RunBeforeSR setting.
     const bool configuredBefore = cfg.DlssNrRunBeforeSr.value_or_default() &&
-                                  preSrCompatible;
-
-    // ResidualAcrossRR: with RunBeforeSR + the game's Ray Reconstruction both on, run
-    // the model before SR but leave Color untouched, then add its captured residual back after RR+SR.
-    // Unlike every other placement this needs BOTH seams of one evaluate -- the before-upscale seam
-    // falls through to the normal pre-SR body (which captures the residual and skips the copy-back),
-    // and the after-upscale seam is handled here. If it is requested but the pre-SR path is not
-    // compatible, configuredBefore is false and the normal gate runs plain post-SR NR instead.
-    const bool residualAcrossRr =
-        cfg.DlssNrResidualAcrossRr.value_or_default() && configuredBefore && rayReconstruction;
-
-    // Debug view is NOT in this list: the resolve dispatch above forces it off for residualAcrossRr's
-    // own target (residualEdited), so it can no longer corrupt the accumulator regardless of the
-    // user's setting, and ApplyResidualAcrossRr renders its own safe visualization of the carried
-    // delta on the post-SR seam instead. Compare and Show skin mask remain blocked: both overwrite the
-    // resolve's final composited value with something other than the real per-pixel edit (a frozen
-    // half-frame, a mask), which the accumulator would otherwise treat as if it were genuine content.
-    if (residualAcrossRr && beforeUpscale &&
-        (cfg.DlssNrHoldFrame.value_or_default() || cfg.DlssNrCompare.value_or_default() != 0 ||
-         cfg.DlssNrShowSkinMask.value_or_default()))
-    {
-        g_nr.residualHistoryPrimed = false;
-        ReportSkipOnce("disable Hold frame, Compare and Show skin mask for residual-across-RR");
-        return;
-    }
-
-    if (residualAcrossRr && !beforeUpscale)
-    {
-        // Native DX12 has no timing queue and NVNGX_DLSS_Dx12.cpp's EvaluateBeforeUpscale/
-        // EvaluateAfterUpscale call sites pass submissionEpoch as a literal 0 on that path -- the
-        // real, actually-incrementing epoch there is State::Instance().frameCount, exactly as
-        // frame.SubmissionEpoch above already resolves it. Passing the raw parameter through would
-        // leave the private feature's one-submission creation gate comparing 0 to 0 forever.
-        ApplyResidualAcrossRr(cmdList, params,
-                              timingQueue != nullptr ? submissionEpoch : State::Instance().frameCount);
-
-        static bool announcedResidualAcrossRr = false;
-        if (!announcedResidualAcrossRr)
-        {
-            announcedResidualAcrossRr = true;
-            LOG_INFO("DLSS-NR: residual-across-RR active -- MV-reprojected accumulator, blend {:.2f}",
-                     std::clamp(cfg.DlssNrResidualAcrossRrBlend.value_or_default(), 0.01f, 1.0f));
-        }
-        return;
-    }
+                                  preSrCompatible && !rayReconstruction;
 
     if (configuredBefore != beforeUpscale)
         return;
@@ -3858,27 +3272,6 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
     }
     frame.BeforeUpscale = beforeUpscale;
     frame.RayReconstruction = rayReconstruction;
-    frame.ResidualAcrossRr = residualAcrossRr; // only reaches here on the before-upscale seam
-    if (residualAcrossRr)
-    {
-        if (!output)
-            return;
-        const auto outDesc = output->GetDesc();
-        if (outDesc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || outDesc.SampleDesc.Count != 1 ||
-            outDesc.DepthOrArraySize != 1 || outDesc.MipLevels != 1)
-            return;
-        if (g_nr.residualOutputWidth != outDesc.Width || g_nr.residualOutputHeight != outDesc.Height ||
-            g_nr.residualOutputFormat != outDesc.Format)
-        {
-            ParkNrResource(g_nr.residualComposed);
-            ParkNrResource(g_nr.residualCarrierOut);
-            ReleaseResidualSr(/*deferred=*/true); // built for the old OutWidth/OutHeight
-            g_nr.residualHistoryPrimed = false;
-            g_nr.residualOutputWidth = (unsigned) outDesc.Width;
-            g_nr.residualOutputHeight = outDesc.Height;
-            g_nr.residualOutputFormat = outDesc.Format;
-        }
-    }
     frame.SubmissionEpoch = timingQueue != nullptr ? submissionEpoch : State::Instance().frameCount;
 
     // Color and Output may use different formats even though DLSS treats them as the same frame colour
@@ -4042,8 +3435,6 @@ void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* p
     }
 
     g_compose->Dispatch(cmdList, target, depth, motion, target, frame, timingQueue);
-    if (residualAcrossRr && g_nr.residualStoreValid)
-        g_nr.residualPair.Arm(cmdList, params, output);
 }
 
 void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
@@ -4214,6 +3605,8 @@ ExposureStatus GameExposureStatus()
     return s;
 }
 
+int CurrentModelResolutionPercent() { return (int) lroundf(g_nr.appliedWorkScale * 100.0f); }
+
 std::optional<double> LastGpuTime() { return g_lastGpuTime; }
 
 
@@ -4314,21 +3707,6 @@ void Shutdown()
         delete g_nr.superDown;
         g_nr.superDown = nullptr;
     }
-
-    ReleaseResidualSr(/*deferred=*/false);
-
-    for (ID3D12Resource** r : { &g_nr.residualEdited, &g_nr.residualHistory[0],
-                               &g_nr.residualHistory[1], &g_nr.residualCarrierIn, &g_nr.residualCarrierOut,
-                               &g_nr.residualComposed, &g_nr.residualSrExposure })
-        if (*r != nullptr)
-        {
-            (*r)->Release();
-            *r = nullptr;
-        }
-    g_nr.residualPair.Cancel();
-    g_nr.residualStoreValid = false;
-    g_nr.residualHistoryPrimed = false;
-    g_nr.residualHistoryIndex = 0;
 
     if (g_nr.outputNative != nullptr)
     {

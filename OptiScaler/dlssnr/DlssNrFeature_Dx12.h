@@ -126,6 +126,11 @@ struct ExposureStatus
 
 ExposureStatus GameExposureStatus();
 
+// The model resolution actually applied last frame, as a percentage of the frame it processes --
+// the manual slider, or (post-SR + Auto) the derived render:output ratio. So the menu can show the
+// live value instead of the stale manual one while Auto is overriding it.
+int CurrentModelResolutionPercent();
+
 // The white point the exposure meter has settled on, or 0 if it has not taken a reading yet. For the
 // overlay, so the number in use is visible rather than inferred.
 

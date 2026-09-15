@@ -44,3 +44,15 @@
   ≥100×100) `OutputWindow` as DXGI's documented "size to the window's client area"
   idiom rather than a tiny overlay/helper swapchain — see `known_gotchas.md` for why
   this was hard to diagnose.
+
+- **DLSS-NR placement is unconditionally post-SR whenever Ray Reconstruction is active,
+  and `ModelResolutionAuto` applies to any post-SR placement, not just RR**:
+  `configuredBefore` in `EvaluateInternal` (`OptiScaler/shaders/dlssnr/DlssNr_Dx12.cpp`)
+  is `cfg.DlssNrRunBeforeSr.value_or_default() && preSrCompatible && !rayReconstruction` —
+  RR active always forces NR to run after SR/RR's own denoise pass, regardless of the
+  `RunBeforeSR` checkbox, because RR's denoiser can't distinguish a deliberate pre-SR NR
+  edit from noise it's trained to remove. The `DlssNrModelResolutionAuto` feature
+  (`CurrentModelResolutionPercent()`, width+height-averaged render:output ratio) is gated
+  on `!frame.BeforeUpscale` (any post-upscale NR placement), not RR specifically — the
+  render:output-ratio rationale holds for any upscaler once NR sees its already-upscaled
+  output.

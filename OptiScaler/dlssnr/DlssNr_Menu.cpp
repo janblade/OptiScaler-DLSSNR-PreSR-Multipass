@@ -164,25 +164,8 @@ void RenderMenu(Config* config, float menuResScale)
             ImGui::EndDisabled();
 
         HelpMarker(finishedPicture ? "Run the model at the smaller input size, upscale its changes with DLSS, then apply them to the finished picture.\nExperimental: the colour transfer is approximate and may look different. Requires DLSS SR; does not support RR." :
-            "On: apply NR before SR or combined RR+SR. Off: apply it afterward.\nBefore RR is experimental. Unsupported input layouts fall back after upscaling.");
+            "On: apply NR before SR. Off: apply it afterward.\nHas no effect when the game's Ray Reconstruction is active -- RR always runs NR after RR+SR. Unsupported input layouts fall back after upscaling.");
 
-        if (!finishedPicture)
-        {
-            bool residualAcrossRr = config->DlssNrResidualAcrossRr.value_or_default();
-            ImGui::BeginDisabled(deferredActive || !beforeSr);
-            if (ImGui::Checkbox("Carry the pre-SR edit across RR (experimental)", &residualAcrossRr))
-                config->DlssNrResidualAcrossRr = residualAcrossRr;
-            ImGui::EndDisabled();
-            HelpMarker("Only with Apply before Super Resolution on and the game's Ray Reconstruction active.\nRuns the model before SR but leaves the colour input untouched, then adds its edit back onto the RR+SR output so it survives RR's denoise.\nThe edit is carried as a motion-vector-reprojected temporal accumulator: the per-frame ray-trace noise averages out, the enhancement stays. Inert otherwise.");
-
-            ImGui::BeginDisabled(deferredActive || !beforeSr || !residualAcrossRr);
-            float residualBlend = config->DlssNrResidualAcrossRrBlend.value_or_default();
-            if (ImGui::SliderFloat("Detail accumulation rate", &residualBlend, 0.01f, 1.0f, "%.2f"))
-                config->DlssNrResidualAcrossRrBlend = std::clamp(residualBlend, 0.01f, 1.0f);
-            ImGui::EndDisabled();
-            HelpMarker("How fast the carried edit builds up. Lower = stabler but slower to appear; 1.0 = no accumulation (each frame's raw residual, which flickers). Default 0.08.");
-
-        }
         bool deferredDlss = config->DlssNrDeferredDlss.value_or_default();
         int precisionChoice = config->DlssNrPrecision.value_or_default() == 4 ? 1 : 0;
         const char* precisions[] = { "NVIDIA (FP8)", "Experimental (FP8+NVFP4 hybrid)" };
@@ -355,14 +338,20 @@ void RenderMenu(Config* config, float menuResScale)
         // reads live; only the commit waits.
         static int pendingScale = -1;
 
-        int scalePercent = pendingScale >= 0
+        bool resolutionAuto = config->DlssNrModelResolutionAuto.value_or_default();
+        const bool autoActive = resolutionAuto && (!beforeSr || rayReconstruction);
+
+        int scalePercent = autoActive ? DlssNr::CurrentModelResolutionPercent()
+                          : pendingScale >= 0
                                ? pendingScale
                                : (int) lroundf(config->DlssNrWorkingScale.value_or_default() * 100.0f);
 
+        ImGui::BeginDisabled(autoActive);
         if (ImGui::SliderInt("Model resolution", &scalePercent, 25, 200, "%d%%"))
             pendingScale = scalePercent;
+        ImGui::EndDisabled();
 
-        if (ImGui::IsItemDeactivatedAfterEdit() && pendingScale >= 0)
+        if (!autoActive && ImGui::IsItemDeactivatedAfterEdit() && pendingScale >= 0)
         {
             config->DlssNrWorkingScale = std::clamp(pendingScale, 25, 200) / 100.0f;
             pendingScale = -1;
@@ -370,7 +359,14 @@ void RenderMenu(Config* config, float menuResScale)
 
         HelpMarker("NR resolution relative to the image it processes. 50% halves width and height; 100% uses the full size.\nLower values reduce cost and fine detail. Above 100% increases cost. Game output resolution is unchanged.");
 
-        if (scalePercent > 100)
+        if (ImGui::Checkbox("Auto (post-SR only)", &resolutionAuto))
+            config->DlssNrModelResolutionAuto = resolutionAuto;
+        HelpMarker("When NR runs after Super Resolution -- Apply before Super Resolution off, or Ray Reconstruction, which always runs it after -- derive the working scale from the render:output ratio the upscaler itself already reconstructed detail at, instead of the slider above.\nThat output already reconstructed detail at that ratio, so NR running at the same reduced scale costs nothing extra to tune for. No effect while NR runs before Super Resolution -- the slider applies as usual.");
+
+        if (autoActive)
+            ImGui::TextDisabled("NR scale: %.2fx, derived from the upscaler's render:output ratio.",
+                                scalePercent / 100.0f);
+        else if (scalePercent > 100)
             ImGui::TextDisabled("NR scale: %.2fx. Higher resolution increases GPU cost.",
                                 scalePercent / 100.0f);
 

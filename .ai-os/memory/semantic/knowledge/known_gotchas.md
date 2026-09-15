@@ -46,3 +46,15 @@
   a real conflict, not just the conflicted lines themselves, and by building the
   merged result before declaring the sync done — see `INFRA_SYNC_UPSTREAM`
   (`core.infra.sk`).
+
+- **`ResidualAcrossRR` (MV-reprojected residual-carry-across-RR) was built, shipped, then
+  fully retired** — it solved a real problem (a naive pre-RR NR edit is dominated by
+  `-n_t`, that frame's un-accumulated ray-trace noise, because RR's denoiser can't tell a
+  deliberate edit from noise it's trained to remove), but in-game A/B testing showed plain
+  post-RR NR placement looked more detailed than the Carry approach for the same scene,
+  with none of Carry's own grain/artifact risk (private DLSS-SR jitter handling,
+  reset-latch behavior, blend-rate tuning). Retired on image-quality-vs-complexity
+  grounds, not because the mechanism was broken. As of 2026-09-14
+  (`feat/dlssnr-postrr-simplify-v2`), RR unconditionally forces post-SR NR placement —
+  don't re-propose reviving the Carry approach without first confirming the current
+  unconditional-post-RR baseline has actually regressed.

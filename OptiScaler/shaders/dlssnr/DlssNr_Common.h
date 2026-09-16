@@ -102,12 +102,6 @@ struct DlssNrFrameInfo
     // Reset temporal history when switching between ordinary SR and Ray Reconstruction.
     bool RayReconstruction = false;
 
-    // ResidualAcrossRR (additive v1): this pre-SR evaluate must leave the game's Color untouched --
-    // the resolve writes an owned scratch, the model edit is captured as a signed residual, and the
-    // post-SR seam adds it back onto the RR+SR output. Only ever true on the before-upscale seam and
-    // only when RunBeforeSR + RayReconstruction are both active.
-    bool ResidualAcrossRr = false;
-
     // Submission epoch supplied by the caller. Native DX12 uses the wrapped swapchain Present count;
     // the DX11/Vulkan bridges use their successfully submitted frame counter. A feature created in an
     // epoch is never evaluated until this value changes.
@@ -244,28 +238,22 @@ struct alignas(256) DlssNrConstants
     float EnvironmentDetail;
     float EnvironmentColour;
 
-    // ResidualAcrossRR v2 only (dlssnr_residual.hlsl). History blend rate for the MV-reprojected
-    // accumulator, 0..1. Read only by that separate shader; dlssnr.hlsl never declares it. Appended
-    // here rather than in a new struct so DispatchResidualPass reuses the existing constant upload --
-    // it lands inside the 256-byte alignas padding, so sizeof(DlssNrConstants) is unchanged.
-    float ResidualBlend;
-    uint32_t ResidualHistoryValid;
-    uint32_t ResidualMotionBaseX;
-    uint32_t ResidualMotionBaseY;
+    // Replace modes only (ReversibleMode 2/4): how much native high-frequency detail is
+    // restored below 100% model resolution, where Replace has no native-resolution fallback
+    // the way the composed modes do. 0 = current behaviour, unchanged. Trailing scalar,
+    // mirrored in the shader cbuffer.
+    float ReplaceDetailStrength;
+
+    // The model's actual working-resolution scale this frame (`reduced && workScale < 1.0f ?
+    // workScale : 1.0f`) -- computed here, not inferred in the shader from a buffer's bound
+    // size, because SGSR1's pre-resolve enlarge (DX12) hands the resolve pass native-sized
+    // proxy/answer buffers whenever it succeeds, which makes a shader-side "is this buffer
+    // still small" check read as native (i.e. false) in the common case even though the model
+    // itself ran small. 1.0 means "not reduced" and disables anything gated on it. Trailing
+    // scalar, mirrored in the shader cbuffer.
+    float ModelWorkScale;
 };
 static_assert(sizeof(DlssNrConstants) == 256);
-
-// Local mode numbering for dlssnr_residual.hlsl (a separate blob / PSO from the DlssNrMode shader).
-enum DlssNrResidualMode : uint32_t
-{
-    DlssNrResidualMode_Accumulate = 0,    // (edited - original) blended into the reprojected history
-    DlssNrResidualMode_Apply = 1,         // base + delta * TransferStrength, after RR+SR (plain resample path)
-    DlssNrResidualMode_EncodeCarrier = 2, // the accumulated layer -> a [0,1] carrier for the private DLSS SR feature
-    DlssNrResidualMode_ApplyCarrier = 3,  // decode the private feature's upscaled carrier and add, after RR+SR
-    DlssNrResidualMode_DebugAmplifyCarrier = 4, // Debug view 3 on the post-SR seam: show the decoded
-                                                 // carried delta amplified, instead of adding it
-    DlssNrResidualMode_DebugAmplifyPlain = 5,   // same, for the plain-resample fallback path
-};
 
 class DlssNr_Common
 {

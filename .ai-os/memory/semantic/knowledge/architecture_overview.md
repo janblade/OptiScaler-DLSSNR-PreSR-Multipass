@@ -44,3 +44,43 @@
   ≥100×100) `OutputWindow` as DXGI's documented "size to the window's client area"
   idiom rather than a tiny overlay/helper swapchain — see `known_gotchas.md` for why
   this was hard to diagnose.
+
+- **DLSS-NR placement is unconditionally post-SR whenever Ray Reconstruction is active,
+  and `ModelResolutionAuto` applies to any post-SR placement, not just RR**:
+  `configuredBefore` in `EvaluateInternal` (`OptiScaler/shaders/dlssnr/DlssNr_Dx12.cpp`)
+  is `cfg.DlssNrRunBeforeSr.value_or_default() && preSrCompatible && !rayReconstruction` —
+  RR active always forces NR to run after SR/RR's own denoise pass, regardless of the
+  `RunBeforeSR` checkbox, because RR's denoiser can't distinguish a deliberate pre-SR NR
+  edit from noise it's trained to remove. The `DlssNrModelResolutionAuto` feature
+  (`CurrentModelResolutionPercent()`, width+height-averaged render:output ratio) is gated
+  on `!frame.BeforeUpscale` (any post-upscale NR placement), not RR specifically — the
+  render:output-ratio rationale holds for any upscaler once NR sees its already-upscaled
+  output.
+
+- **DLSS-NR's per-frame image pipeline (encode -> pre-model resize -> model -> post-model
+  enlarge/shrink -> resolve) is fully mapped in `docs/DLSSNR-SIGNAL-PATH.html`**, one
+  Mermaid diagram per stage, traced directly from `DlssNr_Dx12.cpp` and
+  `shaders/dlssnr/precompile/dlssnr.hlsl` -- read that first for anything touching this
+  pipeline rather than re-deriving it. Two of its structural facts, both confirmed in-game
+  (`feat/dlssnr-sgsr1-upscale`): (1) below 100% model resolution, both the model's answer
+  *and* its proxy are enlarged back to native with a dedicated SGSR1 pass (Qualcomm's
+  Snapdragon GSR v1, `shaders/sgsr1/`) instead of the resolve's old implicit HW-bilinear
+  tap, mirroring how `workScale > 1.0` already got a real filter via `superUp`/`superDown`;
+  (2) the reversible-mapping "Replace" modes (`DlssNrReversibleMode` 2/4 -- bypass all
+  composition, use the model's answer directly) have an inherent resolution ceiling below
+  100% model resolution that "Composed" modes (0/1/3) don't: Composed's ratio/hue blend
+  stays anchored on the native-resolution original throughout, so it looks sharp even when
+  the model+enlarge pipeline underneath is a little soft; Replace has no such fallback, so
+  any resolution the model didn't compute at its reduced working size stays visible, and no
+  enlarge filter (SGSR1 or otherwise) can add it back. Confirmed by direct A/B at the same
+  model resolution, same scene (Composed fine, Replace still soft) -- and unlike a first
+  guess, it *is* something further shader work meaningfully mitigates without changing what
+  "Replace" means: `feat/dlssnr-replace-detail-injection` adds an optional term to Replace's
+  resolve path that injects real high-frequency luminance detail pulled from the
+  native-resolution frame (kernel radius sized to the actual downscale factor), confirmed
+  in-game as a real improvement rather than trying to make SGSR1's enlarge invent detail it
+  never had. It does not blend toward native *colour* (still no composition), so Replace
+  keeps its distinct character; the ceiling is mitigated, not eliminated -- Composed still
+  has the more robust fallback by design. Gated on an explicit `ModelWorkScale` float
+  computed in C++ *before* SGSR1 runs, not inferred in-shader from a buffer's bound size --
+  see `known_gotchas.md` for why the obvious shader-side check doesn't work anymore.

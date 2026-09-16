@@ -2,6 +2,16 @@
 
 Protected-branch working notes. Drained by `MEMORY_CONSOLIDATE`, not `TASK_CLOSE`.
 
+## 2026-09-14 — retiring ResidualAcrossRR, forcing post-RR placement — drained via TASK_CLOSE
+
+Full working notes promoted to semantic memory (`TASK_CLOSE`, 2026-09-16, run against this
+entry per user's explicit choice since the work lived here rather than a branch-specific task
+file): see `semantic/knowledge/architecture_overview.md` (post-RR placement gate,
+`ModelResolutionAuto` generalization) and `semantic/knowledge/known_gotchas.md`
+(`ResidualAcrossRR` retirement lesson). Plan `memory/plans/2026-09-14-dlssnr-postrr-simplify-v2.md`
+status: done. Branch `feat/dlssnr-postrr-simplify-v2` — still not committed/pushed as of the
+close; that's a separate, still-open step.
+
 ## State @ 2026-09-09 (wilsjo2 v0.7.2 + v0.7.3 sync; then v0.7.4 + v0.7.5)
 
 `main` HEAD = `bbfd9547` (ai-os record) ← `66571fd3` (Merge wilsjo2/main v0.7.4/v0.7.5) ←

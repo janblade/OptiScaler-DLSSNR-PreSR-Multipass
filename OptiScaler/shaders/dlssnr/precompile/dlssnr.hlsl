@@ -35,6 +35,11 @@ cbuffer Params : register(b0)
     float gSkinColour;
     float gEnvironmentDetail;
     float gEnvironmentColour;
+    float gReplaceDetailStrength; // Replace modes only: how much native high-frequency detail is
+                                   // restored below 100% model resolution. 0 = current behaviour.
+    float gModelWorkScale; // Set from C++, not inferred from gSource's bound size -- SGSR1's
+                           // pre-resolve enlarge (DX12) makes that read native once it succeeds,
+                           // even though the model itself ran small. 1.0 = not reduced.
 };
 
 // Bringing an impossible colour back into a possible one.
@@ -355,6 +360,38 @@ float3 SoftKnee(float3 display)
     return display;
 }
 
+// Inverse of the knee's luminance roll-off only -- the same ratio-of-scalars pattern SoftKnee
+// itself uses forward, solved algebraically: y = 0.75 + 0.25*(1 - e^(-(x-0.75)/0.25)) for x.
+float SoftKneeCurveInv(float y)
+{
+    if (y <= 0.75)
+        return y;
+
+    y = min(y, 0.999999);
+    const float u = (y - 0.75) / 0.25;
+    return 0.75 - 0.25 * log(max(1.0 - u, 1e-8));
+}
+
+// Approximate inverse of SoftKnee, for averaging several encoded proxy taps in true linear light
+// (DlssNrMode_Downsample) instead of biasing the average toward the curve's own concavity.
+// SoftKneeCurveInv above exactly undoes the luminance roll-off; the peak-channel headroom clamp
+// below it in SoftKnee is NOT invertible even in principle -- dividing by peak 2 or peak 3 both
+// land on peak_final 1, so peak_final alone cannot say which one to undo -- and is left
+// un-inverted here, the same "approximately" this codebase already accepts for SoftKnee elsewhere
+// (unlike Neutwo/Hybrid, which have an exact decode because neither has a lossy clamp step).
+float3 SoftKneeDecode(float3 y)
+{
+    if (gPassthrough != 0)
+        return y;
+
+    const float yLuma = dot(y, kLuma);
+    if (yLuma <= 1e-6)
+        return y;
+
+    const float x = SoftKneeCurveInv(yLuma);
+    return y * (x / yLuma);
+}
+
 // The reversible proxy, from RenoDX's Sep-2 DLSS 5 addon (clshortfuse) -- an unclipped, hue-preserving
 // encode meant to be reproduced exactly, so the model is shown the highlight gradation the soft knee
 // compresses into a razor-thin band near white. Neutwo maps [0, inf) -> [0, 1) with no clip point,
@@ -460,6 +497,40 @@ float3 HybridDecode(float3 y)
         return y;
 
     return y * (HybridCurveInv(m) / m);
+}
+
+// Undoes the full proxy encode (LinearToSrgb, then whichever reversible curve) back to true
+// scene-linear `normalized`, for DlssNrMode_Downsample: averaging several taps in the curve's own
+// domain is not energy-correct (the curve is concave, so a box-average of a bright window against
+// a dark wall comes out darker than averaging the actual light would), so the average has to
+// happen out here instead. Mirrors gPassthrough/gReversibleMode's exact branching in the encode
+// pass (mode 0) so the two agree on what "the proxy" means.
+float3 DecodeProxyToLinear(float3 c)
+{
+    if (gPassthrough != 0)
+        return c; // already display-ready; nothing here is a curve to undo
+
+    float3 y = SrgbToLinear(c);
+
+    if (gReversibleMode == 0)
+        return SoftKneeDecode(y);
+    if (gReversibleMode >= 3)
+        return HybridDecode(y);
+    return NeutwoDecode(y);
+}
+
+// Exact inverse of DecodeProxyToLinear -- reproduces the encode pass's own chain
+// (LinearToSrgb(curve(normalized))) so an averaged-in-linear-light result lands in the same domain
+// a native-resolution encode of that footprint would have written.
+float3 EncodeLinearToProxy(float3 n)
+{
+    if (gPassthrough != 0)
+        return n;
+
+    const float3 display = gReversibleMode == 0   ? SoftKnee(n)
+                           : gReversibleMode >= 3 ? HybridEncode(n)
+                                                  : NeutwoEncode(n);
+    return LinearToSrgb(display);
 }
 
 // Scale a residual so the result cannot leave the unit cube, without changing its direction.
@@ -699,6 +770,14 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         // correct box resample and costs a handful of loads at these ratios.
         //
         // hhkbble's, from the multi-pass PR against this fork.
+        //
+        // Taps are decoded to true scene-linear before the weighted sum (DecodeProxyToLinear) and
+        // the average re-encoded once at the end (EncodeLinearToProxy): the stored proxy is
+        // LinearToSrgb(curve(normalized)), and averaging that directly is not energy-correct -- the
+        // curve is concave, so a box-average of a bright window against a dark wall comes out
+        // darker than averaging the light itself would. Without this, the model is shown a proxy
+        // that is systematically dimmer/desaturated right at strong contrast edges, worst at
+        // aggressive reductions where more taps disagree.
         const float x0 = ((float) id.x * (float) srcW) / (float) gWidth;
         const float x1 = ((float) (id.x + 1) * (float) srcW) / (float) gWidth;
         const float y0 = ((float) id.y * (float) srcH) / (float) gHeight;
@@ -724,14 +803,14 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                 const int ii = clamp(i, 0, (int) srcW - 1);
                 const float aX = max(x0, (float) i);
                 const float bX = min(x1, (float) i + 1.0);
-                acc += gSource.Load(int3(ii, jj, 0)).rgb * (max(bX - aX, 0.0) * wy);
+                acc += DecodeProxyToLinear(gSource.Load(int3(ii, jj, 0)).rgb) * (max(bX - aX, 0.0) * wy);
             }
         }
 
         const int acx = clamp((int) floor(((float) id.x + 0.5) * (float) srcW / (float) gWidth), 0, (int) srcW - 1);
         const int acy = clamp((int) floor(((float) id.y + 0.5) * (float) srcH / (float) gHeight), 0, (int) srcH - 1);
 
-        gTarget[id.xy] = float4(acc / area, gSource.Load(int3(acx, acy, 0)).a);
+        gTarget[id.xy] = float4(EncodeLinearToProxy(acc / area), gSource.Load(int3(acx, acy, 0)).a);
         return;
     }
 
@@ -1077,6 +1156,43 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         result = gPassthrough != 0 ? modelDirect : NeutwoDecode(modelDirect);
     else if (gReversibleMode == 4)
         result = gPassthrough != 0 ? modelDirect : HybridDecode(modelDirect);
+
+    // Replace-only detail injection. Below the frame's own resolution the model computed its
+    // answer at a reduced working size -- SGSR1's enlarge can sharpen that answer but cannot
+    // invent detail the model never saw, and Replace has no native-resolution fallback the way
+    // the composition above does (it is anchored on `original` throughout). This pulls real
+    // high-frequency structure back from the native frame instead: a box blur of the native
+    // luminance approximates what the model's reduced raster *could* have resolved, and what is
+    // left over after subtracting it is the edge/texture detail actually missing. The injection
+    // is luminance-only and multiplicative -- same "one scalar from luminance, applied to the
+    // whole triple" shape as `boundedRatio` above -- so it restores detail without blending
+    // toward the native frame's colour, keeping Replace's no-composition character.
+    //
+    // The blur's radius has to track how far the model's raster actually shrank: a fixed
+    // 1-texel offset only reaches single-pixel grain, which is not where a reduced working
+    // resolution's softness lives -- that softness spans roughly the same number of native
+    // texels as the downscale factor. `gModelWorkScale` gives that factor directly (unlike
+    // `proxyW`/`proxyH`, which read native once SGSR1's enlarge has already run -- see the
+    // cbuffer comment), so the tap distance scales with it instead of staying fixed.
+    if ((gReversibleMode == 2 || gReversibleMode == 4) && gModelWorkScale < 0.999 && gReplaceDetailStrength > 0.0)
+    {
+        int radius = clamp((int) round(1.0 / gModelWorkScale), 1, 4);
+        float3 nLeft  = gOriginal.Load(int3(id.xy + int2(-radius,       0), 0)).rgb / normScale;
+        float3 nRight = gOriginal.Load(int3(id.xy + int2( radius,       0), 0)).rgb / normScale;
+        float3 nUp    = gOriginal.Load(int3(id.xy + int2(      0, -radius), 0)).rgb / normScale;
+        float3 nDown  = gOriginal.Load(int3(id.xy + int2(      0,  radius), 0)).rgb / normScale;
+        float blurLuma = dot((original + nLeft + nRight + nUp + nDown) / 5.0, kLuma);
+        float highFreq = originalLuma - blurLuma;
+
+        // Same dual-floor idiom as `lumaRatio` above, and for the same reason: `highFreq` is an
+        // unbounded absolute difference, and dividing it by a denominator floored on only one
+        // side does not tame it near black -- a shadow pixel next to a contrasty edge computed a
+        // ratio well past -1 and got clamped to flat black. Flooring both sides by the same
+        // `kRatioFloor` leaves bright pixels alone and lets the ratio settle to 1 as luminance
+        // approaches zero, exactly like the composition's own ratio above.
+        float detailRatio = (originalLuma + gReplaceDetailStrength * highFreq + kRatioFloor) / (originalLuma + kRatioFloor);
+        result *= max(detailRatio, 0.0);
+    }
 
     // Back out of the normalised space the composition worked in.
     result *= normScale;

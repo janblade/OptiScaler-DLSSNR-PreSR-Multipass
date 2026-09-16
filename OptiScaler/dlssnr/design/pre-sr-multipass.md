@@ -3,10 +3,13 @@
 This experimental branch adds two opt-in controls to the `[DlssNr]` section:
 
 - `RunBeforeSR=true` runs Neural Rendering on the colour input immediately before Super Resolution.
-  The default is `false`, preserving the v0.2.0 post-upscale seam. Originally Ray
-  Reconstruction/DLSSD was forced to stay post-upscale; the v0.7.4 unification lifted that, and
-  `RunBeforeSR` now applies to combined RR+SR too — see "Across-RR residual" below for why the
-  naive combination is weak and what `ResidualAcrossRR` does about it.
+  The default is `false`, preserving the v0.2.0 post-upscale seam. Ray Reconstruction always forces
+  post-SR placement regardless of this setting: RR already denoises the frame before either NR seam
+  runs, so placing NR before it only exposes the edit to RR's own denoise pass, which cannot tell a
+  deliberate edit from noise it is trained to remove. An MV-reprojected residual accumulator
+  ("ResidualAcrossRR") was built and shipped to carry a pre-SR edit across RR anyway; in-game A/B
+  testing found plain post-SR placement simply looked more detailed for the same scene, with none of
+  the accumulator's own grain/jitter/reset-latch risk, so it was retired.
 - `Passes=N` selects one to three sequential model layers. The default is `1`.
 - `Pass2Preset`, `Pass2Style`, `Pass3Preset`, and `Pass3Style` optionally select a different built-in
   profile for later layers. `auto` inherits pass 1. These are profiles inside one model runtime, not
@@ -62,6 +65,3 @@ copies back instead of binding an illegal UAV.
   format (for example DLAA).
 - Working scales from 25% through 200% remain supported; the ping-pong resources use model-work size.
 
-## Across-RR residual (experimental)
-
-See [the maintained integration notes](../../../docs/RESIDUAL-ACROSS-RR.md) for the private colour resolve, signed temporal history, guarded post-RR composition, and validation limits.

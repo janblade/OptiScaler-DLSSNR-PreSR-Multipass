@@ -258,21 +258,14 @@ class Config
     // an undocumented feature driven directly through its snippet, not something NVIDIA exposes.
     CustomOptional<bool> DlssNrEnabled { false };
     // Run the NR pass on the upscaler's colour input, at render resolution, immediately before SR.
-    // Off preserves the v0.2.0 post-upscale placement.
+    // Off preserves the v0.2.0 post-upscale placement. Ray Reconstruction already denoises the frame
+    // before either NR seam runs, so this has no effect while RR is active -- RR always forces
+    // post-SR placement regardless of this setting.
     CustomOptional<bool> DlssNrRunBeforeSr { false };
     CustomOptional<bool> DlssNrFinishedPicture { false };
     // Generate NR before SR, upscale its signed contribution with a private DLSS feature,
     // and apply it after the game's upscaler. Takes precedence over RunBeforeSR; opt-in.
     CustomOptional<bool> DlssNrDeferredDlss { false };
-    // Experimental: with RunBeforeSR and the game's Ray Reconstruction both on, run NR before SR
-    // but leave the colour input untouched, then add the model's edit back onto the RR+SR output
-    // so it survives RR's denoise. v2 carries the edit as an MV-reprojected temporal accumulator
-    // (the per-frame ray-trace noise term averages to zero; the enhancement persists). Inert
-    // unless RunBeforeSR + RR are both active. Opt-in.
-    CustomOptional<bool> DlssNrResidualAcrossRr { false };
-    // v2 history blend rate for the accumulator above, 0.01..1. Lower = stabler but slower to
-    // appear; 1.0 = no accumulation (each frame's raw residual, which flickers). Default 0.08.
-    CustomOptional<float> DlssNrResidualAcrossRrBlend { 0.08f };
     CustomOptional<bool> DlssNrResidualFg { false };
     CustomOptional<uint32_t> DlssNrPrecision { 0 }; // 0 NVIDIA FP8 (default), 4 Experimental NVFP4 hybrid
     CustomOptional<bool> DlssNrResidualFgApproxCamera { false };
@@ -327,6 +320,11 @@ class Config
     // exaggerating an edit is the only honest way to see whether there is one.
     CustomOptional<float> DlssNrTransferStrength { 1.0f };
     CustomOptional<float> DlssNrColourStrength { 1.0f };
+
+    // Replace modes only (DlssNrReversibleMode 2/4): how much native high-frequency detail is
+    // restored below 100% model resolution, where Replace has no native-resolution fallback the
+    // way the composed modes do. 0 = today's behaviour, unchanged.
+    CustomOptional<float> DlssNrReplaceDetailStrength { 0.5f };
 
     // The RenoDX reversible proxy mode. 0 = today's soft-knee encode + our composition (default,
     // byte-identical); 1 = unclipped Neutwo proxy + our composition; 2 = Neutwo proxy + pure-inverse
@@ -403,8 +401,18 @@ class Config
 
     // The fraction of the frame's resolution the model works at. The frame itself is never reduced --
     // only the model's contribution is computed small and enlarged, so the picture underneath is
-    // untouched whatever this is set to. 1.0 is full resolution and behaves exactly as before.
+    // untouched whatever this is set to. 1.0 is full resolution and behaves exactly as before. Below
+    // 1.0 the model's answer is enlarged back to native with SGSR1 (a real edge-directed upscale)
+    // before the resolve, not an implicit bilinear stretch -- always on, no separate setting. Above
+    // 1.0 the answer is averaged back down with DlssNrScalingDownscaler's chosen filter, as before.
     CustomOptional<float> DlssNrWorkingScale { 1.0f };
+
+    // Post-SR placement only: derive the working scale from the render:output ratio the upscaler
+    // itself already reconstructed detail at, instead of the manual slider above. That output already
+    // reconstructed detail at that ratio, so running NR at the same reduced scale on it is effectively
+    // free -- no manual tuning needed. Has no effect while NR runs before SR (RunBeforeSr on, and not
+    // overridden by Ray Reconstruction); the manual slider applies as usual.
+    CustomOptional<bool> DlssNrModelResolutionAuto { false };
 
     // Filter used for NR supersampling (working scale > 1): the model runs above native, and this is
     // the downscaler that averages its answer back to native. Independent of OutputScalingDownscaler

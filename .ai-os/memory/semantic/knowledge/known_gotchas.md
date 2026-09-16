@@ -46,3 +46,80 @@
   a real conflict, not just the conflicted lines themselves, and by building the
   merged result before declaring the sync done — see `INFRA_SYNC_UPSTREAM`
   (`core.infra.sk`).
+
+- **`ResidualAcrossRR` (MV-reprojected residual-carry-across-RR) was built, shipped, then
+  fully retired** — it solved a real problem (a naive pre-RR NR edit is dominated by
+  `-n_t`, that frame's un-accumulated ray-trace noise, because RR's denoiser can't tell a
+  deliberate edit from noise it's trained to remove), but in-game A/B testing showed plain
+  post-RR NR placement looked more detailed than the Carry approach for the same scene,
+  with none of Carry's own grain/artifact risk (private DLSS-SR jitter handling,
+  reset-latch behavior, blend-rate tuning). Retired on image-quality-vs-complexity
+  grounds, not because the mechanism was broken. As of 2026-09-14
+  (`feat/dlssnr-postrr-simplify-v2`), RR unconditionally forces post-SR NR placement —
+  don't re-propose reviving the Carry approach without first confirming the current
+  unconditional-post-RR baseline has actually regressed.
+
+- **When a resolve computes `answer - proxy` (or any two-buffer edit/difference), both
+  buffers must be enlarged/resampled the same way before the subtraction, not just one.**
+  DLSS-NR's SGSR1 enlarge (`feat/dlssnr-sgsr1-upscale`) first enlarged only the model's
+  *answer* below 100% model resolution and compared it against the untouched native
+  original -- mathematically wrong, because the model's proxy input never saw native
+  detail either (unlike the `workScale > 1.0` case, where the proxy really was resampled
+  from native). Comparing a sharp enlarged answer against a native original made the
+  native detail nearly cancel out of the composited result algebraically, reported in-game
+  as "the low-res image got combined with the final image." Fix required a second
+  native-resolution buffer and a second enlarge dispatch for the proxy, so both sides of
+  the subtraction share the same detail basis. Generalizes beyond this one feature: any
+  edit-based resolve/compositing pass that resamples one side of a difference must resample
+  the other side identically, or the difference stops measuring what it's supposed to.
+
+- **A shader pass class built for one `Dispatch()` call per frame (one non-double-buffered
+  constant buffer, a descriptor-heap ping-pong meant to alternate across frames) breaks
+  silently if reused for two same-frame calls** -- the second call's CPU-side constant
+  write lands before the GPU executes either dispatch, so both draws can end up using the
+  same (wrong) constants. Hit when DLSS-NR's SGSR1 pass (`SGSR1_Dx12`, mirroring the
+  existing `OS_Dx12`) was dispatched twice per frame (once for the answer, once for the
+  proxy) through a single instance -- masked for a while because both calls happened to
+  share identical source/destination dimensions that session, not guaranteed in general.
+  Fix: one instance per same-frame call site (see `superUp`/`superDown`'s existing
+  precedent of two separate `OS_Dx12` instances for the two supersample legs), never one
+  instance reused within a frame.
+
+- **`SoftKnee`'s per-channel peak-headroom clamp (`dlssnr.hlsl`, the `if (peak > 1.0)
+  display /= peak;` step) cannot be inverted exactly, even in principle** -- dividing by a
+  peak of 2 and dividing by a peak of 3 both land on `peak_final == 1`, so the final value
+  alone can't say which one to undo. `SoftKneeDecode` (added for the downsample's
+  linear-light averaging fix) inverts only the luminance roll-off above it, which is
+  exactly invertible in closed form, and leaves the peak-clamp un-reconstructed -- the same
+  "approximately" the resolve's own matched-residual reconstruction already accepted for
+  SoftKnee before this. Neutwo/Hybrid don't have this limitation (their decode is exact)
+  because neither has a lossy clamp step.
+
+- **A `DlssNrConstants` field a shader dispatch doesn't explicitly set defaults to zero,
+  and that's only harmless until the shader starts reading it.** The C++ dispatch site for
+  `DlssNrMode_Downsample` never set `.Passthrough`/`.ReversibleMode` on its constants --
+  fine while the box-average shader ignored both fields, but would have silently applied
+  the wrong reversible-curve decode once the shader started branching on them (the
+  linear-light averaging fix). Before adding new cbuffer-field-dependent logic to an
+  existing `DlssNrMode`, check every C++ call site actually sets the fields the shader is
+  about to start reading, not just the one being actively edited.
+
+- **Any shader-side "is this buffer still small" check in DLSS-NR's resolve pass silently
+  reads false once SGSR1's (or `superDown`'s) pre-resolve enlarge succeeds -- inferring
+  "model ran below 100% resolution" from a bound texture's dimensions in the shader is a
+  trap, not a shortcut.** Hit twice independently: (1) **"Matched residual"**
+  (`DlssNrTransfer` == 1) is a no-op whenever the enlarge stage ahead of the resolve
+  succeeds -- its gate is `gTransfer == 1 && modelRanSmall`, and `modelRanSmall` checks
+  whether `resolveProxy`'s actual bound resource is still smaller than native, which it no
+  longer is once SGSR1/`superDown` hands the resolve a native-resolution
+  `proxyNative`/`colorCopy`. Only still fires in the enlarge-failure fallback; the menu
+  control and its tooltip ("Matched residual can reduce blur and colour shifts") still
+  present it as a live choice on every build regardless -- not yet changed in the UI,
+  flagged not fixed. (2) `feat/dlssnr-replace-detail-injection`'s first attempt gated its new
+  native-detail-injection term on this exact same `modelRanSmall`, and it silently never
+  fired for the same reason -- reported in-game as "the slider has no effect," not merely a
+  weak effect. **Fix used there, and the pattern to follow for anything new gated on "model
+  ran small":** pass an explicit scale/flag computed in C++ *before* SGSR1/`superDown` ever
+  runs (e.g. `ModelWorkScale = (reduced && workScale < 1.0f) ? workScale : 1.0f`, mirrored
+  into the cbuffer on both DX12 and Vulkan) instead of inferring it in-shader from a
+  texture's bound size.

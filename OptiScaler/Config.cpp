@@ -345,8 +345,6 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrRunBeforeSr.set_from_config(readBool("DlssNr", "RunBeforeSR"));
             DlssNrFinishedPicture.set_from_config(readBool("DlssNr", "FinishedPicture"));
             DlssNrDeferredDlss.set_from_config(readBool("DlssNr", "DeferredDLSS"));
-            DlssNrResidualAcrossRr.set_from_config(readBool("DlssNr", "ResidualAcrossRR"));
-            DlssNrResidualAcrossRrBlend.set_from_config(readFloat("DlssNr", "ResidualAcrossRRBlend"));
             DlssNrResidualFg.set_from_config(readBool("DlssNr", "ResidualFG"));
             DlssNrPrecision.set_from_config(readUInt("DlssNr", "Precision"));
             if (DlssNrPrecision.value_or_default() != 4) DlssNrPrecision = 0u;
@@ -354,6 +352,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrToggleKey.set_from_config(readInt("DlssNr", "ToggleKey"));
             DlssNrTransferStrength.set_from_config(readFloat("DlssNr", "TransferStrength"));
             DlssNrColourStrength.set_from_config(readFloat("DlssNr", "ColourStrength"));
+            DlssNrReplaceDetailStrength.set_from_config(readFloat("DlssNr", "ReplaceDetailStrength"));
             DlssNrMaxRatio.set_from_config(readFloat("DlssNr", "MaxRatio"));
             DlssNrTransfer.set_from_config(readUInt("DlssNr", "Transfer"));
 
@@ -367,6 +366,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrCompareTags.set_from_config(readBool("DlssNr", "CompareTags"));
             DlssNrTagScale.set_from_config(readFloat("DlssNr", "TagScale"));
             DlssNrWorkingScale.set_from_config(readFloat("DlssNr", "WorkingScale"));
+            DlssNrModelResolutionAuto.set_from_config(readBool("DlssNr", "ModelResolutionAuto"));
 
             if (auto v = readEnum<Scaler>("DlssNr", "ScalingDownscaler"))
                 DlssNrScalingDownscaler.set_from_config(*v);
@@ -1281,10 +1281,6 @@ bool Config::SaveIni()
                  GetBoolValue(Instance()->DlssNrRunBeforeSr.value_for_config()).c_str());
     ini.SetValue("DlssNr", "DeferredDLSS",
                  GetBoolValue(Instance()->DlssNrDeferredDlss.value_for_config()).c_str());
-    ini.SetValue("DlssNr", "ResidualAcrossRR",
-                 GetBoolValue(Instance()->DlssNrResidualAcrossRr.value_for_config()).c_str());
-    ini.SetValue("DlssNr", "ResidualAcrossRRBlend",
-                 GetFloatValue(Instance()->DlssNrResidualAcrossRrBlend.value_for_config()).c_str());
     ini.SetValue("DlssNr", "ResidualFG", GetBoolValue(Instance()->DlssNrResidualFg.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Precision", GetIntValue(Instance()->DlssNrPrecision.value_for_config()).c_str());
     ini.SetValue("DlssNr", "ResidualFGApproxCamera", GetBoolValue(Instance()->DlssNrResidualFgApproxCamera.value_for_config()).c_str());
@@ -1296,6 +1292,8 @@ bool Config::SaveIni()
                  GetFloatValue(Instance()->DlssNrTransferStrength.value_for_config()).c_str());
     ini.SetValue("DlssNr", "ColourStrength",
                  GetFloatValue(Instance()->DlssNrColourStrength.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "ReplaceDetailStrength",
+                 GetFloatValue(Instance()->DlssNrReplaceDetailStrength.value_for_config()).c_str());
     ini.SetValue("DlssNr", "MaxRatio", GetFloatValue(Instance()->DlssNrMaxRatio.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Transfer", GetIntValue(Instance()->DlssNrTransfer.value_for_config()).c_str());
 
@@ -1316,6 +1314,8 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "TagScale",
                  GetFloatValue(Instance()->DlssNrTagScale.value_for_config()).c_str());
     ini.SetValue("DlssNr", "WorkingScale", GetFloatValue(Instance()->DlssNrWorkingScale.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "ModelResolutionAuto",
+                 GetBoolValue(Instance()->DlssNrModelResolutionAuto.value_for_config()).c_str());
     ini.SetValue("DlssNr", "ScalingDownscaler", GetIntValue(Instance()->DlssNrScalingDownscaler).c_str());
     ini.SetValue("DlssNr", "AutoCapture", GetBoolValue(Instance()->DlssNrAutoCapture.value_for_config()).c_str());
 

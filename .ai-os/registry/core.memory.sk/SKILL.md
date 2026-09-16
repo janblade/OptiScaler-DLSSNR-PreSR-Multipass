@@ -102,6 +102,21 @@ archive a task that isn't the one you're on.
    archiving — its lesson candidates then feed steps 2/2a of this same procedure. Leave the
    plan file in `memory/plans/` — it's a dated record; step 6 and `MEMORY_CONSOLIDATE`
    handle its eventual pruning, not this step.
+5a. **Offer to commit and push, with explicit confirmation.** `TASK_CLOSE` finishes the
+   memory-side lifecycle, but a task isn't durably closed if its code changes are still
+   sitting uncommitted -- that gap has hit this project's own history (a task reaching
+   `TASK_CLOSE` with the underlying work fully uncommitted, `EP-3`). If `git status` shows
+   uncommitted changes on the resolved branch (staged, unstaged, or untracked files
+   plausibly belonging to this task): summarize what would be committed (files touched, a
+   proposed commit message drawn from the task/plan file's own summary) and the intended
+   push target, and ASK before doing anything -- one explicit confirmation covering both
+   commit and push, never done silently, never assumed from "the task reached TASK_CLOSE"
+   alone. On confirmation: stage the relevant files (review `git status` first, never a
+   blanket `git add -A`), commit with the proposed message (adjusted per feedback), then
+   push. Never force-push, never `--no-verify`; touching a protected branch
+   (`main`/`master`/`develop`/`release/*`) under this step still needs the same
+   confirmation already required for that elsewhere. Declined, or nothing to commit → skip
+   silently, continue to step 6.
 6. **Prune the archive.** If `archived_tasks/` now has more than ~20 files, or files
    clearly older than a few months of project history, fold the oldest ones into a single
    `archived_tasks/_summary.md` (one line each: date, branch, one-sentence outcome) and

@@ -58,3 +58,59 @@
   (`feat/dlssnr-postrr-simplify-v2`), RR unconditionally forces post-SR NR placement —
   don't re-propose reviving the Carry approach without first confirming the current
   unconditional-post-RR baseline has actually regressed.
+
+- **When a resolve computes `answer - proxy` (or any two-buffer edit/difference), both
+  buffers must be enlarged/resampled the same way before the subtraction, not just one.**
+  DLSS-NR's SGSR1 enlarge (`feat/dlssnr-sgsr1-upscale`) first enlarged only the model's
+  *answer* below 100% model resolution and compared it against the untouched native
+  original -- mathematically wrong, because the model's proxy input never saw native
+  detail either (unlike the `workScale > 1.0` case, where the proxy really was resampled
+  from native). Comparing a sharp enlarged answer against a native original made the
+  native detail nearly cancel out of the composited result algebraically, reported in-game
+  as "the low-res image got combined with the final image." Fix required a second
+  native-resolution buffer and a second enlarge dispatch for the proxy, so both sides of
+  the subtraction share the same detail basis. Generalizes beyond this one feature: any
+  edit-based resolve/compositing pass that resamples one side of a difference must resample
+  the other side identically, or the difference stops measuring what it's supposed to.
+
+- **A shader pass class built for one `Dispatch()` call per frame (one non-double-buffered
+  constant buffer, a descriptor-heap ping-pong meant to alternate across frames) breaks
+  silently if reused for two same-frame calls** -- the second call's CPU-side constant
+  write lands before the GPU executes either dispatch, so both draws can end up using the
+  same (wrong) constants. Hit when DLSS-NR's SGSR1 pass (`SGSR1_Dx12`, mirroring the
+  existing `OS_Dx12`) was dispatched twice per frame (once for the answer, once for the
+  proxy) through a single instance -- masked for a while because both calls happened to
+  share identical source/destination dimensions that session, not guaranteed in general.
+  Fix: one instance per same-frame call site (see `superUp`/`superDown`'s existing
+  precedent of two separate `OS_Dx12` instances for the two supersample legs), never one
+  instance reused within a frame.
+
+- **`SoftKnee`'s per-channel peak-headroom clamp (`dlssnr.hlsl`, the `if (peak > 1.0)
+  display /= peak;` step) cannot be inverted exactly, even in principle** -- dividing by a
+  peak of 2 and dividing by a peak of 3 both land on `peak_final == 1`, so the final value
+  alone can't say which one to undo. `SoftKneeDecode` (added for the downsample's
+  linear-light averaging fix) inverts only the luminance roll-off above it, which is
+  exactly invertible in closed form, and leaves the peak-clamp un-reconstructed -- the same
+  "approximately" the resolve's own matched-residual reconstruction already accepted for
+  SoftKnee before this. Neutwo/Hybrid don't have this limitation (their decode is exact)
+  because neither has a lossy clamp step.
+
+- **A `DlssNrConstants` field a shader dispatch doesn't explicitly set defaults to zero,
+  and that's only harmless until the shader starts reading it.** The C++ dispatch site for
+  `DlssNrMode_Downsample` never set `.Passthrough`/`.ReversibleMode` on its constants --
+  fine while the box-average shader ignored both fields, but would have silently applied
+  the wrong reversible-curve decode once the shader started branching on them (the
+  linear-light averaging fix). Before adding new cbuffer-field-dependent logic to an
+  existing `DlssNrMode`, check every C++ call site actually sets the fields the shader is
+  about to start reading, not just the one being actively edited.
+
+- **"Matched residual" (`DlssNrTransfer` == 1) is now a no-op whenever the enlarge stage
+  ahead of the resolve succeeds** (SGSR1 below 100%, or `superDown` above it): its gate is
+  `gTransfer == 1 && modelRanSmall`, and `modelRanSmall` checks whether `resolveProxy`'s
+  actual bound resource is still smaller than native -- which it no longer is once the
+  enlarge succeeds and hands the resolve a native-resolution `proxyNative`/`colorCopy`. The
+  reconstruction only still fires in the enlarge-failure fallback. The menu control and its
+  tooltip ("Matched residual can reduce blur and colour shifts") still present it as a live
+  choice on every build; it was written for a world where the resolve always received small
+  buffers below 100% (before SGSR1 existed to enlarge both sides pre-resolve). Not yet
+  changed in the UI -- flagged, not fixed.

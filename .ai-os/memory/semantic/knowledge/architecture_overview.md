@@ -56,3 +56,22 @@
   on `!frame.BeforeUpscale` (any post-upscale NR placement), not RR specifically — the
   render:output-ratio rationale holds for any upscaler once NR sees its already-upscaled
   output.
+
+- **DLSS-NR's per-frame image pipeline (encode -> pre-model resize -> model -> post-model
+  enlarge/shrink -> resolve) is fully mapped in `docs/DLSSNR-SIGNAL-PATH.html`**, one
+  Mermaid diagram per stage, traced directly from `DlssNr_Dx12.cpp` and
+  `shaders/dlssnr/precompile/dlssnr.hlsl` -- read that first for anything touching this
+  pipeline rather than re-deriving it. Two of its structural facts, both confirmed in-game
+  (`feat/dlssnr-sgsr1-upscale`): (1) below 100% model resolution, both the model's answer
+  *and* its proxy are enlarged back to native with a dedicated SGSR1 pass (Qualcomm's
+  Snapdragon GSR v1, `shaders/sgsr1/`) instead of the resolve's old implicit HW-bilinear
+  tap, mirroring how `workScale > 1.0` already got a real filter via `superUp`/`superDown`;
+  (2) the reversible-mapping "Replace" modes (`DlssNrReversibleMode` 2/4 -- bypass all
+  composition, use the model's answer directly) have an inherent resolution ceiling below
+  100% model resolution that "Composed" modes (0/1/3) don't: Composed's ratio/hue blend
+  stays anchored on the native-resolution original throughout, so it looks sharp even when
+  the model+enlarge pipeline underneath is a little soft; Replace has no such fallback, so
+  any resolution the model didn't compute at its reduced working size stays visible, and no
+  enlarge filter (SGSR1 or otherwise) can add it back. Confirmed by direct A/B at the same
+  model resolution, same scene (Composed fine, Replace still soft) -- not something further
+  shader work fixes without changing what "Replace" means.

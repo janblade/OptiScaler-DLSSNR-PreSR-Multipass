@@ -221,7 +221,13 @@
     <ClInclude Include="shaders\sgsr1\SGSR1_Dx12.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="shaders\sgsr1\SGSR1_Vk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="shaders\sgsr1\precompile\sgsr1_Shader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\sgsr1\precompile\sgsr1_Shader_Vk.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="shaders\output_scaling\precompile\bcds_bicubic_Shader.h">
@@ -1107,6 +1113,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="shaders\sgsr1\SGSR1_Dx12.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="shaders\sgsr1\SGSR1_Vk.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="shaders\rcas\RCAS_Dx11.cpp">

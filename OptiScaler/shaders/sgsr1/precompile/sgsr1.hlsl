@@ -7,13 +7,17 @@
 //
 // Ported for OptiScaler from Qualcomm's official Snapdragon Game Super Resolution v1 shader
 // (SnapdragonGameStudios/snapdragon-gsr, sgsr/v1/include/hlsl/sgsr1_mobile.h +
-// sgsr1_shader_mobile.hlsl) into a DX12 compute kernel. The algorithm itself
+// sgsr1_shader_mobile.hlsl) into a DX12/Vulkan compute kernel. The algorithm itself
 // (fastLanczos2/weightY/SgsrYuvH) is unchanged -- only the shader stage (pixel -> compute),
 // resource bindings, and per-thread UV derivation differ from the original. Fixed at
 // OperationMode 1 (RGBA) and edge direction off, matching upstream's own defaults; neither is
 // runtime-configurable. EdgeThreshold/EdgeSharpness (upstream's own fixed constants) are,
-// via DlssNrSgsr1EdgeThreshold/DlssNrSgsr1EdgeSharpness -- see the cbuffer below. DX12 only --
-// no VK_MODE variant (Vulkan is out of scope for this pass).
+// via DlssNrSgsr1EdgeThreshold/DlssNrSgsr1EdgeSharpness -- see the cbuffer below.
+//
+// VK_MODE bindings are stated explicitly (same rationale as dlssnr.hlsl's own header comment):
+// D3D keeps b/t/u/s in separate register files, Vulkan has one number line per descriptor set.
+// The order below (UBO 0, sampled image 1, storage image 2, sampler 3) matches SGSR1_Vk's
+// descriptor set layout entry for entry, mirroring OS_Vk's own binding order.
 //
 // DLSS-NR's Neutwo/Hybrid reversible mapping (dlssnr.hlsl) writes its answer/proxy textures as
 // LinearToSrgb(NeutwoEncode(normalized)) or LinearToSrgb(HybridEncode(normalized)), not plain
@@ -31,10 +35,22 @@
 //
 //============================================================================================================
 
+#ifdef VK_MODE
+[[vk::binding(1, 0)]]
+#endif
 Texture2D<float4>   InputTexture       : register(t0);
+#ifdef VK_MODE
+[[vk::binding(2, 0)]]
+#endif
 RWTexture2D<float4>  OutputTexture      : register(u0);
+#ifdef VK_MODE
+[[vk::binding(3, 0)]]
+#endif
 SamplerState         LinearClampSampler : register(s0);
 
+#ifdef VK_MODE
+[[vk::binding(0, 0)]]
+#endif
 cbuffer Params : register(b0)
 {
     // x = 1/srcWidth, y = 1/srcHeight, z = srcWidth, w = srcHeight -- derived directly from

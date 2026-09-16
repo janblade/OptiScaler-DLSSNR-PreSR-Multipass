@@ -591,7 +591,9 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="shaders\output_scaling\OS_Dx11.h" />
     <ClInclude Include="shaders\output_scaling\OS_Dx12.h" />
     <ClInclude Include="shaders\sgsr1\SGSR1_Dx12.h" />
+    <ClInclude Include="shaders\sgsr1\SGSR1_Vk.h" />
     <ClInclude Include="shaders\sgsr1\precompile\sgsr1_Shader.h" />
+    <ClInclude Include="shaders\sgsr1\precompile\sgsr1_Shader_Vk.h" />
     <ClInclude Include="shaders\output_scaling\precompile\bcds_bicubic_Shader.h" />
     <ClInclude Include="shaders\output_scaling\precompile\bcds_bicubic_Shader_Dx11.h" />
     <ClInclude Include="shaders\output_scaling\precompile\bcds_catmull_Shader.h" />
@@ -863,6 +865,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClCompile Include="shaders\output_scaling\OS_Dx11.cpp" />
     <ClCompile Include="shaders\output_scaling\OS_Dx12.cpp" />
     <ClCompile Include="shaders\sgsr1\SGSR1_Dx12.cpp" />
+    <ClCompile Include="shaders\sgsr1\SGSR1_Vk.cpp" />
     <ClCompile Include="shaders\rcas\RCAS_Dx11.cpp" />
     <ClCompile Include="shaders\rcas\RCAS_Dx12.cpp" />
     <ClCompile Include="upscalers\xess\XeSSFeature_Vk.cpp" />

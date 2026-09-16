@@ -104,13 +104,22 @@
   existing `DlssNrMode`, check every C++ call site actually sets the fields the shader is
   about to start reading, not just the one being actively edited.
 
-- **"Matched residual" (`DlssNrTransfer` == 1) is now a no-op whenever the enlarge stage
-  ahead of the resolve succeeds** (SGSR1 below 100%, or `superDown` above it): its gate is
-  `gTransfer == 1 && modelRanSmall`, and `modelRanSmall` checks whether `resolveProxy`'s
-  actual bound resource is still smaller than native -- which it no longer is once the
-  enlarge succeeds and hands the resolve a native-resolution `proxyNative`/`colorCopy`. The
-  reconstruction only still fires in the enlarge-failure fallback. The menu control and its
-  tooltip ("Matched residual can reduce blur and colour shifts") still present it as a live
-  choice on every build; it was written for a world where the resolve always received small
-  buffers below 100% (before SGSR1 existed to enlarge both sides pre-resolve). Not yet
-  changed in the UI -- flagged, not fixed.
+- **Any shader-side "is this buffer still small" check in DLSS-NR's resolve pass silently
+  reads false once SGSR1's (or `superDown`'s) pre-resolve enlarge succeeds -- inferring
+  "model ran below 100% resolution" from a bound texture's dimensions in the shader is a
+  trap, not a shortcut.** Hit twice independently: (1) **"Matched residual"**
+  (`DlssNrTransfer` == 1) is a no-op whenever the enlarge stage ahead of the resolve
+  succeeds -- its gate is `gTransfer == 1 && modelRanSmall`, and `modelRanSmall` checks
+  whether `resolveProxy`'s actual bound resource is still smaller than native, which it no
+  longer is once SGSR1/`superDown` hands the resolve a native-resolution
+  `proxyNative`/`colorCopy`. Only still fires in the enlarge-failure fallback; the menu
+  control and its tooltip ("Matched residual can reduce blur and colour shifts") still
+  present it as a live choice on every build regardless -- not yet changed in the UI,
+  flagged not fixed. (2) `feat/dlssnr-replace-detail-injection`'s first attempt gated its new
+  native-detail-injection term on this exact same `modelRanSmall`, and it silently never
+  fired for the same reason -- reported in-game as "the slider has no effect," not merely a
+  weak effect. **Fix used there, and the pattern to follow for anything new gated on "model
+  ran small":** pass an explicit scale/flag computed in C++ *before* SGSR1/`superDown` ever
+  runs (e.g. `ModelWorkScale = (reduced && workScale < 1.0f) ? workScale : 1.0f`, mirrored
+  into the cbuffer on both DX12 and Vulkan) instead of inferring it in-shader from a
+  texture's bound size.

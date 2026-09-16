@@ -73,5 +73,14 @@
   the model+enlarge pipeline underneath is a little soft; Replace has no such fallback, so
   any resolution the model didn't compute at its reduced working size stays visible, and no
   enlarge filter (SGSR1 or otherwise) can add it back. Confirmed by direct A/B at the same
-  model resolution, same scene (Composed fine, Replace still soft) -- not something further
-  shader work fixes without changing what "Replace" means.
+  model resolution, same scene (Composed fine, Replace still soft) -- and unlike a first
+  guess, it *is* something further shader work meaningfully mitigates without changing what
+  "Replace" means: `feat/dlssnr-replace-detail-injection` adds an optional term to Replace's
+  resolve path that injects real high-frequency luminance detail pulled from the
+  native-resolution frame (kernel radius sized to the actual downscale factor), confirmed
+  in-game as a real improvement rather than trying to make SGSR1's enlarge invent detail it
+  never had. It does not blend toward native *colour* (still no composition), so Replace
+  keeps its distinct character; the ceiling is mitigated, not eliminated -- Composed still
+  has the more robust fallback by design. Gated on an explicit `ModelWorkScale` float
+  computed in C++ *before* SGSR1 runs, not inferred in-shader from a buffer's bound size --
+  see `known_gotchas.md` for why the obvious shader-side check doesn't work anymore.

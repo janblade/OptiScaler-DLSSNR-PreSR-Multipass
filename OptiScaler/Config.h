@@ -396,7 +396,10 @@ class Config
 
     // The fraction of the frame's resolution the model works at. The frame itself is never reduced --
     // only the model's contribution is computed small and enlarged, so the picture underneath is
-    // untouched whatever this is set to. 1.0 is full resolution and behaves exactly as before.
+    // untouched whatever this is set to. 1.0 is full resolution and behaves exactly as before. Below
+    // 1.0 the model's answer is enlarged back to native with SGSR1 (a real edge-directed upscale)
+    // before the resolve, not an implicit bilinear stretch -- always on, no separate setting. Above
+    // 1.0 the answer is averaged back down with DlssNrScalingDownscaler's chosen filter, as before.
     CustomOptional<float> DlssNrWorkingScale { 1.0f };
 
     // Post-SR placement only: derive the working scale from the render:output ratio the upscaler

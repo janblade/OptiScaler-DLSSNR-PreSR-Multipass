@@ -35,6 +35,7 @@
 #include "precompile/DlssNr_Shader.h"
 #include "precompile/dlssnr_finished_color_Shader.h"
 #include "../output_scaling/OS_Dx12.h"
+#include "../sgsr1/SGSR1_Dx12.h"
 
 namespace
 {
@@ -263,8 +264,32 @@ struct NrState
     // downscaler that does it. With superUp this lands the super-native answer at native for a 1:1
     // composite (no aliased minify). nrScaler is the filter both were built with, so a changed
     // DlssNrScalingDownscaler rebuilds them.
+    //
+    // Reduced up-leg (working scale < 1): outputNative doubles as the SGSR1-enlarged answer here too
+    // -- the two cases are mutually exclusive per frame (workScale is a single scalar) and both
+    // dispatches fully overwrite the buffer, so sharing it needs no extra lifecycle handling.
     ID3D12Resource* outputNative = nullptr;
     OS_Dx12* superDown = nullptr;
+
+    // Reduced up-leg's own native proxy, separate from outputNative. Unlike the supersample case
+    // (where the model's input was the native colorCopy, just resampled larger -- no detail lost),
+    // the reduced case's model only ever saw the downsampled colorSmall. The resolve's edit math
+    // (answer - proxy, added back onto the native original) needs both sides on the same detail
+    // basis, or the native original's own detail nearly cancels out of the result -- comparing the
+    // SGSR1-enlarged answer against the untouched native colorCopy did exactly that (found via a
+    // real in-game report: "the low res image got combined with the final image"). So the proxy
+    // gets its own SGSR1 enlarge from the same colorSmall the model actually worked from.
+    ID3D12Resource* proxyNative = nullptr;
+
+    // Two separate instances, not one reused twice a frame -- like superUp/superDown, each
+    // SGSR1_Dx12 is built for one Dispatch() call per frame: a single non-double-buffered
+    // _constantBuffer and a 2-slot FrameDescriptorHeap meant to alternate *across frames*, not
+    // across two calls recorded back-to-back in the same frame (the second call's CPU-side
+    // constants write lands before the GPU executes either dispatch, and the 2-slot heap ping-pong
+    // collapses to zero cross-frame lead time per call site). Neither has a filter choice (one
+    // fixed shader each), so neither is tied to nrScaler and both are built once.
+    SGSR1_Dx12* sgsr1UpAnswer = nullptr;
+    SGSR1_Dx12* sgsr1UpProxy = nullptr;
     Scaler nrScaler = Scaler::Count;
 
     // Frame hold (design/frame-hold.md): a persistent copy of the output taken on hold-on and restored
@@ -834,7 +859,7 @@ void ReleaseSurfacesIfFormatChanged(DXGI_FORMAT needed)
 
     for (ID3D12Resource** r :
          { &g_nr.output, &g_nr.passScratch, &g_nr.passClampScratch, &g_nr.colorCopy, &g_nr.hdrCopy,
-           &g_nr.colorSmall, &g_nr.outputNative, &g_nr.activeColor })
+           &g_nr.colorSmall, &g_nr.outputNative, &g_nr.proxyNative, &g_nr.activeColor })
         ParkNrResource(*r);
 
     g_nr.passScratchFailed = false;
@@ -1915,6 +1940,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             ParkNrResource(g_nr.hdrCopy);
             ParkNrResource(g_nr.colorSmall);
             ParkNrResource(g_nr.outputNative);
+            ParkNrResource(g_nr.proxyNative);
             ParkNrResource(g_nr.activeColor);
             g_nr.passScratchFailed = false;
             g_nr.passClampScratchFailed = false;
@@ -1971,9 +1997,19 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     if (reduced && g_nr.colorSmall == nullptr)
         g_nr.colorSmall = CreateScratch(device, desc.Format, workWidth, workHeight);
 
-    // The down-leg target is native (the answer is brought back to frame size before the resolve).
-    if (workScale > 1.0f && g_nr.outputNative == nullptr)
+    // The up/down-leg target is native (the answer is brought back to frame size before the
+    // resolve) -- shared by both the supersampling down-leg (> 1) and the reduced up-leg (< 1),
+    // mutually exclusive per frame.
+    if (workScale != 1.0f && g_nr.outputNative == nullptr)
         g_nr.outputNative = CreateScratch(device, desc.Format, width, height);
+
+    // The reduced up-leg's own native proxy (see NrState::proxyNative). Only the < 1 leg needs
+    // this -- the > 1 leg's proxy is the native colorCopy directly, already correct. Gated on
+    // `reduced` (not just workScale < 1.0f) so a workScale that rounds back to the native size
+    // (e.g. Auto's continuous ratio landing at 0.9998) doesn't allocate a buffer this leg will
+    // never actually use.
+    if (reduced && workScale < 1.0f && g_nr.proxyNative == nullptr)
+        g_nr.proxyNative = CreateScratch(device, desc.Format, width, height);
 
     if (g_nr.meter == nullptr)
     {
@@ -2527,6 +2563,12 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             down.Mode = DlssNrMode_Downsample;
             down.Width = workWidth;
             down.Height = workHeight;
+            // Needed so the shader's tap-decode (DecodeProxyToLinear/EncodeLinearToProxy, averaging
+            // in true linear light instead of biasing toward the curve's own concavity) knows which
+            // curve the proxy it's reading is actually in -- left default-zero before, which happened
+            // to be harmless only because the old box-average never branched on either field.
+            down.Passthrough = isHdrBuffer ? 0u : 1u;
+            down.ReversibleMode = cfg.DlssNrReversibleMode.value_or_default();
             DispatchPass(cmdList, down, modelInput, nullptr, nullptr, nullptr, nullptr,
                                 g_nr.colorSmall, nullptr);
             Barrier(cmdList, g_nr.colorSmall, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
@@ -2893,8 +2935,78 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             superDownOk = true;
         }
 
-        ID3D12Resource* resolveProxy = superDownOk ? g_nr.colorCopy : modelInput;
-        ID3D12Resource* resolveAnswer = superDownOk ? g_nr.outputNative : finalAnswer;
+        // Reduced up-leg (mirrors the down-leg above), enlarging both sides of the resolve's edit
+        // math with SGSR1 instead of its implicit bilinear tap (EditAt() samples gSource/gModel at
+        // the same UV via a bilinear-clamp sampler -- see dlssnr.hlsl:263/303-315). Unlike the
+        // supersample case, the model here never saw native detail -- it only ever worked from the
+        // downsampled colorSmall -- so the proxy needs its own SGSR1 enlarge from that same source,
+        // not the native colorCopy. Comparing the SGSR1-enlarged answer against the untouched native
+        // original was tried first and was wrong: added back onto that same native original, the
+        // native detail nearly cancels out of the result algebraically, leaving the display dominated
+        // by the small buffer's own limited detail (reported in-game as "the low res image got
+        // combined with the final image").
+        bool sgsrAnswerOk = false;
+        bool sgsrProxyOk = false;
+        // Gated on `reduced` (the actual rounded-size flag), not just workScale < 1.0f -- a workScale
+        // that rounds back to the native size (e.g. Auto's continuous ratio landing at 0.9998) would
+        // otherwise engage SGSR1 at 1:1, wasted work that also isn't guaranteed identity-preserving.
+        if (reduced && workScale < 1.0f && g_nr.outputNative != nullptr && g_nr.proxyNative != nullptr)
+        {
+            // Two separate instances (see NrState::sgsr1UpAnswer/sgsr1UpProxy) -- SGSR1_Dx12, like
+            // OS_Dx12, is built for one Dispatch() call per frame: reusing a single instance for both
+            // calls here would have both CPU-side constant-buffer writes land before the GPU executes
+            // either dispatch, and the 2-slot descriptor heap ping-pong is meant to alternate across
+            // frames, not across two same-frame calls.
+            if (g_nr.sgsr1UpAnswer == nullptr)
+                g_nr.sgsr1UpAnswer = new SGSR1_Dx12("DLSS-NR SGSR1 up (answer)", device);
+            if (g_nr.sgsr1UpProxy == nullptr)
+                g_nr.sgsr1UpProxy = new SGSR1_Dx12("DLSS-NR SGSR1 up (proxy)", device);
+
+            if (g_nr.sgsr1UpAnswer != nullptr &&
+                g_nr.sgsr1UpAnswer->Dispatch(cmdList, finalAnswer, g_nr.outputNative,
+                                             resolveParams.ReversibleMode, resolveParams.Passthrough))
+            {
+                Barrier(cmdList, g_nr.outputNative, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                sgsrAnswerOk = true;
+            }
+
+            if (g_nr.sgsr1UpProxy != nullptr &&
+                g_nr.sgsr1UpProxy->Dispatch(cmdList, modelInput, g_nr.proxyNative, resolveParams.ReversibleMode,
+                                            resolveParams.Passthrough))
+            {
+                Barrier(cmdList, g_nr.proxyNative, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                sgsrProxyOk = true;
+            }
+
+            // INFO-level, change-gated like the composition log above -- the pass's own Dispatch()
+            // only logs at DEBUG (matches superUp/superDown's identical silence), which wasn't
+            // enough to confirm engagement while diagnosing a "still looks blurred" report.
+            static bool hasLoggedSgsrUp = false;
+            static bool lastSgsrUpOk = false;
+            const bool sgsrUpOkNow = sgsrAnswerOk && sgsrProxyOk;
+            if (!hasLoggedSgsrUp || lastSgsrUpOk != sgsrUpOkNow)
+            {
+                LOG_INFO("DLSS-NR SGSR1 up-leg: {} (answer {}, proxy {}, workScale {:.3f}, {}x{} -> {}x{}, "
+                         "answer inst {}, proxy inst {})",
+                         sgsrUpOkNow ? "engaged" : "NOT engaged", sgsrAnswerOk ? "ok" : "failed",
+                         sgsrProxyOk ? "ok" : "failed", workScale, g_nr.workWidth, g_nr.workHeight, width, height,
+                         g_nr.sgsr1UpAnswer != nullptr ? (g_nr.sgsr1UpAnswer->IsInit() ? "init ok" : "init FAILED")
+                                                       : "null",
+                         g_nr.sgsr1UpProxy != nullptr ? (g_nr.sgsr1UpProxy->IsInit() ? "init ok" : "init FAILED")
+                                                      : "null");
+                lastSgsrUpOk = sgsrUpOkNow;
+                hasLoggedSgsrUp = true;
+            }
+        }
+
+        // Both must succeed -- a partial result (e.g. answer enlarged but proxy still small) would
+        // reintroduce the same mismatched-detail-basis problem the two-buffer split exists to avoid.
+        const bool sgsrUpOk = sgsrAnswerOk && sgsrProxyOk;
+
+        ID3D12Resource* resolveProxy = superDownOk ? g_nr.colorCopy : (sgsrUpOk ? g_nr.proxyNative : modelInput);
+        ID3D12Resource* resolveAnswer = (superDownOk || sgsrUpOk) ? g_nr.outputNative : finalAnswer;
 
         // Pre-SR Color is not guaranteed to have UAV support. Write directly when legal; otherwise
         // resolve into hdrCopy while the original Color remains readable, then copy the result back.
@@ -2932,8 +3044,12 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         if (g_nr.passClampScratch != nullptr)
             MakeModelWritable(g_nr.passClampScratch);
 
-        if (superDownOk)
+        if (superDownOk || sgsrAnswerOk)
             Barrier(cmdList, g_nr.outputNative, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+        if (sgsrProxyOk)
+            Barrier(cmdList, g_nr.proxyNative, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
         // On-demand capture works in this path too: the staging copy still holds the frame as the
@@ -3708,10 +3824,28 @@ void Shutdown()
         g_nr.superDown = nullptr;
     }
 
+    if (g_nr.sgsr1UpAnswer != nullptr)
+    {
+        delete g_nr.sgsr1UpAnswer;
+        g_nr.sgsr1UpAnswer = nullptr;
+    }
+
+    if (g_nr.sgsr1UpProxy != nullptr)
+    {
+        delete g_nr.sgsr1UpProxy;
+        g_nr.sgsr1UpProxy = nullptr;
+    }
+
     if (g_nr.outputNative != nullptr)
     {
         g_nr.outputNative->Release();
         g_nr.outputNative = nullptr;
+    }
+
+    if (g_nr.proxyNative != nullptr)
+    {
+        g_nr.proxyNative->Release();
+        g_nr.proxyNative = nullptr;
     }
 
     if (g_nr.heldColor != nullptr)

@@ -355,6 +355,38 @@ float3 SoftKnee(float3 display)
     return display;
 }
 
+// Inverse of the knee's luminance roll-off only -- the same ratio-of-scalars pattern SoftKnee
+// itself uses forward, solved algebraically: y = 0.75 + 0.25*(1 - e^(-(x-0.75)/0.25)) for x.
+float SoftKneeCurveInv(float y)
+{
+    if (y <= 0.75)
+        return y;
+
+    y = min(y, 0.999999);
+    const float u = (y - 0.75) / 0.25;
+    return 0.75 - 0.25 * log(max(1.0 - u, 1e-8));
+}
+
+// Approximate inverse of SoftKnee, for averaging several encoded proxy taps in true linear light
+// (DlssNrMode_Downsample) instead of biasing the average toward the curve's own concavity.
+// SoftKneeCurveInv above exactly undoes the luminance roll-off; the peak-channel headroom clamp
+// below it in SoftKnee is NOT invertible even in principle -- dividing by peak 2 or peak 3 both
+// land on peak_final 1, so peak_final alone cannot say which one to undo -- and is left
+// un-inverted here, the same "approximately" this codebase already accepts for SoftKnee elsewhere
+// (unlike Neutwo/Hybrid, which have an exact decode because neither has a lossy clamp step).
+float3 SoftKneeDecode(float3 y)
+{
+    if (gPassthrough != 0)
+        return y;
+
+    const float yLuma = dot(y, kLuma);
+    if (yLuma <= 1e-6)
+        return y;
+
+    const float x = SoftKneeCurveInv(yLuma);
+    return y * (x / yLuma);
+}
+
 // The reversible proxy, from RenoDX's Sep-2 DLSS 5 addon (clshortfuse) -- an unclipped, hue-preserving
 // encode meant to be reproduced exactly, so the model is shown the highlight gradation the soft knee
 // compresses into a razor-thin band near white. Neutwo maps [0, inf) -> [0, 1) with no clip point,
@@ -460,6 +492,40 @@ float3 HybridDecode(float3 y)
         return y;
 
     return y * (HybridCurveInv(m) / m);
+}
+
+// Undoes the full proxy encode (LinearToSrgb, then whichever reversible curve) back to true
+// scene-linear `normalized`, for DlssNrMode_Downsample: averaging several taps in the curve's own
+// domain is not energy-correct (the curve is concave, so a box-average of a bright window against
+// a dark wall comes out darker than averaging the actual light would), so the average has to
+// happen out here instead. Mirrors gPassthrough/gReversibleMode's exact branching in the encode
+// pass (mode 0) so the two agree on what "the proxy" means.
+float3 DecodeProxyToLinear(float3 c)
+{
+    if (gPassthrough != 0)
+        return c; // already display-ready; nothing here is a curve to undo
+
+    float3 y = SrgbToLinear(c);
+
+    if (gReversibleMode == 0)
+        return SoftKneeDecode(y);
+    if (gReversibleMode >= 3)
+        return HybridDecode(y);
+    return NeutwoDecode(y);
+}
+
+// Exact inverse of DecodeProxyToLinear -- reproduces the encode pass's own chain
+// (LinearToSrgb(curve(normalized))) so an averaged-in-linear-light result lands in the same domain
+// a native-resolution encode of that footprint would have written.
+float3 EncodeLinearToProxy(float3 n)
+{
+    if (gPassthrough != 0)
+        return n;
+
+    const float3 display = gReversibleMode == 0   ? SoftKnee(n)
+                           : gReversibleMode >= 3 ? HybridEncode(n)
+                                                  : NeutwoEncode(n);
+    return LinearToSrgb(display);
 }
 
 // Scale a residual so the result cannot leave the unit cube, without changing its direction.
@@ -699,6 +765,14 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         // correct box resample and costs a handful of loads at these ratios.
         //
         // hhkbble's, from the multi-pass PR against this fork.
+        //
+        // Taps are decoded to true scene-linear before the weighted sum (DecodeProxyToLinear) and
+        // the average re-encoded once at the end (EncodeLinearToProxy): the stored proxy is
+        // LinearToSrgb(curve(normalized)), and averaging that directly is not energy-correct -- the
+        // curve is concave, so a box-average of a bright window against a dark wall comes out
+        // darker than averaging the light itself would. Without this, the model is shown a proxy
+        // that is systematically dimmer/desaturated right at strong contrast edges, worst at
+        // aggressive reductions where more taps disagree.
         const float x0 = ((float) id.x * (float) srcW) / (float) gWidth;
         const float x1 = ((float) (id.x + 1) * (float) srcW) / (float) gWidth;
         const float y0 = ((float) id.y * (float) srcH) / (float) gHeight;
@@ -724,14 +798,14 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                 const int ii = clamp(i, 0, (int) srcW - 1);
                 const float aX = max(x0, (float) i);
                 const float bX = min(x1, (float) i + 1.0);
-                acc += gSource.Load(int3(ii, jj, 0)).rgb * (max(bX - aX, 0.0) * wy);
+                acc += DecodeProxyToLinear(gSource.Load(int3(ii, jj, 0)).rgb) * (max(bX - aX, 0.0) * wy);
             }
         }
 
         const int acx = clamp((int) floor(((float) id.x + 0.5) * (float) srcW / (float) gWidth), 0, (int) srcW - 1);
         const int acy = clamp((int) floor(((float) id.y + 0.5) * (float) srcH / (float) gHeight), 0, (int) srcH - 1);
 
-        gTarget[id.xy] = float4(acc / area, gSource.Load(int3(acx, acy, 0)).a);
+        gTarget[id.xy] = float4(EncodeLinearToProxy(acc / area), gSource.Load(int3(acx, acy, 0)).a);
         return;
     }
 

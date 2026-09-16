@@ -402,10 +402,31 @@ class Config
     // The fraction of the frame's resolution the model works at. The frame itself is never reduced --
     // only the model's contribution is computed small and enlarged, so the picture underneath is
     // untouched whatever this is set to. 1.0 is full resolution and behaves exactly as before. Below
-    // 1.0 the model's answer is enlarged back to native with SGSR1 (a real edge-directed upscale)
-    // before the resolve, not an implicit bilinear stretch -- always on, no separate setting. Above
-    // 1.0 the answer is averaged back down with DlssNrScalingDownscaler's chosen filter, as before.
+    // 1.0 the model's answer is enlarged back to native with the filter chosen by
+    // DlssNrReducedUpscaleMethod before the resolve. Above 1.0 the answer is averaged back down with
+    // DlssNrScalingDownscaler's chosen filter, as before.
     CustomOptional<float> DlssNrWorkingScale { 1.0f };
+
+    // Below 100% model resolution only: how the model's answer and input (proxy) are enlarged
+    // back to native before the resolve. 0 = Bilinear -- neither side enlarged with SGSR1; the
+    // pre-SGSR1 implicit sampler tap the resolve already falls back to whenever SGSR1 can't
+    // build; cheapest, softest. 1 = SGSR1 (default) -- edge-directed upscale on the answer only,
+    // proxy stays on the implicit tap; theory said proxy barely affects the displayed pixel, but
+    // in-game feedback found this still visibly blurrier than enlarging both, so it's not the
+    // sharpest option, just the cheaper SGSR1 one. 2 = SGSR1 (both) -- edge-directed upscale on
+    // both answer and proxy; sharpest, costs two full-native-resolution compute passes a frame
+    // instead of one. No effect at 100% model resolution or above.
+    CustomOptional<uint32_t> DlssNrReducedUpscaleMethod { 1 };
+
+    // SGSR1's own edge-vote threshold and reconstructed-luma sharpness multiplier
+    // (sgsr1.hlsl's EdgeThreshold/EdgeSharpness). Upstream's fixed defaults (8/255, 2.0) were
+    // tuned against ordinary game content; an in-game A/B found the vote firing on noisy
+    // high-frequency detail (skin, hair) it wasn't tuned for, smoothing texture plain bilinear
+    // preserved. Raising the threshold makes fewer pixels take the edge-reconstruction branch
+    // (closer to plain bilinear); only relevant when DlssNrReducedUpscaleMethod selects SGSR1
+    // for at least one side.
+    CustomOptional<float> DlssNrSgsr1EdgeThreshold { 0.3f };
+    CustomOptional<float> DlssNrSgsr1EdgeSharpness { 2.0f };
 
     // Post-SR placement only: derive the working scale from the render:output ratio the upscaler
     // itself already reconstructed detail at, instead of the manual slider above. That output already

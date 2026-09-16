@@ -35,6 +35,11 @@ cbuffer Params : register(b0)
     float gSkinColour;
     float gEnvironmentDetail;
     float gEnvironmentColour;
+    float gReplaceDetailStrength; // Replace modes only: how much native high-frequency detail is
+                                   // restored below 100% model resolution. 0 = current behaviour.
+    float gModelWorkScale; // Set from C++, not inferred from gSource's bound size -- SGSR1's
+                           // pre-resolve enlarge (DX12) makes that read native once it succeeds,
+                           // even though the model itself ran small. 1.0 = not reduced.
 };
 
 // Bringing an impossible colour back into a possible one.
@@ -1151,6 +1156,43 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         result = gPassthrough != 0 ? modelDirect : NeutwoDecode(modelDirect);
     else if (gReversibleMode == 4)
         result = gPassthrough != 0 ? modelDirect : HybridDecode(modelDirect);
+
+    // Replace-only detail injection. Below the frame's own resolution the model computed its
+    // answer at a reduced working size -- SGSR1's enlarge can sharpen that answer but cannot
+    // invent detail the model never saw, and Replace has no native-resolution fallback the way
+    // the composition above does (it is anchored on `original` throughout). This pulls real
+    // high-frequency structure back from the native frame instead: a box blur of the native
+    // luminance approximates what the model's reduced raster *could* have resolved, and what is
+    // left over after subtracting it is the edge/texture detail actually missing. The injection
+    // is luminance-only and multiplicative -- same "one scalar from luminance, applied to the
+    // whole triple" shape as `boundedRatio` above -- so it restores detail without blending
+    // toward the native frame's colour, keeping Replace's no-composition character.
+    //
+    // The blur's radius has to track how far the model's raster actually shrank: a fixed
+    // 1-texel offset only reaches single-pixel grain, which is not where a reduced working
+    // resolution's softness lives -- that softness spans roughly the same number of native
+    // texels as the downscale factor. `gModelWorkScale` gives that factor directly (unlike
+    // `proxyW`/`proxyH`, which read native once SGSR1's enlarge has already run -- see the
+    // cbuffer comment), so the tap distance scales with it instead of staying fixed.
+    if ((gReversibleMode == 2 || gReversibleMode == 4) && gModelWorkScale < 0.999 && gReplaceDetailStrength > 0.0)
+    {
+        int radius = clamp((int) round(1.0 / gModelWorkScale), 1, 4);
+        float3 nLeft  = gOriginal.Load(int3(id.xy + int2(-radius,       0), 0)).rgb / normScale;
+        float3 nRight = gOriginal.Load(int3(id.xy + int2( radius,       0), 0)).rgb / normScale;
+        float3 nUp    = gOriginal.Load(int3(id.xy + int2(      0, -radius), 0)).rgb / normScale;
+        float3 nDown  = gOriginal.Load(int3(id.xy + int2(      0,  radius), 0)).rgb / normScale;
+        float blurLuma = dot((original + nLeft + nRight + nUp + nDown) / 5.0, kLuma);
+        float highFreq = originalLuma - blurLuma;
+
+        // Same dual-floor idiom as `lumaRatio` above, and for the same reason: `highFreq` is an
+        // unbounded absolute difference, and dividing it by a denominator floored on only one
+        // side does not tame it near black -- a shadow pixel next to a contrasty edge computed a
+        // ratio well past -1 and got clamped to flat black. Flooring both sides by the same
+        // `kRatioFloor` leaves bright pixels alone and lets the ratio settle to 1 as luminance
+        // approaches zero, exactly like the composition's own ratio above.
+        float detailRatio = (originalLuma + gReplaceDetailStrength * highFreq + kRatioFloor) / (originalLuma + kRatioFloor);
+        result *= max(detailRatio, 0.0);
+    }
 
     // Back out of the normalised space the composition worked in.
     result *= normScale;

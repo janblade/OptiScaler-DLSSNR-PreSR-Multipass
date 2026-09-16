@@ -238,6 +238,20 @@ struct alignas(256) DlssNrConstants
     float EnvironmentDetail;
     float EnvironmentColour;
 
+    // Replace modes only (ReversibleMode 2/4): how much native high-frequency detail is
+    // restored below 100% model resolution, where Replace has no native-resolution fallback
+    // the way the composed modes do. 0 = current behaviour, unchanged. Trailing scalar,
+    // mirrored in the shader cbuffer.
+    float ReplaceDetailStrength;
+
+    // The model's actual working-resolution scale this frame (`reduced && workScale < 1.0f ?
+    // workScale : 1.0f`) -- computed here, not inferred in the shader from a buffer's bound
+    // size, because SGSR1's pre-resolve enlarge (DX12) hands the resolve pass native-sized
+    // proxy/answer buffers whenever it succeeds, which makes a shader-side "is this buffer
+    // still small" check read as native (i.e. false) in the common case even though the model
+    // itself ran small. 1.0 means "not reduced" and disables anything gated on it. Trailing
+    // scalar, mirrored in the shader cbuffer.
+    float ModelWorkScale;
 };
 static_assert(sizeof(DlssNrConstants) == 256);
 

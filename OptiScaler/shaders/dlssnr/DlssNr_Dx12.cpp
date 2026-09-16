@@ -2848,6 +2848,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         resolveParams.EnvironmentDetail = strength(cfg.DlssNrEnvironmentDetail.value_or_default());
         resolveParams.EnvironmentColour = strength(cfg.DlssNrEnvironmentColour.value_or_default());
         resolveParams.ColourStrength = cfg.DlssNrColourStrength.value_or_default();
+        resolveParams.ReplaceDetailStrength = cfg.DlssNrReplaceDetailStrength.value_or_default();
+        resolveParams.ModelWorkScale = (reduced && workScale < 1.0f) ? workScale : 1.0f;
         resolveParams.DebugView = cfg.DlssNrDebugView.value_or_default();
         resolveParams.MaxRatio = cfg.DlssNrMaxRatio.value_or_default();
         resolveParams.Transfer = cfg.DlssNrTransfer.value_or_default();

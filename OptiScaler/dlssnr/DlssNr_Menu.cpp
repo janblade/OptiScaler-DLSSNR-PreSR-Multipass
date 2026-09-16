@@ -442,6 +442,19 @@ void RenderMenu(Config* config, float menuResScale)
 
         HelpMarker("Choose how HDR brightness is mapped for NR.\nSoft knee compresses highlights. Neutwo uses a reversible curve. Hybrid preserves midtones and compresses highlights.\nComposed uses the strength and highlight controls. Replace bypasses them and may flicker.");
 
+        if (reversible == 2 || reversible == 4)
+        {
+            float replaceDetail = config->DlssNrReplaceDetailStrength.value_or_default();
+            if (ImGui::SliderFloat("Replace detail strength", &replaceDetail, 0.0f, 2.0f, "%.2f"))
+                config->DlssNrReplaceDetailStrength = replaceDetail;
+
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset##replacedetail"))
+                config->DlssNrReplaceDetailStrength = 0.5f;
+
+            HelpMarker("Below 100% model resolution, Replace has no native-resolution fallback and can look soft. This restores real detail from the native frame without blending its colour. 0 = no effect (today's behaviour); no effect at all at 100% model resolution or above.");
+        }
+
         ImGui::SeparatorText("Model passes");
         ImGui::TextWrapped("Settings apply when you release a slider.");
         static const char* styles[] = { "Standard", "Natural", "Cinematic" };

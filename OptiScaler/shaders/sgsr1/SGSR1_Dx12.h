@@ -23,8 +23,13 @@ class SGSR1_Dx12 : public Shader_Dx12
     // reversibleMode/passthrough mirror DlssNrConstants::ReversibleMode/Passthrough (dlssnr.hlsl's
     // gReversibleMode/gPassthrough) -- SGSR1 needs them to undo/redo the Neutwo/Hybrid domain
     // curve around its edge-directed math; see sgsr1.hlsl's file header for why.
+    //
+    // edgeThreshold/edgeSharpness were upstream's own fixed constants (8/255, 2.0) until an
+    // in-game A/B found the vote firing on noisy high-frequency content (skin, hair) it wasn't
+    // tuned for, smoothing detail bilinear preserved -- now live-tunable (DlssNrSgsr1EdgeThreshold/
+    // DlssNrSgsr1EdgeSharpness) instead of requiring a shader recompile to test.
     bool Dispatch(ID3D12GraphicsCommandList* InCmdList, ID3D12Resource* InResource, ID3D12Resource* OutResource,
-                 uint32_t reversibleMode, uint32_t passthrough);
+                 uint32_t reversibleMode, uint32_t passthrough, float edgeThreshold, float edgeSharpness);
 
     SGSR1_Dx12(std::string InName, ID3D12Device* InDevice);
 

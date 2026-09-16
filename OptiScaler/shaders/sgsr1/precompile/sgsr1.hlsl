@@ -11,14 +11,15 @@
 // (fastLanczos2/weightY/SgsrYuvH) is unchanged -- only the shader stage (pixel -> compute),
 // resource bindings, and per-thread UV derivation differ from the original. Fixed at
 // OperationMode 1 (RGBA) and edge direction off, matching upstream's own defaults; neither is
-// runtime-configurable here since this pass has no user-facing settings. DX12 only -- no
-// VK_MODE variant (Vulkan is out of scope for this pass).
+// runtime-configurable. EdgeThreshold/EdgeSharpness (upstream's own fixed constants) are,
+// via DlssNrSgsr1EdgeThreshold/DlssNrSgsr1EdgeSharpness -- see the cbuffer below. DX12 only --
+// no VK_MODE variant (Vulkan is out of scope for this pass).
 //
 // DLSS-NR's Neutwo/Hybrid reversible mapping (dlssnr.hlsl) writes its answer/proxy textures as
 // LinearToSrgb(NeutwoEncode(normalized)) or LinearToSrgb(HybridEncode(normalized)), not plain
-// sRGB gamma -- a second curve stacked on top of the gamma encode. kEdgeThreshold below is a
-// fixed 8/255, tuned upstream against ordinary gamma-encoded content; reported in-game as blur
-// under Neutwo/Hybrid + reduced model resolution, worst in "Replace" mode, where nothing
+// sRGB gamma -- a second curve stacked on top of the gamma encode. EdgeThreshold defaults to
+// upstream's own fixed 8/255, tuned against ordinary gamma-encoded content; reported in-game as
+// blur under Neutwo/Hybrid + reduced model resolution, worst in "Replace" mode, where nothing
 // downstream recomposites over this pass's output the way Composed mode's ratio/hue blend does.
 // DecodeDomain/EncodeDomain strip and reapply the OUTER gamma only around the edge-directed math
 // below, landing on NeutwoEncode(N)/HybridEncode(N) itself rather than gamma -- moving the
@@ -43,10 +44,14 @@ cbuffer Params : register(b0)
     int2   DstSize;
     uint   ReversibleMode; // matches dlssnr.hlsl's gReversibleMode: 0 off, 1/2 Neutwo, 3/4 hybrid
     uint   Passthrough;
+    // Live-tunable versions of upstream's own fixed kEdgeThreshold/kEdgeSharpness (8/255, 2.0) --
+    // an in-game A/B found the vote firing on noisy high-frequency content (skin, hair) upstream's
+    // fixed threshold wasn't tuned for, smoothing detail plain bilinear preserved. Set from
+    // DlssNrSgsr1EdgeThreshold/DlssNrSgsr1EdgeSharpness so this is testable live, not only by
+    // recompiling.
+    float  EdgeThreshold;
+    float  EdgeSharpness;
 };
-
-static const float kEdgeThreshold = 8.0 / 255.0;
-static const float kEdgeSharpness = 2.0;
 
 // -- Outer-gamma strip/reapply around the edge-directed math (see file header) ---------------
 
@@ -144,7 +149,7 @@ float4 SgsrUpscale(float2 uv, float4 con1)
     // OperationMode 1 (RGBA) always edge-votes/edge-corrects on the green channel (pix.y),
     // matching upstream's SGSRH(coord, mode) dispatch collapsed to its mode==1 case.
     float edgeVote = abs(left.z - left.y) + abs(greenC - left.y) + abs(greenC - left.z);
-    if (edgeVote > kEdgeThreshold)
+    if (edgeVote > EdgeThreshold)
     {
         coord.x += con1.x;
 
@@ -186,7 +191,7 @@ float4 SgsrUpscale(float2 uv, float4 con1)
 
         float max4 = max(max(left.y, left.z), max(right.x, right.w));
         float min4 = min(min(left.y, left.z), min(right.x, right.w));
-        finalY = clamp(kEdgeSharpness * finalY, min4, max4);
+        finalY = clamp(EdgeSharpness * finalY, min4, max4);
 
         float deltaY = finalY - pix.w;
 

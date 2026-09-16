@@ -271,14 +271,15 @@ struct NrState
     ID3D12Resource* outputNative = nullptr;
     OS_Dx12* superDown = nullptr;
 
-    // Reduced up-leg's own native proxy, separate from outputNative. Unlike the supersample case
-    // (where the model's input was the native colorCopy, just resampled larger -- no detail lost),
-    // the reduced case's model only ever saw the downsampled colorSmall. The resolve's edit math
-    // (answer - proxy, added back onto the native original) needs both sides on the same detail
-    // basis, or the native original's own detail nearly cancels out of the result -- comparing the
-    // SGSR1-enlarged answer against the untouched native colorCopy did exactly that (found via a
-    // real in-game report: "the low res image got combined with the final image"). So the proxy
-    // gets its own SGSR1 enlarge from the same colorSmall the model actually worked from.
+    // Reduced up-leg. DlssNrReducedUpscaleMethod picks how far this goes: 1 enlarges the answer
+    // only (theory said proxy is just a luminance-ratio scalar/unused-in-Replace, so it shouldn't
+    // matter much -- in-game feedback said otherwise, still visibly blurrier than enlarging both,
+    // so 2 restores the original dual-enlarge behaviour as an explicit, costlier option). The
+    // proxy, when not SGSR1-enlarged, still correctly reads from modelInput (the real downsampled
+    // source the model saw) via the resolve's own implicit bilinear tap (dlssnr.hlsl:905-910) --
+    // that is not the old colorCopy-vs-modelInput bug ("the low res image got combined with the
+    // final image"), which was comparing against the wrong buffer entirely, not merely a
+    // softer-filtered one.
     ID3D12Resource* proxyNative = nullptr;
 
     // Two separate instances, not one reused twice a frame -- like superUp/superDown, each
@@ -2003,12 +2004,12 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     if (workScale != 1.0f && g_nr.outputNative == nullptr)
         g_nr.outputNative = CreateScratch(device, desc.Format, width, height);
 
-    // The reduced up-leg's own native proxy (see NrState::proxyNative). Only the < 1 leg needs
-    // this -- the > 1 leg's proxy is the native colorCopy directly, already correct. Gated on
-    // `reduced` (not just workScale < 1.0f) so a workScale that rounds back to the native size
-    // (e.g. Auto's continuous ratio landing at 0.9998) doesn't allocate a buffer this leg will
-    // never actually use.
-    if (reduced && workScale < 1.0f && g_nr.proxyNative == nullptr)
+    // The reduced up-leg's own native proxy (see NrState::proxyNative), only when
+    // DlssNrReducedUpscaleMethod == 2 asks for SGSR1 on both sides. Gated on `reduced` (not just
+    // workScale < 1.0f) so a workScale that rounds back to the native size (e.g. Auto's
+    // continuous ratio landing at 0.9998) doesn't allocate a buffer this leg will never use.
+    if (reduced && workScale < 1.0f && cfg.DlssNrReducedUpscaleMethod.value_or_default() == 2 &&
+        g_nr.proxyNative == nullptr)
         g_nr.proxyNative = CreateScratch(device, desc.Format, width, height);
 
     if (g_nr.meter == nullptr)
@@ -2937,78 +2938,99 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             superDownOk = true;
         }
 
-        // Reduced up-leg (mirrors the down-leg above), enlarging both sides of the resolve's edit
-        // math with SGSR1 instead of its implicit bilinear tap (EditAt() samples gSource/gModel at
-        // the same UV via a bilinear-clamp sampler -- see dlssnr.hlsl:263/303-315). Unlike the
-        // supersample case, the model here never saw native detail -- it only ever worked from the
-        // downsampled colorSmall -- so the proxy needs its own SGSR1 enlarge from that same source,
-        // not the native colorCopy. Comparing the SGSR1-enlarged answer against the untouched native
-        // original was tried first and was wrong: added back onto that same native original, the
-        // native detail nearly cancels out of the result algebraically, leaving the display dominated
-        // by the small buffer's own limited detail (reported in-game as "the low res image got
-        // combined with the final image").
+        // Reduced up-leg (mirrors the down-leg above). DlssNrReducedUpscaleMethod: 0 = Bilinear
+        // (neither side enlarged with SGSR1), 1 = SGSR1 answer only, 2 = SGSR1 both sides. Theory
+        // said proxy is just a luminance-ratio scalar for Composed and unused entirely by Replace,
+        // so answer-only should have captured most of the benefit for half the cost -- in-game
+        // feedback said it's still visibly blurrier than enlarging both, so 2 exists as the
+        // costlier, sharper option. When the proxy is not SGSR1-enlarged (methods 0/1) it still
+        // correctly reads from modelInput (the real downsampled source the model saw) via the
+        // resolve's own implicit bilinear tap (dlssnr.hlsl:905-910) -- that is not the old
+        // colorCopy-vs-modelInput bug ("the low res image got combined with the final image"),
+        // which was comparing against the wrong buffer entirely, not merely a softer-filtered one.
         bool sgsrAnswerOk = false;
         bool sgsrProxyOk = false;
+        const uint32_t upscaleMethod = cfg.DlssNrReducedUpscaleMethod.value_or_default();
+        const bool wantsSgsr1Answer = upscaleMethod >= 1;
+        const bool wantsSgsr1Proxy = upscaleMethod == 2;
         // Gated on `reduced` (the actual rounded-size flag), not just workScale < 1.0f -- a workScale
         // that rounds back to the native size (e.g. Auto's continuous ratio landing at 0.9998) would
         // otherwise engage SGSR1 at 1:1, wasted work that also isn't guaranteed identity-preserving.
-        if (reduced && workScale < 1.0f && g_nr.outputNative != nullptr && g_nr.proxyNative != nullptr)
+        if (reduced && workScale < 1.0f && (wantsSgsr1Answer || wantsSgsr1Proxy))
         {
-            // Two separate instances (see NrState::sgsr1UpAnswer/sgsr1UpProxy) -- SGSR1_Dx12, like
-            // OS_Dx12, is built for one Dispatch() call per frame: reusing a single instance for both
-            // calls here would have both CPU-side constant-buffer writes land before the GPU executes
-            // either dispatch, and the 2-slot descriptor heap ping-pong is meant to alternate across
-            // frames, not across two same-frame calls.
-            if (g_nr.sgsr1UpAnswer == nullptr)
-                g_nr.sgsr1UpAnswer = new SGSR1_Dx12("DLSS-NR SGSR1 up (answer)", device);
-            if (g_nr.sgsr1UpProxy == nullptr)
-                g_nr.sgsr1UpProxy = new SGSR1_Dx12("DLSS-NR SGSR1 up (proxy)", device);
+            // Two separate instances, not one reused twice a frame -- SGSR1_Dx12, like OS_Dx12, is
+            // built for one Dispatch() call per frame: reusing a single instance for both calls
+            // here would have both CPU-side constant-buffer writes land before the GPU executes
+            // either dispatch, and the 2-slot descriptor heap ping-pong is meant to alternate
+            // across frames, not across two same-frame calls.
+            const float sgsr1EdgeThreshold = cfg.DlssNrSgsr1EdgeThreshold.value_or_default();
+            const float sgsr1EdgeSharpness = cfg.DlssNrSgsr1EdgeSharpness.value_or_default();
 
-            if (g_nr.sgsr1UpAnswer != nullptr &&
-                g_nr.sgsr1UpAnswer->Dispatch(cmdList, finalAnswer, g_nr.outputNative,
-                                             resolveParams.ReversibleMode, resolveParams.Passthrough))
+            if (wantsSgsr1Answer && g_nr.outputNative != nullptr)
             {
-                Barrier(cmdList, g_nr.outputNative, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-                sgsrAnswerOk = true;
+                if (g_nr.sgsr1UpAnswer == nullptr)
+                    g_nr.sgsr1UpAnswer = new SGSR1_Dx12("DLSS-NR SGSR1 up (answer)", device);
+
+                if (g_nr.sgsr1UpAnswer != nullptr &&
+                    g_nr.sgsr1UpAnswer->Dispatch(cmdList, finalAnswer, g_nr.outputNative,
+                                                 resolveParams.ReversibleMode, resolveParams.Passthrough,
+                                                 sgsr1EdgeThreshold, sgsr1EdgeSharpness))
+                {
+                    Barrier(cmdList, g_nr.outputNative, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                    sgsrAnswerOk = true;
+                }
             }
 
-            if (g_nr.sgsr1UpProxy != nullptr &&
-                g_nr.sgsr1UpProxy->Dispatch(cmdList, modelInput, g_nr.proxyNative, resolveParams.ReversibleMode,
-                                            resolveParams.Passthrough))
+            if (wantsSgsr1Proxy && g_nr.proxyNative != nullptr)
             {
-                Barrier(cmdList, g_nr.proxyNative, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-                sgsrProxyOk = true;
+                if (g_nr.sgsr1UpProxy == nullptr)
+                    g_nr.sgsr1UpProxy = new SGSR1_Dx12("DLSS-NR SGSR1 up (proxy)", device);
+
+                if (g_nr.sgsr1UpProxy != nullptr &&
+                    g_nr.sgsr1UpProxy->Dispatch(cmdList, modelInput, g_nr.proxyNative, resolveParams.ReversibleMode,
+                                                resolveParams.Passthrough, sgsr1EdgeThreshold, sgsr1EdgeSharpness))
+                {
+                    Barrier(cmdList, g_nr.proxyNative, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                    sgsrProxyOk = true;
+                }
             }
 
             // INFO-level, change-gated like the composition log above -- the pass's own Dispatch()
             // only logs at DEBUG (matches superUp/superDown's identical silence), which wasn't
             // enough to confirm engagement while diagnosing a "still looks blurred" report.
             static bool hasLoggedSgsrUp = false;
-            static bool lastSgsrUpOk = false;
-            const bool sgsrUpOkNow = sgsrAnswerOk && sgsrProxyOk;
-            if (!hasLoggedSgsrUp || lastSgsrUpOk != sgsrUpOkNow)
+            static uint32_t lastLoggedState = 0xFFFFFFFFu;
+            const uint32_t state = (sgsrAnswerOk ? 1u : 0u) | (sgsrProxyOk ? 2u : 0u);
+            if (!hasLoggedSgsrUp || lastLoggedState != state)
             {
-                LOG_INFO("DLSS-NR SGSR1 up-leg: {} (answer {}, proxy {}, workScale {:.3f}, {}x{} -> {}x{}, "
-                         "answer inst {}, proxy inst {})",
-                         sgsrUpOkNow ? "engaged" : "NOT engaged", sgsrAnswerOk ? "ok" : "failed",
-                         sgsrProxyOk ? "ok" : "failed", workScale, g_nr.workWidth, g_nr.workHeight, width, height,
-                         g_nr.sgsr1UpAnswer != nullptr ? (g_nr.sgsr1UpAnswer->IsInit() ? "init ok" : "init FAILED")
-                                                       : "null",
-                         g_nr.sgsr1UpProxy != nullptr ? (g_nr.sgsr1UpProxy->IsInit() ? "init ok" : "init FAILED")
-                                                      : "null");
-                lastSgsrUpOk = sgsrUpOkNow;
+                LOG_INFO("DLSS-NR SGSR1 up-leg: answer {}, proxy {} (method {}, workScale {:.3f}, "
+                         "{}x{} -> {}x{})",
+                         wantsSgsr1Answer ? (sgsrAnswerOk ? "engaged" : "NOT engaged") : "bilinear",
+                         wantsSgsr1Proxy ? (sgsrProxyOk ? "engaged" : "NOT engaged") : "bilinear",
+                         upscaleMethod, workScale, g_nr.workWidth, g_nr.workHeight, width, height);
+                lastLoggedState = state;
                 hasLoggedSgsrUp = true;
             }
         }
+        else if (reduced && workScale < 1.0f)
+        {
+            // Parity with the SGSR1 branch's own log above, change-gated the same way, so a log
+            // scan can confirm the user's Bilinear choice actually took effect without needing a
+            // breakpoint.
+            static bool hasLoggedBilinear = false;
+            if (!hasLoggedBilinear)
+            {
+                LOG_INFO("DLSS-NR reduced up-leg: Bilinear selected, SGSR1 skipped entirely "
+                         "(workScale {:.3f}, {}x{} -> {}x{})",
+                         workScale, g_nr.workWidth, g_nr.workHeight, width, height);
+                hasLoggedBilinear = true;
+            }
+        }
 
-        // Both must succeed -- a partial result (e.g. answer enlarged but proxy still small) would
-        // reintroduce the same mismatched-detail-basis problem the two-buffer split exists to avoid.
-        const bool sgsrUpOk = sgsrAnswerOk && sgsrProxyOk;
-
-        ID3D12Resource* resolveProxy = superDownOk ? g_nr.colorCopy : (sgsrUpOk ? g_nr.proxyNative : modelInput);
-        ID3D12Resource* resolveAnswer = (superDownOk || sgsrUpOk) ? g_nr.outputNative : finalAnswer;
+        ID3D12Resource* resolveProxy = superDownOk ? g_nr.colorCopy : (sgsrProxyOk ? g_nr.proxyNative : modelInput);
+        ID3D12Resource* resolveAnswer = (superDownOk || sgsrAnswerOk) ? g_nr.outputNative : finalAnswer;
 
         // Pre-SR Color is not guaranteed to have UAV support. Write directly when legal; otherwise
         // resolve into hdrCopy while the original Color remains readable, then copy the result back.

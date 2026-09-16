@@ -16,12 +16,16 @@ struct alignas(256) Sgsr1Constants
     int32_t DstHeight;
     uint32_t ReversibleMode;
     uint32_t Passthrough;
+    // Live-tunable versions of what used to be sgsr1.hlsl's own kEdgeThreshold/kEdgeSharpness
+    // constants (8/255, 2.0) -- see SGSR1_Dx12.h's Dispatch() comment for why.
+    float EdgeThreshold;
+    float EdgeSharpness;
 };
 
 static Sgsr1Constants constants {};
 
 bool SGSR1_Dx12::Dispatch(ID3D12GraphicsCommandList* InCmdList, ID3D12Resource* InResource, ID3D12Resource* OutResource,
-                          uint32_t reversibleMode, uint32_t passthrough)
+                          uint32_t reversibleMode, uint32_t passthrough, float edgeThreshold, float edgeSharpness)
 {
     if (!_init || _device == nullptr || InCmdList == nullptr || InResource == nullptr || OutResource == nullptr)
         return false;
@@ -52,6 +56,8 @@ bool SGSR1_Dx12::Dispatch(ID3D12GraphicsCommandList* InCmdList, ID3D12Resource* 
     constants.DstHeight = (int32_t) dstH;
     constants.ReversibleMode = reversibleMode;
     constants.Passthrough = passthrough;
+    constants.EdgeThreshold = edgeThreshold;
+    constants.EdgeSharpness = edgeSharpness;
 
     if (!CreateConstantsBuffer(_device, _constantBuffer, constants, currentHeap.GetCbvCPU(0)))
     {

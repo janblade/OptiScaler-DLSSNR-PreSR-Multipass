@@ -404,6 +404,45 @@ void RenderMenu(Config* config, float menuResScale)
                 ImGui::EndDisabled();
 
             HelpMarker("Below 100% model resolution: Classic enlarges the model output; Matched residual enlarges only its changes.\nMatched residual can reduce blur and colour shifts. No effect at 100% or above.");
+
+            if (!reduced)
+                ImGui::BeginDisabled();
+
+            static const char* upscaleMethodNames[] = { "Bilinear (fast)", "SGSR1 (output only)",
+                                                        "SGSR1 (input + output, sharpest)" };
+            int upscaleMethod = (int) std::min(config->DlssNrReducedUpscaleMethod.value_or_default(), 2u);
+
+            if (ImGui::Combo("Enlarge filter", &upscaleMethod, upscaleMethodNames, IM_ARRAYSIZE(upscaleMethodNames)))
+                config->DlssNrReducedUpscaleMethod = (uint32_t) upscaleMethod;
+
+            if (!reduced)
+                ImGui::EndDisabled();
+
+            HelpMarker("Below 100% model resolution: filter used to enlarge the model's answer (and optionally its input) back to native before it's applied.\nBilinear is the cheapest, softest, pre-SGSR1 default. SGSR1 (output only) is sharper for less cost than enlarging both, but can still look softer than expected. SGSR1 (input + output) is the sharpest, at the cost of a second full-resolution pass every frame. No effect at 100% or above.");
+
+            const bool sgsr1Active = reduced && upscaleMethod != 0;
+
+            if (!sgsr1Active)
+                ImGui::BeginDisabled();
+
+            float sgsr1EdgeThreshold = config->DlssNrSgsr1EdgeThreshold.value_or_default();
+            if (ImGui::SliderFloat("SGSR1 edge threshold", &sgsr1EdgeThreshold, 0.0f, 0.3f, "%.3f"))
+                config->DlssNrSgsr1EdgeThreshold = sgsr1EdgeThreshold;
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset##sgsr1edgethreshold"))
+                config->DlssNrSgsr1EdgeThreshold = 0.3f;
+            HelpMarker("SGSR1's own vote for whether a pixel gets edge-directed reconstruction rather than a plain bilinear read. Higher threshold makes fewer pixels take that branch, closer to Bilinear. Default tuned to 0.3 based on in-game testing (upstream's ~0.031 fired too often on skin/hair noise).");
+
+            float sgsr1EdgeSharpness = config->DlssNrSgsr1EdgeSharpness.value_or_default();
+            if (ImGui::SliderFloat("SGSR1 edge sharpness", &sgsr1EdgeSharpness, 0.5f, 4.0f, "%.2f"))
+                config->DlssNrSgsr1EdgeSharpness = sgsr1EdgeSharpness;
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset##sgsr1edgesharpness"))
+                config->DlssNrSgsr1EdgeSharpness = 2.0f;
+            HelpMarker("Multiplier applied to the reconstructed luma on pixels that do take the edge branch, before it's clamped to its local neighbours' range. Higher can look sharper but risks ringing; upstream's default is 2.0.");
+
+            if (!sgsr1Active)
+                ImGui::EndDisabled();
         }
 
         ImGui::SeparatorText("Effect strength");

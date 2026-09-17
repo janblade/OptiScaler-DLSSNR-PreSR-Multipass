@@ -319,7 +319,6 @@ float3 EditAt(float2 uvq)
     return m - p;
 }
 
-
 // The soft knee, shared by the encode and the resolve.
 //
 // The encode applies it on the way in; the resolve has to be able to reproduce it, because the
@@ -1156,6 +1155,31 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         result = gPassthrough != 0 ? modelDirect : NeutwoDecode(modelDirect);
     else if (gReversibleMode == 4)
         result = gPassthrough != 0 ? modelDirect : HybridDecode(modelDirect);
+
+    // The one exception to "no highlight guard" above: NeutwoDecode/HybridDecode's own comments
+    // both note their inverse diverges as the encoded peak approaches 1 (a near-white pixel --
+    // sky, cloud, sun glare), clamped just short of the pole but still capable of a ~700x
+    // amplification there. Composed never sees this because every pixel it produces already
+    // passed through `guard` above; Replace bypassed it entirely by design, so ordinary small
+    // per-pixel model noise near white had nothing stopping it from exploding into a huge decoded
+    // value. Confirmed as the actual cause of a vertical-line report under Apply-before-SR +
+    // reduced model resolution: invisible in Composed (always guarded), worst in Replace (never
+    // guarded), and tracking model-resolution % (a smaller working raster gives the model more
+    // per-pixel noise to begin with) -- see plans/2026-09-17-dlssnr-presr-reduced-res-aliasing.md.
+    // Three earlier attempts tried smoothing the pre-decode sample instead and made no visible
+    // difference, which fits: smoothing reduces the noise's amplitude but not the decode's
+    // derivative, and the derivative is what turns even a tiny remaining variation into a huge one
+    // right at the pole. This reapplies the same `guard`, in the same one-scalar-from-luminance
+    // shape as `boundedRatio`, so a pixel already inside it -- the ordinary case -- is untouched
+    // (Replace still keeps its "the model's answer IS the picture" character), and only pixels the
+    // decode sent outside the guard get pulled back to its edge.
+    if ((gReversibleMode == 2 || gReversibleMode == 4) && gPassthrough == 0)
+    {
+        float resultLuma = dot(max(result, 0.0), kLuma);
+        float replaceRatio = (resultLuma + kRatioFloor) / (originalLuma + kRatioFloor);
+        float boundedReplaceRatio = clamp(replaceRatio, 1.0 / guard, guard);
+        result *= boundedReplaceRatio / max(replaceRatio, 1e-6);
+    }
 
     // Replace-only detail injection. Below the frame's own resolution the model computed its
     // answer at a reduced working size -- SGSR1's enlarge can sharpen that answer but cannot

@@ -434,6 +434,12 @@ void RenderMenu(Config* config, float menuResScale)
         if (ImGui::SliderInt("Model resolution", &scalePercent, 25, 200, "%d%%"))
             pendingScale = scalePercent;
 
+        // Captured right here, before the Reset button below becomes the new "last item" --
+        // IsItemDeactivatedAfterEdit() only ever reports on whatever was most recently
+        // submitted, so checking it after the button would report the button's state, not
+        // the slider's release, and the commit below would never fire.
+        const bool sliderReleased = ImGui::IsItemDeactivatedAfterEdit();
+
         ImGui::SameLine();
         if (ImGui::SmallButton("Reset##modelresolution"))
         {
@@ -442,7 +448,7 @@ void RenderMenu(Config* config, float menuResScale)
         }
         ImGui::EndDisabled();
 
-        if (!autoActive && ImGui::IsItemDeactivatedAfterEdit() && pendingScale >= 0)
+        if (!autoActive && sliderReleased && pendingScale >= 0)
         {
             config->DlssNrWorkingScale = std::clamp(pendingScale, 25, 200) / 100.0f;
             pendingScale = -1;

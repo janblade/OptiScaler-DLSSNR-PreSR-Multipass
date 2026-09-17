@@ -26,7 +26,8 @@
     "core.memory.sk",
     "core.planning.sk",
     "core.dev-loop.sk",
-    "core.simplicity.sk"
+    "core.simplicity.sk",
+    "core.ux-review.sk"
   ],
   "custom_commands": [],
   "tech_stack": {
@@ -35,7 +36,7 @@
     "frameworks": ["DirectX", "Vulkan", "DLSS", "FidelityFX-SDK", "XeSS"]
   },
   "evolution_history": {
-    "total_evolutions": 3,
-    "last_evolution": "EP-3"
+    "total_evolutions": 4,
+    "last_evolution": "EP-4"
   }
 }

@@ -45,8 +45,9 @@ off `cb1f7aa3`:
   key, `SetPrecision` entry point, and candidate `Prepare` branch. Debug + Release x64
   clean rebuild, 0 errors, 63/26 warnings (baseline), 0 in `DlssNrNative.cpp`. Compile-only
   — `Precision=4` needs Blackwell + `OptiScaler/nvfp4/hybrid` assets to run; stays draft
-  until hardware-measured. **Draft PR janblade#5** open (fix/hybrid-async-init-report ->
-  main), branch + main pushed to origin. `main` = `285f09e2` on origin.
+  until hardware-measured. **[2026-09-17, MEMORY_CONSOLIDATE] PR janblade#5 -- confirmed
+  MERGED (`gh pr view 5`), not still-draft/open as this note originally said.** Superseded
+  by later work; safe to treat this whole entry as historical.
 
 ---
 
@@ -121,11 +122,9 @@ NR experiments **default-off**. wilsjo2 carries no `.ai-os/` / `CLAUDE.md` / `AG
   compile-verified only — validate in-game before relying on them.
 
 **jitter-cancel prototype** (`memory/plans/2026-09-07-dlssnr-presr-jitter-cancel-mv.md`): committed
-`639a58ec` on `experiment/dlssnr-presr-jitter-mv`, pushed; **PR janblade#2 (experiment -> main)
-open**. First in-game pass "barely noticeable"; landing default-off, sweep continues. **PR #2 now
-conflicts with the wilsjo2 NR changes** (`dlssnr.hlsl`, `DlssNr_Dx12.cpp`, precompiled shaders,
-`Config.*`, `DlssNr_Menu.cpp`) — needs `experiment` rebased onto the new `main` before it merges
-cleanly. Not done (not requested).
+`639a58ec` on `experiment/dlssnr-presr-jitter-mv`, pushed. **[2026-09-17, MEMORY_CONSOLIDATE] PR
+janblade#2 -- confirmed MERGED (`gh pr view 2`), not still-open/conflicting as this note
+originally said.** Whatever rebase the merge needed evidently happened; superseded by later work.
 
 **AI-OS framework v2.8.0** committed `91603612`. `docs/dlssnr-binary-dump/` still untracked (1.5MB).
 

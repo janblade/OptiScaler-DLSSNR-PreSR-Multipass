@@ -215,6 +215,21 @@
         "core.observability.sk"
       ],
       "protected": false
+    },
+    {
+      "id": "core.ux-review.sk",
+      "name": "UI/UX Review — Universal Heuristics, Applied to This Project's Actual Surface",
+      "version": "1.0.0",
+      "description": "Reviews new or existing menu controls (this project's only UI: the ImGui in-game tuning overlay) against established usability principles filtered to what transfers to a live, real-time overlay, cross-referenced against this codebase's own already-converged conventions.",
+      "entrypoint": "registry/core.ux-review.sk/SKILL.md",
+      "commands": [
+        "UX_REVIEW"
+      ],
+      "dependencies": [
+        "core.simplicity.sk",
+        "core.observability.sk"
+      ],
+      "protected": false
     }
   ]
 }

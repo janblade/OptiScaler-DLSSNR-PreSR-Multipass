@@ -29,7 +29,7 @@ steps partway through.
 
 Most work is one flat plan. A large initiative that splits into several independently
 shippable pieces gets an **epic** instead — one plan file with `## Story` sections, each
-carrying its own acceptance criteria and steps (`PLAN_WRITE` step 2 decides which). This is
+carrying its own acceptance criteria and steps (`PLAN_WRITE` step 3 decides which). This is
 `core.architect.sk` Phase 3's feature/story/acceptance-criteria decomposition applied to
 in-project work instead of greenfield — same shape, same discipline, per task. `PLAN_RETRO`
 closes an epic with a structured lessons pass.
@@ -46,6 +46,9 @@ closes an epic with a structured lessons pass.
   opinion on the diff: once per flat plan at completion, once per epic story at the
   story-done gate. `PLAN_EXECUTE` implements in-thread, so it calls the Review Pass only,
   not `DEV_IMPLEMENT_REVIEWED` whole (which also dispatches an implementer subagent)
+- `core.simplicity.sk` — its **Simplicity Ladder** runs before writing each step's code
+  (`PLAN_EXECUTE` step 2), at the project's archetype-derived intensity; this skill
+  otherwise had no caller in the plan path (EP-70)
 
 ## Commands
 
@@ -80,20 +83,25 @@ Turn a clarified feature into a concrete, ordered implementation plan.
 ```
 
 **Procedure:**
-1. If the request is non-trivial and `PLAN_BRAINSTORM` hasn't run this task yet, run it
+1. **Check for a reusable workflow.** Read `memory/procedural/workflows.json` for an
+   entry whose `trigger` matches this request. Match → present it as a starting point
+   (adapt its `steps` rather than drafting from scratch), tell the user which workflow
+   matched. If the user proceeds with it, bump that entry's `success_count` and
+   `last_used` when the plan is later written (step 7). No match → continue as normal.
+2. If the request is non-trivial and `PLAN_BRAINSTORM` hasn't run this task yet, run it
    first (or ask the user if they'd rather skip straight to planning).
-2. **Decide the form — flat plan or epic.** Epic only when **all** hold: the work splits
+3. **Decide the form — flat plan or epic.** Epic only when **all** hold: the work splits
    into 2–5 pieces that each deliver independently shippable, separately-verifiable value
    (each could ship alone against its own acceptance criteria); the pieces run in an
    independent or explicitly-stated dependency order; and a single flat step list would
    exceed ~15 steps or mix unrelated verification surfaces. Otherwise flat. Unsure → ask
    the user "one plan, or an epic with N stories?" State the decision and the story list in
    one line — same match-once discipline as `BOOT.md` §4.
-3. Break the work into discrete, ordered steps (flat plan), or per story into acceptance
+4. Break the work into discrete, ordered steps (flat plan), or per story into acceptance
    criteria + steps (epic). Each step must be concrete enough that a literal-minded
    executor doesn't need to re-derive intent — name specific files/functions where already
    known, not just "update the backend."
-4. For each step that changes behavior, note how it gets verified (which test, which
+5. For each step that changes behavior, note how it gets verified (which test, which
    manual check) — ties directly into `core.testing.sk`'s TDD discipline: a step that adds
    behavior should name the test that proves it, written before the implementation. For an
    epic, each story also gets an `### Acceptance Criteria` block (2–5 observable,
@@ -102,12 +110,13 @@ Turn a clarified feature into a concrete, ordered implementation plan.
    runs it through `core.self-healing.sk`'s Verification-Before-Completion Protocol before
    the story is `done`, and an item that can't be exercised is disclosed per that
    protocol's step 4, never ticked silently.
-5. Present the full plan (flat) or the whole epic — every story, every acceptance criterion
+6. Present the full plan (flat) or the whole epic — every story, every acceptance criterion
    — to the user. Wait for approval before `PLAN_EXECUTE` starts — same "present, wait for
    approval" pattern as `core.architect.sk`'s Phase 2/3.
-6. Write the approved plan to its own file: `memory/plans/<YYYY-MM-DD>-<slug>.md`, where
+7. Write the approved plan to its own file: `memory/plans/<YYYY-MM-DD>-<slug>.md`, where
    `<slug>` is a short kebab-case name from the feature (`add-pkce-flow`, not the whole
-   sentence) and `<YYYY-MM-DD>` is today.
+   sentence) and `<YYYY-MM-DD>` is today. Reused a workflow at step 1 → update that
+   `workflows.json` entry's `success_count`/`last_used` now.
 
    **Flat plan:**
    ```markdown
@@ -122,7 +131,7 @@ Turn a clarified feature into a concrete, ordered implementation plan.
    what's explicitly out of scope>
 
    ## Steps
-   1. [ ] <step> — verify: <the test or check from procedure step 4>
+   1. [ ] <step> — verify: <the test or check from procedure step 5>
    2. [ ] ...
    ```
 
@@ -180,9 +189,12 @@ Work an approved plan step by step.
    the path given in `--plan`. **Flat plan:** set `Status:` to `in-progress`. **Epic**
    (`Type: epic`): the active story is the lowest-numbered story not `done` whose
    `depends on` stories are all `done`; set that story's `Status:` to `in-progress`.
-2. Execute one step at a time. After each step, run its verification (per `PLAN_WRITE`
-   step 4 and `core.self-healing.sk`'s Verification-Before-Completion Protocol) before
-   moving to the next — don't batch verification to the end.
+2. Execute one step at a time. Before writing a step's code, apply `core.simplicity.sk`'s
+   Simplicity Ladder — stop at the first rung that holds — at the project's
+   archetype-derived intensity (`core.simplicity.sk`'s Intensity table; no separate flag on
+   the plan itself). After each step, run its verification (per `PLAN_WRITE` step 5 and
+   `core.self-healing.sk`'s Verification-Before-Completion Protocol) before moving to the
+   next — don't batch verification to the end.
 3. Check off each step (`[ ]` → `[x]`) in the plan file as it completes. **Epic story-done
    gate:** when every step in the active story is `[x]`, run that story's
    `### Acceptance Criteria` through the Verification-Before-Completion Protocol — tick
@@ -215,6 +227,20 @@ Work an approved plan step by step.
    "done"), and for an epic offer `PLAN_RETRO`. The plan file stays in `memory/plans/` as a
    dated record — `TASK_CLOSE`/`MEMORY_CONSOLIDATE` handle its eventual pruning
    (`core.memory.sk`), not this command.
+7. **Offer to save a reusable workflow — only if the pattern is genuinely repeatable for
+   this project**, not a one-off feature. Ask the user; on yes, append to
+   `memory/procedural/workflows.json`, matching its existing schema: `id` (kebab-slug),
+   `name`, `description`, `trigger` (when to reuse this — the pattern `PLAN_WRITE` step 1
+   will later match against), `steps` (each plan step generalized past this one instance
+   — `action`, `tool`, `success_criteria`; `parameters` only when the step's tool takes
+   structured flags, e.g. an `OS_COMMAND` invocation, omitted otherwise; `fallback` left
+   `null` if none observed), `learned_from` (this plan's file path), `success_count: 1`,
+   `last_used` (now), `pinned: false`, `project_only` (`true` only if this pattern is
+   specific to this repo's own dev process and must never reach an installed project —
+   `false`/omitted for a normal project workflow; EP-75). Skip silently for one-off work
+   — most plans are not reusable patterns, and a `workflows.json` full of one-time features
+   would make step 1's
+   matching noise, not signal.
 
 ---
 
@@ -276,7 +302,7 @@ by natural language ("retro on the checkout epic", "what did we learn from that 
    into steps in the first place; see `core.self-healing.sk`'s Verification-Before-
    Completion Protocol.
 4. **Reaching for an epic on ordinary work** — the epic form is for a genuine multi-piece
-   initiative (`PLAN_WRITE` step 2's three-part test). A two-story "epic" where the stories
+   initiative (`PLAN_WRITE` step 3's three-part test). A two-story "epic" where the stories
    aren't independently shippable is just a flat plan with extra headers. When in doubt,
    flat.
 5. **Treating a `## Retro` as a promotion** — `PLAN_RETRO` proposes lesson candidates; it
@@ -286,3 +312,13 @@ by natural language ("retro on the checkout epic", "what did we learn from that 
    independent second opinion is `core.dev-loop.sk`'s Review Pass, which `PLAN_EXECUTE`
    runs once per flat plan and once per epic story (EP-67); before that it only ran when
    `DEV_IMPLEMENT_REVIEWED` was invoked by name.
+7. **Treating an approved plan as license to skip the Simplicity Ladder** — a step being
+   pre-approved decides *what* to build, not *how*. The ladder still governs each step's
+   implementation choice (reuse vs. new code, stdlib vs. hand-rolled) at `PLAN_EXECUTE`
+   step 2 (EP-70); before that it only ran when `SIMPLIFY_REVIEW`/`SIMPLIFY_AUDIT` was
+   invoked by name, post-hoc on a diff that already existed.
+8. **Saving every completed plan as a `workflows.json` entry** — `PLAN_EXECUTE` step 7
+   (EP-74) is a judgment call, not a habit. Most feature work is one-off; a workflow
+   entry is only worth writing when the *pattern* (not this specific feature) would
+   genuinely recur. A file full of one-time plans makes `PLAN_WRITE` step 1's matching
+   noise instead of signal — skip silently far more often than not.

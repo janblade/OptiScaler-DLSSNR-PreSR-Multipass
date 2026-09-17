@@ -34,9 +34,13 @@ Diagnose system issues.
 ```
 
 **Procedure:**
-1. **Framework Diagnosis:** Review `ultimate_rules.md` and `BOOT.md` to ensure you haven't violated any governance constraints.
-2. **Project Diagnosis:** Run tests or builds to identify the root cause of the current failure.
-3. **Report Findings:** Clearly explain the root cause of the failure to the user before attempting a fix.
+1. **Check for a known fix.** Read `memory/procedural/playbooks.md` and scan playbook
+   titles and `### When to Use` lines for one matching this failure's symptom (error
+   message, stack trace, or failing command). Match → follow its `### Steps` directly,
+   tell the user which playbook matched and why, then skip to step 4. No match → continue.
+2. **Framework Diagnosis:** Review `ultimate_rules.md` and `BOOT.md` to ensure you haven't violated any governance constraints.
+3. **Project Diagnosis:** Run tests or builds to identify the root cause of the current failure.
+4. **Report Findings:** Clearly explain the root cause of the failure to the user before attempting a fix.
 
 ---
 
@@ -246,14 +250,32 @@ Do not blindly retry a 4th time. Escalate to the user and ask for guidance or al
 ## Repair Protocol
 
 When you encounter a persistent failure:
-1. Stop the current action chain.
-2. Formulate a new hypothesis. If the local fix isn't working, consider if the root cause is in a different file or dependency.
-3. Use your file reading tools (`view_file`, `grep_search`) to gather broader context.
-4. Attempt an alternative strategy.
-5. **If the repair is successful**, ask the user: *"I have successfully repaired the issue. Would you like me to document this fix in `playbooks.md` so I know how to resolve it automatically next time?"*
+1. **Check `memory/procedural/playbooks.md` first** — this loop-triggering failure may be
+   one it already has the answer to (same check as `HEAL_DIAGNOSE` step 1, restated here
+   because this protocol also fires ambiently on loop detection, not only via an explicit
+   `HEAL_DIAGNOSE` invocation). Match → follow its `### Steps`, tell the user which
+   playbook matched, skip the rest of this protocol. No match → continue.
+2. Stop the current action chain.
+3. Formulate a new hypothesis. If the local fix isn't working, consider if the root cause is in a different file or dependency.
+4. Use your file reading tools (`view_file`, `grep_search`) to gather broader context.
+5. Attempt an alternative strategy.
+6. **If the repair is successful**, ask the user: *"I have successfully repaired the
+   issue. Would you like me to document this fix in `playbooks.md` so `HEAL_DIAGNOSE` can
+   find it automatically next time?"* On yes, append a new `## Playbook: <short
+   descriptive name>` section in the same shape as the file's existing entries —
+   `### When to Use` (the symptom/error signature this matches) and `### Steps` (the
+   working fix, generalized past this one file/instance) — not free-form notes, so step 1
+   above can actually match against it later.
 
 ## Common Mistakes
 
 1. **Blind Retries** — Retrying the exact same command hoping it will work.
 2. **Ignoring Root Causes** — Fixing the symptom instead of the underlying architectural flaw.
 3. **Not Logging Repairs** — Every repair is a learning opportunity. Always log what was broken and how it was fixed.
+4. **Re-diagnosing a failure `playbooks.md` already has a fix for** — check it first
+   (`HEAL_DIAGNOSE` step 1 / Repair Protocol step 1) before spending a fresh diagnosis pass
+   on a problem already solved once. A playbook that never gets checked is why the
+   diagnosis effort repeats forever instead of only once (EP-72).
+5. **Writing a playbook entry as free-form notes** — an undocumented shape can't be
+   matched against later. New entries from the Repair Protocol follow the existing
+   `## Playbook:` / `### When to Use` / `### Steps` structure, not prose.

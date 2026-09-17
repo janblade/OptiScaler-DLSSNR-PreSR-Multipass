@@ -290,6 +290,13 @@ float WhitePoint()
 
 static const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
 
+// The dual-floor ratio idiom's shared constant (see its own fuller explanation where it is first
+// used, around `lumaRatio` in the resolve): added to both sides of a luminance ratio so it falls
+// smoothly to 1 near black instead of diverging. Hoisted to file scope, not a local inside
+// CSMain, so `ApplyReplaceGuard` below can share the exact same floor rather than either
+// duplicating the literal or threading it through as a parameter.
+static const float kRatioFloor = 1.0 / 512.0;
+
 // sRGB rather than a plain 2.2 power: it is what an SDR game buffer actually carries, and the model was
 // trained on those.
 float3 LinearToSrgb(float3 v)
@@ -557,6 +564,26 @@ float3 CubeScaleResidual(float3 P, float3 T)
     }
 
     return P + saturate(alpha) * d;
+}
+
+// Replace's highlight/shadow guard: bounds how far a Replace pixel's luminance may sit from the
+// native frame's, the same invariant Composed's own `boundedRatio` already holds everywhere.
+// Multiplicative rescale alone cannot pull an exact zero vector back up -- `v *= anything` stays
+// zero regardless of the multiplier -- so a genuinely degenerate decode (NeutwoDecode/
+// HybridDecode's own `m <= 1e-6` early-out, a fully collapsed near-black answer) is handled the
+// same way the composed path treats an unusable model answer (`modelLuma <= 1e-5 -> upgraded =
+// original`, above): fall back to the native frame rather than leaving the pixel pinned at black
+// no matter what the guard asks for.
+float3 ApplyReplaceGuard(float3 v, float3 nativeOriginal, float referenceLuma, float guard)
+{
+    float vLuma = dot(max(v, 0.0), kLuma);
+
+    if (vLuma <= 1e-5)
+        return nativeOriginal;
+
+    float ratio = (vLuma + kRatioFloor) / (referenceLuma + kRatioFloor);
+    float boundedRatio = clamp(ratio, 1.0 / guard, guard);
+    return v * (boundedRatio / max(ratio, 1e-6));
 }
 
 [numthreads(8, 8, 1)]
@@ -1093,7 +1120,6 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // Adding the same floor above and below leaves bright pixels alone -- where luminance is far
     // larger than the floor the term vanishes -- while making the ratio fall smoothly to one as
     // luminance approaches zero. No edit at all is the right answer for a pixel with no light in it.
-    const float kRatioFloor = 1.0 / 512.0;
     float lumaRatio = (upgradedLuma + kRatioFloor) / (originalLuma + kRatioFloor);
 
     // Where detail strength above 1 goes.
@@ -1156,31 +1182,6 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     else if (gReversibleMode == 4)
         result = gPassthrough != 0 ? modelDirect : HybridDecode(modelDirect);
 
-    // The one exception to "no highlight guard" above: NeutwoDecode/HybridDecode's own comments
-    // both note their inverse diverges as the encoded peak approaches 1 (a near-white pixel --
-    // sky, cloud, sun glare), clamped just short of the pole but still capable of a ~700x
-    // amplification there. Composed never sees this because every pixel it produces already
-    // passed through `guard` above; Replace bypassed it entirely by design, so ordinary small
-    // per-pixel model noise near white had nothing stopping it from exploding into a huge decoded
-    // value. Confirmed as the actual cause of a vertical-line report under Apply-before-SR +
-    // reduced model resolution: invisible in Composed (always guarded), worst in Replace (never
-    // guarded), and tracking model-resolution % (a smaller working raster gives the model more
-    // per-pixel noise to begin with) -- see plans/2026-09-17-dlssnr-presr-reduced-res-aliasing.md.
-    // Three earlier attempts tried smoothing the pre-decode sample instead and made no visible
-    // difference, which fits: smoothing reduces the noise's amplitude but not the decode's
-    // derivative, and the derivative is what turns even a tiny remaining variation into a huge one
-    // right at the pole. This reapplies the same `guard`, in the same one-scalar-from-luminance
-    // shape as `boundedRatio`, so a pixel already inside it -- the ordinary case -- is untouched
-    // (Replace still keeps its "the model's answer IS the picture" character), and only pixels the
-    // decode sent outside the guard get pulled back to its edge.
-    if ((gReversibleMode == 2 || gReversibleMode == 4) && gPassthrough == 0)
-    {
-        float resultLuma = dot(max(result, 0.0), kLuma);
-        float replaceRatio = (resultLuma + kRatioFloor) / (originalLuma + kRatioFloor);
-        float boundedReplaceRatio = clamp(replaceRatio, 1.0 / guard, guard);
-        result *= boundedReplaceRatio / max(replaceRatio, 1e-6);
-    }
-
     // Replace-only detail injection. Below the frame's own resolution the model computed its
     // answer at a reduced working size -- SGSR1's enlarge can sharpen that answer but cannot
     // invent detail the model never saw, and Replace has no native-resolution fallback the way
@@ -1217,6 +1218,28 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         float detailRatio = (originalLuma + gReplaceDetailStrength * highFreq + kRatioFloor) / (originalLuma + kRatioFloor);
         result *= max(detailRatio, 0.0);
     }
+
+    // The one exception to "no highlight guard" above (Replace's own comment, a few lines up):
+    // NeutwoDecode/HybridDecode's own comments both note their inverse diverges as the encoded
+    // peak approaches 1 (a near-white pixel -- sky, cloud, sun glare), clamped just short of the
+    // pole but still capable of a ~700x amplification there. Composed never sees this because
+    // every pixel it produces already passed through `guard` above; Replace bypassed it entirely
+    // by design, so ordinary small per-pixel model noise near white had nothing stopping it from
+    // exploding into a huge decoded value. Confirmed as the actual cause of a vertical-line report
+    // under Apply-before-SR + reduced model resolution: invisible in Composed (always guarded),
+    // worst in Replace (never guarded), and tracking model-resolution % (a smaller working raster
+    // gives the model more per-pixel noise to begin with) -- see
+    // plans/2026-09-17-dlssnr-presr-reduced-res-aliasing.md. Three earlier attempts tried
+    // smoothing the pre-decode sample instead and made no visible difference, which fits:
+    // smoothing reduces the noise's amplitude but not the decode's derivative, and the derivative
+    // is what turns even a tiny remaining variation into a huge one right at the pole.
+    //
+    // Placed after detail injection, not right after the decode, so the guard bounds what
+    // actually reaches the screen rather than an intermediate value detail injection (whose own
+    // `detailRatio` is not itself guard-clamped, and can run up to roughly `1 + gReplaceDetailStrength`,
+    // ~3x at the slider's own maximum) could still widen back past it.
+    if ((gReversibleMode == 2 || gReversibleMode == 4) && gPassthrough == 0)
+        result = ApplyReplaceGuard(result, original, originalLuma, guard);
 
     // Back out of the normalised space the composition worked in.
     result *= normScale;

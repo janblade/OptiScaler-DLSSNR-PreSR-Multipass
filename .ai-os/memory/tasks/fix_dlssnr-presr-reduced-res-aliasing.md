@@ -407,6 +407,47 @@ Final diff against `main`: only `dlssnr.hlsl` plus its two recompiled shader bin
 C++ changes ship; the exposure-fix C++ edits were fully reverted and confirmed at zero diff
 against `main` before this close-out.
 
+## Post-commit code review (same session)
+
+Committed (`4016dda5`), then ran the `code-review` skill against the diff. Four findings, all
+legitimate, three fixed:
+
+1. **Real correctness gap**: the guard's `result *= boundedRatio/max(ratio,1e-6)` rescale cannot
+   pull an exact zero vector back up -- if `NeutwoDecode`/`HybridDecode` early-out at their own
+   `m <= 1e-6` guard (a fully collapsed near-black decode), the guard's multiply-by-anything left
+   it pinned at black regardless of what the guard "wanted." Fixed: extracted a proper
+   `ApplyReplaceGuard()` helper with an explicit degenerate-luma fallback to the native frame,
+   mirroring the composed path's own existing `modelLuma <= 1e-5 -> upgraded = original` pattern
+   rather than inventing new behaviour.
+2. **Real correctness gap**: the guard was applied right after the decode, but the pre-existing
+   Replace-only detail injection block runs *after* it and can multiply `result` by up to
+   `1 + gReplaceDetailStrength` (~3x at the slider's max, 2.0) with no clamp against `guard` --
+   silently able to push a pixel back past the bound the guard had just established. Fixed:
+   relocated the guard call to run after detail injection instead of before it, so it's the
+   actual last step before `result *= normScale`, bounding what reaches the screen rather than an
+   intermediate value.
+3. **Stale UI text**: `DlssNr_Menu.cpp`'s "HDR mapping" tooltip still said "Replace bypasses
+   [the highlight controls] and may flicker" -- exactly backwards after this fix, since the
+   Highlight guard slider is now the primary lever for the artifact this fix addresses. Reworded
+   to say Replace still respects the guard and to point at it when Replace flickers/bands.
+4. **Maintainability note, not fixed as suggested**: reviewer proposed a single helper shared
+   between the composed and Replace guard-clamp idioms. Not done exactly that way -- composed's
+   clamp operates on an already-derived `amplified` ratio mid-computation, not a raw colour
+   triple, so unifying it would have meant restructuring stable, working composed-path code for a
+   Replace-only fix. Instead scoped the new `ApplyReplaceGuard()` helper to Replace alone, which
+   still resolves the underlying duplication-risk concern (the pattern exists in exactly one place
+   now, not two or three) without touching the composed path at all.
+
+Also hoisted `kRatioFloor` from a `CSMain`-local `const float` to file scope (alongside the
+already-global `kLuma`), since the new top-level `ApplyReplaceGuard()` helper needed it and
+duplicating the literal instead of sharing the one already in use would have reintroduced exactly
+the kind of drift-risk the reviewer's 4th finding warned about.
+
+Recompiled both shader targets again after these fixes, both clean. Debug x64 rebuilt 10:29,
+Release x64 10:29, both 0 errors, 0 warnings from any touched file. `git diff --stat` since the
+first commit: `DlssNr_Menu.cpp` (1 line) + `dlssnr.hlsl` (75 lines) + the two recompiled shader
+binary/header pairs -- no other files touched by the review fixes.
+
 ## Context
 
 User reported, then diagnosed live in-game across this session: visible vertical lines (most

@@ -164,3 +164,21 @@
   engineering default. Worth its own dedicated plan if it comes up again (a different
   game's report, or this one revisited) -- do not silently fold it into an unrelated future
   change just because the diagnosis is already written down here.
+
+- **`ImGui::IsItemDeactivatedAfterEdit()` (and the whole `IsItem*` family) reports on
+  whatever widget was most recently submitted -- inserting a new widget between a slider and
+  a later deferred-commit check silently breaks the check.** `DlssNr_Menu.cpp`'s "Model
+  resolution" slider uses a drag-live/commit-on-release pattern: the slider writes to a
+  pending local on every frame, and a separate `if (ImGui::IsItemDeactivatedAfterEdit())`
+  further down (after an intervening `ImGui::EndDisabled()`) commits that pending value into
+  config only once the user releases the handle. Adding a `SmallButton("Reset##...")`
+  directly after the slider (to fix a missing-Reset-button UX finding) made the button the
+  new "last item" ImGui tracks deactivation state for -- so releasing the slider stopped
+  committing anything at all, with no compile error, no warning, and no visible symptom
+  until a user reported the slider "not taking effect." Fix: capture
+  `IsItemDeactivatedAfterEdit()` into a local *immediately* after the slider call, before any
+  other widget (including a same-line button) is submitted, and use that captured bool in
+  the later check. `DeferredSlider` (the reusable helper a few lines above in the same file)
+  already gets this right by construction -- it checks deactivation before adding its own
+  Reset button. Any future Reset/helper button added next to an existing slider in this file
+  needs the same ordering, not just this one call site.

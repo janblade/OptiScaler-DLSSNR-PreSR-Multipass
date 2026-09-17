@@ -16,3 +16,17 @@
   independent Review Pass, not the author, and fixed by switching to the same dual-floor
   shape as `lumaRatio`. Reuse `kRatioFloor` itself (already in scope through the whole
   resolve function) rather than restating the literal.
+
+- **A config value with a semantic ceiling (e.g. `DlssNrMaxRatio`/"Highlight guard", bounded
+  to `[1.0, 8.0]`) must be clamped at every consumption site, not just enforced by the UI
+  slider's `min`/`max`.** Narrowing a slider's range only bounds *future* writes through that
+  control -- a value already stored beyond the new range (from before the slider was
+  narrowed, or from a hand-edited `.ini`) stays exactly as out-of-range as before, and any
+  consumer that reads it with `value_or_default()` and no clamp applies it unbounded
+  regardless of what the menu now shows. `DlssNr_Late.inl` and `DlssNr_DeferredSr.inl`
+  already did `std::clamp(cfg.DlssNrMaxRatio.value_or_default(), 1.0f, 8.0f)` at their call
+  sites; `DlssNrFeature_Vk.cpp` and `DlssNr_Dx12.cpp` didn't, found by a `code-review` pass
+  after a menu fix tightened the slider's range from 30x to 8x and assumed that was
+  sufficient. Fixed by matching the clamp at all four sites. When a config field's UI range
+  changes to enforce a new ceiling, grep every other reader of that field and clamp there
+  too -- the widget's range is not the enforcement mechanism.

@@ -25,6 +25,15 @@ namespace DlssNr
 // unrelated setting that happens to share this file.
 static constexpr float MaxHighlightGuard = 8.0f;
 
+// Whether this game has ever offered a Game-exposure value. Shared by the White-point-source
+// panel's own "No game exposure available" readout and the Optimized Defaults preset, so the
+// two stay in agreement if this definition ever changes (e.g. gains a staleness check).
+static bool HaveGameExposure()
+{
+    return DlssNr::IsRunningVk() ? DlssNr::ExposureOfferedVk()
+                                  : DlssNr::GameExposureStatus().everOffered;
+}
+
 // The "(?)" marker every control carries, matching the rest of the menu.
 static void HelpMarker(const char* tip)
 {
@@ -173,12 +182,8 @@ static void ApplyOptimizedDefaults(Config* config, int& pendingScale)
 
     // Highlight guard: 1.3x when this game has never offered an exposure value (Game
     // exposure above then has nothing real to work from and falls back to manual paper
-    // white internally), 2.0x otherwise. Same "have we ever seen an exposure" check as the
-    // White-point-source panel's own "No game exposure available" readout, just run here
-    // ahead of time so this preset gets a sane starting guard either way.
-    const bool haveExposure = DlssNr::IsRunningVk() ? DlssNr::ExposureOfferedVk()
-                                                     : DlssNr::GameExposureStatus().everOffered;
-    config->DlssNrMaxRatio = haveExposure ? 2.0f : 1.3f;
+    // white internally), 2.0x otherwise.
+    config->DlssNrMaxRatio = HaveGameExposure() ? 2.0f : 1.3f;
 }
 
 void RenderMenu(Config* config, float menuResScale)
@@ -742,7 +747,7 @@ void RenderMenu(Config* config, float menuResScale)
         {
             const auto ex = DlssNr::GameExposureStatus();
             const bool vk = DlssNr::IsRunningVk();
-            const bool haveExposure = vk ? DlssNr::ExposureOfferedVk() : ex.everOffered;
+            const bool haveExposure = HaveGameExposure();
 
             const float anchorNow = DlssNr::ExposureScan::BestValue();
             const bool haveAnchor = !DlssNr::ExposureScan::Anchors().empty();

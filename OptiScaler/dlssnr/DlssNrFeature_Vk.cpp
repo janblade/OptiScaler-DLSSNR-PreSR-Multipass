@@ -1048,7 +1048,7 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
     encode.ColourStrength = cfg.DlssNrColourStrength.value_or_default();
     encode.ReplaceDetailStrength = cfg.DlssNrReplaceDetailStrength.value_or_default();
     encode.ModelWorkScale = (reduced && workScale < 1.0f) ? workScale : 1.0f;
-    encode.MaxRatio = cfg.DlssNrMaxRatio.value_or_default();
+    encode.MaxRatio = std::clamp(cfg.DlssNrMaxRatio.value_or_default(), 1.0f, 8.0f);
     encode.Transfer = cfg.DlssNrTransfer.value_or_default();
     encode.DebugScale = cfg.DlssNrWhitePointScale.value_or_default();
     encode.GuideWidth = guideWidth;

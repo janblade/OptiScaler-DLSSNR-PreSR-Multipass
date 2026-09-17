@@ -21,6 +21,10 @@
 namespace DlssNr
 {
 
+// Highlight guard's own ceiling -- independent of the model pass limit, which is an
+// unrelated setting that happens to share this file.
+static constexpr float MaxHighlightGuard = 8.0f;
+
 // The "(?)" marker every control carries, matching the rest of the menu.
 static void HelpMarker(const char* tip)
 {
@@ -116,6 +120,67 @@ static bool InheritedProfileCombo(const char* label, CustomOptional<uint32_t, No
     return true;
 }
 
+// This fork's recommended starting point. Touches only the settings named below; anything
+// else in the panel (Pass 2/3 overrides, skin/environment sliders, Compare, Debug view,
+// Hold frame, Downscaler, exposure-scan settings, etc.) is left exactly as the user had it.
+static void ApplyOptimizedDefaults(Config* config, int& pendingScale)
+{
+    config->DlssNrEnabled = true;
+    config->DlssNrFinishedPicture = false;
+    config->DlssNrRunBeforeSr = false;
+    config->DlssNrPrecision = 0u; // NVIDIA (FP8)
+    config->DlssNrDeferredDlss = false;
+    config->DlssNrResidualFg = false;
+    config->DlssNrResidualFgApproxCamera = false;
+    config->DlssNrApplyModel = true;
+    config->DlssNrUnlockPasses = false;
+    config->DlssNrPasses = 1u;
+
+    // Total-pixel-count check against 1920x1080 (2,073,600px), not a height-only check --
+    // an ultrawide at 1080 tall but more total pixels counts as "above 1080p" here. No
+    // currentFeature (no game running yet) is treated as <=1080p.
+    const auto feature = State::Instance().currentFeature;
+    const unsigned long long outputPixels =
+        feature ? (unsigned long long) feature->TargetWidth() * feature->TargetHeight() : 0ull;
+
+    if (outputPixels > 1920ull * 1080ull)
+    {
+        config->DlssNrModelResolutionAuto = true;
+    }
+    else
+    {
+        config->DlssNrModelResolutionAuto = false;
+        config->DlssNrWorkingScale = 1.0f; // 100%
+        pendingScale = -1;                 // clear any in-flight drag
+    }
+
+    config->DlssNrTransfer = 1u;                // Enlargement: Matched residual
+    config->DlssNrReducedUpscaleMethod = 2u;    // Enlarge filter: SGSR1 (input + output, sharpest)
+    config->DlssNrSgsr1EdgeThreshold = 0.3f;
+    config->DlssNrSgsr1EdgeSharpness = 0.9f;
+    config->DlssNrTransferStrength = 1.5f;      // Detail strength
+    config->DlssNrColourStrength = 1.0f;
+    config->DlssNrReversibleMode = 2u;          // HDR mapping: Reversible curve + replace
+    config->DlssNrReplaceDetailStrength = 2.0f;
+    config->DlssNrStyle = 0u;                   // Pass 1 Style: Standard
+    config->DlssNrIntensity = 0.98f;
+    config->DlssNrLocalStructure = 0.98f;
+    config->DlssNrLocalTone = 1.75f;
+    config->DlssNrSkinStructure = -1.0f;
+    config->DlssNrAutoMask = true;
+    config->DlssNrWhitePointSource = 1u;        // Game exposure
+    config->DlssNrWhitePointTrim = 1.0f;
+
+    // Highlight guard: 1.3x when this game has never offered an exposure value (Game
+    // exposure above then has nothing real to work from and falls back to manual paper
+    // white internally), 2.0x otherwise. Same "have we ever seen an exposure" check as the
+    // White-point-source panel's own "No game exposure available" readout, just run here
+    // ahead of time so this preset gets a sane starting guard either way.
+    const bool haveExposure = DlssNr::IsRunningVk() ? DlssNr::ExposureOfferedVk()
+                                                     : DlssNr::GameExposureStatus().everOffered;
+    config->DlssNrMaxRatio = haveExposure ? 2.0f : 1.3f;
+}
+
 void RenderMenu(Config* config, float menuResScale)
 {
 
@@ -125,6 +190,20 @@ void RenderMenu(Config* config, float menuResScale)
     {
         ScopedIndent indent {};
         ImGui::Spacing();
+
+        // Moved up here (out of its original spot just above the Model-resolution slider) so
+        // the "Optimized Defaults" preset button, which sits earlier in the panel, can clear
+        // an in-flight drag when it overwrites the setting. Same static-local lifetime either
+        // way.
+        static int pendingScale = -1;
+
+        ImGui::SeparatorText("Presets");
+        if (ImGui::Button("Optimized Defaults"))
+            ApplyOptimizedDefaults(config, pendingScale);
+        HelpMarker("Set this fork's recommended starting point: NR after Super Resolution, FP8 precision, "
+                   "1 pass, Matched residual + SGSR1 enlargement, Reversible curve + replace HDR mapping, "
+                   "and game-exposure white point. Overwrites the settings below; anything not listed here "
+                   "is left as you have it.");
 
         bool enabled = config->DlssNrEnabled.value_or_default();
         if (ImGui::Checkbox("Enable Neural Rendering", &enabled))
@@ -193,17 +272,17 @@ void RenderMenu(Config* config, float menuResScale)
         {
             if (ImGui::Checkbox("Generate before SR, apply after SR (DLSS)", &deferredDlss))
                 config->DlssNrDeferredDlss = deferredDlss;
-            HelpMarker("Compute NR at input resolution, upscale its changes with DLSS, then apply them after SR.\nExperimental: may flicker and adds GPU cost. Requires DLSS on DX12 or its bridges; does not support RR.\nOverrides Apply before Super Resolution. Disable Hold frame, Compare and Debug view.");
+            HelpMarker("Compute NR at input resolution, upscale its changes with DLSS, then apply them after SR.\nExperimental: may flicker and adds GPU cost. Requires DLSS on DX12 or its bridges; does not support RR.\nOverrides Apply before SR. Disable Hold frame, Compare and Debug view.");
             if (deferredDlss && rayReconstruction)
-                ImGui::TextWrapped("Generate before / apply after is unavailable with RR. Apply before Super Resolution "
+                ImGui::TextWrapped("Generate before / apply after is unavailable with RR. Apply before SR "
                                    "controls NR placement.");
             else if (deferredDlss)
                 ImGui::TextWrapped("Residual DLSS: %s", DlssNr::DeferredDlssStatus().c_str());
             ImGui::BeginDisabled(finishedPicture || !deferredDlss || rayReconstruction);
             bool residualFg = config->DlssNrResidualFg.value_or_default();
-            if (ImGui::Checkbox("NR every second frame (NVIDIA FG, experimental)", &residualFg))
+            if (ImGui::Checkbox("NR every second frame (NVIDIA Frame Generation, experimental)", &residualFg))
                 config->DlssNrResidualFg = residualFg;
-            HelpMarker("Run NR every other rendered frame and use NVIDIA FG to interpolate its changes.\nRequires the option above. Adds one rendered frame of latency and may misalign effects or UI.\nIf motion vectors are unavailable, each NR result is reused for two frames.");
+            HelpMarker("Run NR every other rendered frame and use NVIDIA Frame Generation (FG) to interpolate its changes.\nRequires the option above. Adds one rendered frame of latency and may misalign effects or UI.\nIf motion vectors are unavailable, each NR result is reused for two frames.");
             bool approxCamera = config->DlssNrResidualFgApproxCamera.value_or_default();
             if (ImGui::Checkbox("Allow approximate FG camera guides (experimental)", &approxCamera))
                 config->DlssNrResidualFgApproxCamera = approxCamera;
@@ -324,6 +403,12 @@ void RenderMenu(Config* config, float menuResScale)
 
             ImGui::PopStyleColor(2);
 
+            // Reset's own label stays plain text -- placed after PopStyleColor so the
+            // passes-based warning colour above doesn't tint it too.
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset##modelpasses"))
+                config->DlssNrPasses = 1u;
+
             HelpMarker("Process the image repeatedly. More passes strengthen the effect and increase GPU cost.\nEach pass has its own settings and history. Start with 1.");
         }
 
@@ -336,7 +421,6 @@ void RenderMenu(Config* config, float menuResScale)
         // down the scratch textures and rebuilds the model. Writing it on each pixel of a drag meant
         // dozens of rebuilds in a second, which is felt as the whole frame hitching. The slider still
         // reads live; only the commit waits.
-        static int pendingScale = -1;
 
         bool resolutionAuto = config->DlssNrModelResolutionAuto.value_or_default();
         const bool autoActive = resolutionAuto && (!beforeSr || rayReconstruction);
@@ -349,6 +433,13 @@ void RenderMenu(Config* config, float menuResScale)
         ImGui::BeginDisabled(autoActive);
         if (ImGui::SliderInt("Model resolution", &scalePercent, 25, 200, "%d%%"))
             pendingScale = scalePercent;
+
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##modelresolution"))
+        {
+            config->DlssNrWorkingScale = 1.0f;
+            pendingScale = -1;
+        }
         ImGui::EndDisabled();
 
         if (!autoActive && ImGui::IsItemDeactivatedAfterEdit() && pendingScale >= 0)
@@ -361,7 +452,7 @@ void RenderMenu(Config* config, float menuResScale)
 
         if (ImGui::Checkbox("Auto (post-SR only)", &resolutionAuto))
             config->DlssNrModelResolutionAuto = resolutionAuto;
-        HelpMarker("When NR runs after Super Resolution -- Apply before Super Resolution off, or Ray Reconstruction, which always runs it after -- derive the working scale from the render:output ratio the upscaler itself already reconstructed detail at, instead of the slider above.\nThat output already reconstructed detail at that ratio, so NR running at the same reduced scale costs nothing extra to tune for. No effect while NR runs before Super Resolution -- the slider applies as usual.");
+        HelpMarker("When NR runs after SR -- Apply before SR off, or Ray Reconstruction, which always runs it after -- derive the working scale from the render:output ratio the upscaler itself already reconstructed detail at, instead of the slider above.\nThat output already reconstructed detail at that ratio, so NR running at the same reduced scale costs nothing extra to tune for. No effect while NR runs before SR -- the slider applies as usual.");
 
         if (autoActive)
             ImGui::TextDisabled("NR scale: %.2fx, derived from the upscaler's render:output ratio.",
@@ -467,11 +558,12 @@ void RenderMenu(Config* config, float menuResScale)
 
         HelpMarker("NR colour strength: 0 = preserve game colours, 1 = model colours, above 1 = stronger saturation.");
 
-        // Experimental. 0 off (soft knee), 1 Neutwo + our composition, 2 Neutwo + pure-inverse replace,
-        // 3 hybrid+composed, 4 hybrid+replace (identity midtones + unclipped highlights). Always shown.
-        static const char* reversibleNames[] = { "Off (soft knee)", "Neutwo proxy + composed",
-                                                 "Neutwo proxy + replace", "Hybrid proxy + composed",
-                                                 "Hybrid proxy + replace" };
+        // Experimental. 0 off (soft knee), 1 Reversible curve + our composition, 2 Reversible curve +
+        // pure-inverse replace, 3 Balanced+composed, 4 Balanced+replace (identity midtones + unclipped
+        // highlights). Always shown.
+        static const char* reversibleNames[] = { "Off (soft knee)", "Reversible curve + composed",
+                                                 "Reversible curve + replace", "Balanced curve + composed",
+                                                 "Balanced curve + replace" };
         int reversible = (int) config->DlssNrReversibleMode.value_or_default();
         if (reversible < 0 || reversible > 4)
             reversible = 0;
@@ -479,7 +571,7 @@ void RenderMenu(Config* config, float menuResScale)
                          IM_ARRAYSIZE(reversibleNames)))
             config->DlssNrReversibleMode = (uint32_t) reversible;
 
-        HelpMarker("Choose how HDR brightness is mapped for NR.\nSoft knee compresses highlights. Neutwo uses a reversible curve. Hybrid preserves midtones and compresses highlights.\nComposed uses the strength control and the Highlight guard below. Replace bypasses the strength control (the model's answer applies directly, uncomposited) but the Highlight guard still bounds it -- lower it if Replace flickers or shows banding near bright highlights.");
+        HelpMarker("Choose how HDR brightness is mapped for NR.\nSoft knee compresses highlights. Reversible curve uses a reversible mapping. Balanced preserves midtones and compresses highlights.\nComposed uses the strength control and the Highlight guard below. Replace bypasses the strength control (the model's answer applies directly, uncomposited) but the Highlight guard still bounds it -- lower it if Replace flickers or shows banding near bright highlights.");
 
         if (reversible == 2 || reversible == 4)
         {
@@ -602,6 +694,10 @@ void RenderMenu(Config* config, float menuResScale)
                 float v = option.value_or_default();
                 if (ImGui::SliderFloat(label, &v, 0.0f, 1.0f, "%.2f"))
                     option = v;
+                ImGui::SameLine();
+                const std::string resetId = std::string("Reset##") + label;
+                if (ImGui::SmallButton(resetId.c_str()))
+                    option = 1.0f;
                 HelpMarker("NR strength in this region: 0 = no change, 1 = full effect.");
             };
             slider("Skin detail / lighting", config->DlssNrSkinDetail);
@@ -885,13 +981,17 @@ void RenderMenu(Config* config, float menuResScale)
                                    ImGuiSliderFlags_Logarithmic))
                 config->DlssNrWhitePointScale = wpScale;
 
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset##paperwhite"))
+                config->DlssNrWhitePointScale = 1.0f;
+
         HelpMarker("Brightness reference used to prepare HDR colour for NR. Higher values darken the model input; lower values brighten it.\nAdjust if NR loses detail or produces colour shifts.");
         }
 
         // Highlight guard, directly under the white point / trim -- it bounds the model's edit and
         // belongs with the exposure controls it works alongside.
         float maxRatio = config->DlssNrMaxRatio.value_or_default();
-        if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, unlockPasses ? (float) MaxPassCount : 8.0f, "%.1fx"))
+        if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, MaxHighlightGuard, "%.1fx"))
             config->DlssNrMaxRatio = maxRatio;
 
         ImGui::SameLine();

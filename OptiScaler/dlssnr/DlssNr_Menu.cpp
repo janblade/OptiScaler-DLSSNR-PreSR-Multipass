@@ -164,9 +164,9 @@ static void ApplyOptimizedDefaults(Config* config, int& pendingScale)
     }
 
     config->DlssNrTransfer = 1u;                // Enlargement: Matched residual
-    config->DlssNrReducedUpscaleMethod = 2u;    // Enlarge filter: SGSR1 (input + output, sharpest)
-    config->DlssNrSgsr1EdgeThreshold = 0.3f;
-    config->DlssNrSgsr1EdgeSharpness = 0.9f;
+    config->DlssNrReducedUpscaleMethod = 3u;    // Enlarge filter: SGSR1 (input only)
+    config->DlssNrSgsr1EdgeThreshold = 0.040f;
+    config->DlssNrSgsr1EdgeSharpness = 2.00f;
     config->DlssNrTransferStrength = 1.5f;      // Detail strength
     config->DlssNrColourStrength = 1.0f;
     config->DlssNrReversibleMode = 2u;          // HDR mapping: Reversible curve + replace
@@ -174,16 +174,12 @@ static void ApplyOptimizedDefaults(Config* config, int& pendingScale)
     config->DlssNrStyle = 0u;                   // Pass 1 Style: Standard
     config->DlssNrIntensity = 0.98f;
     config->DlssNrLocalStructure = 0.98f;
-    config->DlssNrLocalTone = 1.75f;
+    config->DlssNrLocalTone = 1.25f;
     config->DlssNrSkinStructure = -1.0f;
     config->DlssNrAutoMask = true;
     config->DlssNrWhitePointSource = 1u;        // Game exposure
     config->DlssNrWhitePointTrim = 1.0f;
-
-    // Highlight guard: 1.3x when this game has never offered an exposure value (Game
-    // exposure above then has nothing real to work from and falls back to manual paper
-    // white internally), 2.0x otherwise.
-    config->DlssNrMaxRatio = HaveGameExposure() ? 2.0f : 1.3f;
+    config->DlssNrMaxRatio = 2.0f;               // Highlight guard
 }
 
 void RenderMenu(Config* config, float menuResScale)

@@ -479,7 +479,7 @@ void RenderMenu(Config* config, float menuResScale)
                          IM_ARRAYSIZE(reversibleNames)))
             config->DlssNrReversibleMode = (uint32_t) reversible;
 
-        HelpMarker("Choose how HDR brightness is mapped for NR.\nSoft knee compresses highlights. Neutwo uses a reversible curve. Hybrid preserves midtones and compresses highlights.\nComposed uses the strength and highlight controls. Replace bypasses them and may flicker.");
+        HelpMarker("Choose how HDR brightness is mapped for NR.\nSoft knee compresses highlights. Neutwo uses a reversible curve. Hybrid preserves midtones and compresses highlights.\nComposed uses the strength control and the Highlight guard below. Replace bypasses the strength control (the model's answer applies directly, uncomposited) but the Highlight guard still bounds it -- lower it if Replace flickers or shows banding near bright highlights.");
 
         if (reversible == 2 || reversible == 4)
         {

@@ -123,3 +123,44 @@
   runs (e.g. `ModelWorkScale = (reduced && workScale < 1.0f) ? workScale : 1.0f`, mirrored
   into the cbuffer on both DX12 and Vulkan) instead of inferring it in-shader from a
   texture's bound size.
+
+- **Replace mode's `NeutwoDecode`/`HybridDecode` (`dlssnr.hlsl`) has no highlight guard at
+  all, by design** ("Replace mode: the model's answer IS the picture ... no ratio, no
+  highlight guard, no palette blend" -- the file's own comment). Their inverse diverges
+  toward infinity as the encoded peak channel approaches 1 (a near-white pixel: sky, cloud,
+  sun glare), only loosely clamped (`m = min(m, 0.999999)`, still allowing a ~700x
+  amplification), so ordinary small per-pixel model noise near white explodes into a huge,
+  visually obvious swing with nothing downstream to bound it. Composed modes never hit this
+  because every pixel they produce passes through `guard`/`gMaxRatio`'s clamp first.
+  Reported as vertical-line artifacts under Apply-before-SR + reduced model resolution,
+  worst on Hybrid Proxy + Replace, invisible on any Composed mode at the same settings --
+  and **three consecutive fix attempts aimed at the resolve's `gSource`/`gModel` enlarge
+  read (different tap spacings, then a real texel-size bug fix) had zero visible effect**,
+  confirmed via a diagnostic log proving the code was genuinely executing, because none of
+  them touched the actual mechanism: smoothing the pre-decode sample reduces noise
+  amplitude, not the decode's derivative, and the derivative is what turns even a tiny
+  remaining variation into a huge one right at the pole. Fix (`fix/dlssnr-presr-reduced-res-
+  aliasing`): reapply the same `guard`/`gMaxRatio` clamp to Replace's decoded result,
+  confirmed on real hardware (dragging the existing "Highlight guard" slider to 1.0x made
+  the artifact disappear completely). The broader lesson: when three individually
+  well-reasoned attempts at the same code region all produce *zero* observable change (not
+  "some improvement, just not enough" -- literally no difference), that is itself a signal
+  to stop tuning that region and go looking for a completely different mechanism, ideally
+  via direct evidence (a debug view, a log line) rather than a fourth guess.
+
+- **A separate, real bug found mid-investigation is not automatically in scope for the fix
+  that found it.** While diagnosing the Replace-guard issue above, found that
+  `ResolveWhitePoint()`'s "Game exposure" white-point source silently falls back to the
+  static paper-white slider for any game that supplies `DLSS.Pre.Exposure` as a live scalar
+  but no `ExposureTexture` (confirmed for one such game via `OptiScaler.log`: `DLSS.Pre.
+  Exposure` swinging from 1.0 to ~0.38 across a session while the resolved white point sat
+  at a constant 1.00x throughout) -- the menu's own "No game exposure available" message is
+  accurate but doesn't distinguish "no live signal at all" from "a live signal exists but
+  this code path can't use it," which reads as more final than it is. A fix for this
+  (a `DLSS.Pre.Exposure`-alone fallback tier, `ResolveWhitePoint`, DX12 only) was built and
+  verified working, then explicitly reverted at the user's request in favour of shipping
+  the smaller, already-proven Replace-guard fix alone -- not because the exposure fix was
+  wrong, but because scope discipline mid-fix is a real user call to make, not an
+  engineering default. Worth its own dedicated plan if it comes up again (a different
+  game's report, or this one revisited) -- do not silently fold it into an unrelated future
+  change just because the diagnosis is already written down here.

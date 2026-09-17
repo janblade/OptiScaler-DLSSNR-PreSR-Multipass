@@ -2,6 +2,10 @@
 
 Protected-branch working notes. Drained by `MEMORY_CONSOLIDATE`, not `TASK_CLOSE`.
 
+2026-09-17: branch `feat/dlssnr-sgsr1-input-only` created off this HEAD; plan
+memory/plans/2026-09-17-dlssnr-sgsr1-input-only.md moved to that branch's own task file
+(memory/tasks/feat_dlssnr-sgsr1-input-only.md) for the duration of the work.
+
 ## 2026-09-14 — retiring ResidualAcrossRR, forcing post-RR placement — drained via TASK_CLOSE
 
 Full working notes promoted to semantic memory (`TASK_CLOSE`, 2026-09-16, run against this

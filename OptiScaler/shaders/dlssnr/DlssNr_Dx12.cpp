@@ -274,12 +274,15 @@ struct NrState
     // Reduced up-leg. DlssNrReducedUpscaleMethod picks how far this goes: 1 enlarges the answer
     // only (theory said proxy is just a luminance-ratio scalar/unused-in-Replace, so it shouldn't
     // matter much -- in-game feedback said otherwise, still visibly blurrier than enlarging both,
-    // so 2 restores the original dual-enlarge behaviour as an explicit, costlier option). The
-    // proxy, when not SGSR1-enlarged, still correctly reads from modelInput (the real downsampled
-    // source the model saw) via the resolve's own implicit bilinear tap (dlssnr.hlsl:905-910) --
-    // that is not the old colorCopy-vs-modelInput bug ("the low res image got combined with the
-    // final image"), which was comparing against the wrong buffer entirely, not merely a
-    // softer-filtered one.
+    // so 2 restores the original dual-enlarge behaviour as an explicit, costlier option). 3
+    // inverts 1: enlarge the proxy only, leave the answer on the cheap tap -- the model's own
+    // per-frame answer is where SGSR1's edge-vote has been found to misfire on noisy
+    // high-frequency content (see DlssNrSgsr1EdgeThreshold's comment); enlarging only the real
+    // frame gets the sharper proxy without feeding that content to the vote at all. Whichever side
+    // is not SGSR1-enlarged still correctly reads from its own work-resolution source via the
+    // resolve's own implicit bilinear tap (dlssnr.hlsl:931-932) -- that is not the old
+    // colorCopy-vs-modelInput bug ("the low res image got combined with the final image"), which
+    // was comparing against the wrong buffer entirely, not merely a softer-filtered one.
     ID3D12Resource* proxyNative = nullptr;
 
     // Two separate instances, not one reused twice a frame -- like superUp/superDown, each
@@ -2005,10 +2008,12 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         g_nr.outputNative = CreateScratch(device, desc.Format, width, height);
 
     // The reduced up-leg's own native proxy (see NrState::proxyNative), only when
-    // DlssNrReducedUpscaleMethod == 2 asks for SGSR1 on both sides. Gated on `reduced` (not just
-    // workScale < 1.0f) so a workScale that rounds back to the native size (e.g. Auto's
-    // continuous ratio landing at 0.9998) doesn't allocate a buffer this leg will never use.
-    if (reduced && workScale < 1.0f && cfg.DlssNrReducedUpscaleMethod.value_or_default() == 2 &&
+    // DlssNrReducedUpscaleMethod asks for SGSR1 on the proxy (2 = both sides, 3 = proxy only).
+    // Gated on `reduced` (not just workScale < 1.0f) so a workScale that rounds back to the native
+    // size (e.g. Auto's continuous ratio landing at 0.9998) doesn't allocate a buffer this leg will
+    // never use.
+    const uint32_t reducedUpscaleMethod = cfg.DlssNrReducedUpscaleMethod.value_or_default();
+    if (reduced && workScale < 1.0f && (reducedUpscaleMethod == 2 || reducedUpscaleMethod == 3) &&
         g_nr.proxyNative == nullptr)
         g_nr.proxyNative = CreateScratch(device, desc.Format, width, height);
 
@@ -2939,20 +2944,22 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         }
 
         // Reduced up-leg (mirrors the down-leg above). DlssNrReducedUpscaleMethod: 0 = Bilinear
-        // (neither side enlarged with SGSR1), 1 = SGSR1 answer only, 2 = SGSR1 both sides. Theory
-        // said proxy is just a luminance-ratio scalar for Composed and unused entirely by Replace,
-        // so answer-only should have captured most of the benefit for half the cost -- in-game
-        // feedback said it's still visibly blurrier than enlarging both, so 2 exists as the
-        // costlier, sharper option. When the proxy is not SGSR1-enlarged (methods 0/1) it still
-        // correctly reads from modelInput (the real downsampled source the model saw) via the
-        // resolve's own implicit bilinear tap (dlssnr.hlsl:905-910) -- that is not the old
+        // (neither side enlarged with SGSR1), 1 = SGSR1 answer only, 2 = SGSR1 both sides, 3 =
+        // SGSR1 proxy only (see NrState::proxyNative's comment for why: keeps the sharper proxy
+        // without feeding the model's own noisy answer to SGSR1's edge-vote). Theory said proxy is
+        // just a luminance-ratio scalar for Composed and unused entirely by Replace, so answer-only
+        // should have captured most of the benefit for half the cost -- in-game feedback said it's
+        // still visibly blurrier than enlarging both, so 2 exists as the costlier, sharper option.
+        // Whichever side is not SGSR1-enlarged (methods 0/1/3 for the proxy, 0/3 for the answer)
+        // still correctly reads from modelInput (the real downsampled source the model saw) via the
+        // resolve's own implicit bilinear tap (dlssnr.hlsl:931-932) -- that is not the old
         // colorCopy-vs-modelInput bug ("the low res image got combined with the final image"),
         // which was comparing against the wrong buffer entirely, not merely a softer-filtered one.
         bool sgsrAnswerOk = false;
         bool sgsrProxyOk = false;
         const uint32_t upscaleMethod = cfg.DlssNrReducedUpscaleMethod.value_or_default();
-        const bool wantsSgsr1Answer = upscaleMethod >= 1;
-        const bool wantsSgsr1Proxy = upscaleMethod == 2;
+        const bool wantsSgsr1Answer = upscaleMethod == 1 || upscaleMethod == 2;
+        const bool wantsSgsr1Proxy = upscaleMethod == 2 || upscaleMethod == 3;
         // Gated on `reduced` (the actual rounded-size flag), not just workScale < 1.0f -- a workScale
         // that rounds back to the native size (e.g. Auto's continuous ratio landing at 0.9998) would
         // otherwise engage SGSR1 at 1:1, wasted work that also isn't guaranteed identity-preserving.

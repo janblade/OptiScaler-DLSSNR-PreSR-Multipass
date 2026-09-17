@@ -1022,11 +1022,15 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // agree to within the proxy surface's precision rather than exactly. Skipping the path when there
     // is no residual to carry makes 100% bit-identical to Classic instead of nearly identical, which
     // is what lets this default to on: the shipped configuration cannot be changed by it at all.
-    uint proxyW, proxyH;
-    gSource.GetDimensions(proxyW, proxyH);
-    const bool modelRanSmall = proxyW != gWidth || proxyH != gHeight;
-
-    if (gTransfer == 1 && modelRanSmall)
+    //
+    // Whether the model ran below the frame is read from `gModelWorkScale`, set in C++ before SGSR1
+    // ever runs -- not inferred from `gSource`'s own bound size. That inference (this file's
+    // `proxyW`/`proxyH` used to ask `gSource.GetDimensions()` directly) is exactly the trap
+    // `gModelWorkScale` was introduced for elsewhere in this file (see the detail-injection comment
+    // a few hundred lines down): once an enlarge pass has already run, the bound proxy reads native
+    // regardless of what resolution the model actually evaluated at, so a size check silently answers
+    // the wrong question the moment SGSR1 enlarges the proxy.
+    if (gTransfer == 1 && gModelWorkScale < 0.999)
     {
         // Saturated, because that is what the encode does and this has to reproduce it exactly.
         //

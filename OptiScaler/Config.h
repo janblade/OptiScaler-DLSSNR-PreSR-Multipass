@@ -415,7 +415,12 @@ class Config
     // in-game feedback found this still visibly blurrier than enlarging both, so it's not the
     // sharpest option, just the cheaper SGSR1 one. 2 = SGSR1 (both) -- edge-directed upscale on
     // both answer and proxy; sharpest, costs two full-native-resolution compute passes a frame
-    // instead of one. No effect at 100% model resolution or above.
+    // instead of one. 3 = SGSR1 (input only) -- the inverse of 1: enlarge the proxy, leave the
+    // answer on the implicit tap. The model's own per-frame answer is exactly the signal
+    // DlssNrSgsr1EdgeThreshold's comment describes SGSR1's edge-vote misreading as a false edge
+    // (skin, hair); enlarging only the real frame gets a sharper proxy without exposing that
+    // content to the vote at all, at the cost of the answer's own sharpening. No effect at 100%
+    // model resolution or above.
     CustomOptional<uint32_t> DlssNrReducedUpscaleMethod { 1 };
 
     // SGSR1's own edge-vote threshold and reconstructed-luma sharpness multiplier

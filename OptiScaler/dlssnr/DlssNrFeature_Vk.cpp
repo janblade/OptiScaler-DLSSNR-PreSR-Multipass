@@ -107,8 +107,9 @@ struct VkState
 
     // Reduced up-leg (working scale < 1, DlssNrReducedUpscaleMethod >= 1): the DX12-side mirror
     // of this is NrState::proxyNative/sgsr1UpAnswer/sgsr1UpProxy. proxyNative is the SGSR1-
-    // enlarged proxy, only built/used when the method asks for SGSR1 on both sides (method 2) --
-    // outputNative above already covers the answer side, shared with the >1 supersample leg.
+    // enlarged proxy, only built/used when the method asks for SGSR1 on the proxy (2 = both
+    // sides, 3 = proxy only) -- outputNative above already covers the answer side, shared with
+    // the >1 supersample leg.
     // Two separate SGSR1_Vk instances, not one reused twice a frame, for the same reason
     // superUp/superDown are already two OS_Vk instances: each is built for one Dispatch()/frame,
     // and a single instance would have both CPU-side constant writes land before either GPU
@@ -897,8 +898,9 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
         // or the reduced up-leg's SGSR1 answer enlarge writes into -- shared between the two legs
         // since workScale is a single scalar (never both > 1 and < 1 in the same frame). proxyNative
         // is the reduced up-leg's own native proxy, only needed when DlssNrReducedUpscaleMethod asks
-        // for SGSR1 on both sides (method 2) -- over-allocating it when unused is harmless, matching
-        // the D3D12 side's identical gate.
+        // for SGSR1 on the proxy (2 = both sides, 3 = proxy only) -- over-allocating it when unused
+        // is harmless, matching the D3D12 side's identical gate.
+        const uint32_t reducedUpscaleMethod = cfg.DlssNrReducedUpscaleMethod.value_or_default();
         const bool ok = CreateImage(g_vk.output, workWidth, workHeight, working, true) &&
                         (passes == 1 || CreateImage(g_vk.scratch, workWidth, workHeight, working, true)) &&
                         CreateImage(g_vk.proxy, width, height, working, true) &&
@@ -906,7 +908,8 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
                         (!beforeSr || CreateImage(g_vk.preColor, width, height, working, false)) &&
                         (!reduced || CreateImage(g_vk.proxySmall, workWidth, workHeight, working, true)) &&
                         (workScale == 1.0f || CreateImage(g_vk.outputNative, width, height, working, true)) &&
-                        (!(reduced && workScale < 1.0f && cfg.DlssNrReducedUpscaleMethod.value_or_default() == 2) ||
+                        (!(reduced && workScale < 1.0f &&
+                           (reducedUpscaleMethod == 2 || reducedUpscaleMethod == 3)) ||
                          CreateImage(g_vk.proxyNative, width, height, working, true));
 
         if (!ok)
@@ -1286,15 +1289,16 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
 
     // Reduced up-leg (working scale < 1), mirroring D3D12's NrState::sgsr1UpAnswer/sgsr1UpProxy
     // block exactly. DlssNrReducedUpscaleMethod: 0 Bilinear (neither side enlarged -- resolveProxy/
-    // resolveAnswer above already default to that), 1 SGSR1 answer only, 2 SGSR1 both sides. Two
-    // separate SGSR1_Vk instances, not one reused twice a frame -- see g_vk's own
-    // sgsr1UpAnswer/sgsr1UpProxy comment for why (each is built for one Dispatch()/frame; a single
-    // instance would have both CPU-side constant writes land before either GPU dispatch executes).
+    // resolveAnswer above already default to that), 1 SGSR1 answer only, 2 SGSR1 both sides, 3
+    // SGSR1 proxy only. Two separate SGSR1_Vk instances, not one reused twice a frame -- see g_vk's
+    // own sgsr1UpAnswer/sgsr1UpProxy comment for why (each is built for one Dispatch()/frame; a
+    // single instance would have both CPU-side constant writes land before either GPU dispatch
+    // executes).
     bool sgsrAnswerOk = false;
     bool sgsrProxyOk = false;
     const uint32_t upscaleMethod = cfg.DlssNrReducedUpscaleMethod.value_or_default();
-    const bool wantsSgsr1Answer = upscaleMethod >= 1;
-    const bool wantsSgsr1Proxy = upscaleMethod == 2;
+    const bool wantsSgsr1Answer = upscaleMethod == 1 || upscaleMethod == 2;
+    const bool wantsSgsr1Proxy = upscaleMethod == 2 || upscaleMethod == 3;
 
     // Gated on `reduced` (the actual rounded-size flag), not just workScale < 1.0f -- a workScale
     // that rounds back to the native size would otherwise engage SGSR1 at 1:1, wasted work with no

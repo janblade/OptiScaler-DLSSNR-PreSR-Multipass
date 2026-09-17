@@ -511,8 +511,9 @@ void RenderMenu(Config* config, float menuResScale)
                 ImGui::BeginDisabled();
 
             static const char* upscaleMethodNames[] = { "Bilinear (fast)", "SGSR1 (output only)",
-                                                        "SGSR1 (input + output, sharpest)" };
-            int upscaleMethod = (int) std::min(config->DlssNrReducedUpscaleMethod.value_or_default(), 2u);
+                                                        "SGSR1 (input + output, sharpest)",
+                                                        "SGSR1 (input only)" };
+            int upscaleMethod = (int) std::min(config->DlssNrReducedUpscaleMethod.value_or_default(), 3u);
 
             if (ImGui::Combo("Enlarge filter", &upscaleMethod, upscaleMethodNames, IM_ARRAYSIZE(upscaleMethodNames)))
                 config->DlssNrReducedUpscaleMethod = (uint32_t) upscaleMethod;
@@ -520,7 +521,7 @@ void RenderMenu(Config* config, float menuResScale)
             if (!reduced)
                 ImGui::EndDisabled();
 
-            HelpMarker("Below 100% model resolution: filter used to enlarge the model's answer (and optionally its input) back to native before it's applied.\nBilinear is the cheapest, softest, pre-SGSR1 default. SGSR1 (output only) is sharper for less cost than enlarging both, but can still look softer than expected. SGSR1 (input + output) is the sharpest, at the cost of a second full-resolution pass every frame. No effect at 100% or above.");
+            HelpMarker("Below 100% model resolution: filter used to enlarge the model's answer (and optionally its input) back to native before it's applied.\nBilinear is the cheapest, softest, pre-SGSR1 default. SGSR1 (output only) is sharper for less cost than enlarging both, but can still look softer than expected. SGSR1 (input + output) is the sharpest, at the cost of a second full-resolution pass every frame. SGSR1 (input only) sharpens the real frame but leaves the model's own answer on the cheap filter -- the model's per-frame answer is where SGSR1's edge-reconstruction can mistake noise for a real edge (seen on skin and hair), so this avoids that risk at the cost of the answer's own sharpening. No effect at 100% or above.");
 
             const bool sgsr1Active = reduced && upscaleMethod != 0;
 

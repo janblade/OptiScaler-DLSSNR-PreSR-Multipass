@@ -164,17 +164,17 @@ static void ApplyOptimizedDefaults(Config* config, int& pendingScale)
     }
 
     config->DlssNrTransfer = 1u;                // Enlargement: Matched residual
-    config->DlssNrReducedUpscaleMethod = 3u;    // Enlarge filter: SGSR1 (input only)
-    config->DlssNrSgsr1EdgeThreshold = 0.040f;
+    config->DlssNrReducedUpscaleMethod = 1u;    // Enlarge filter: SGSR1
+    config->DlssNrSgsr1EdgeThreshold = 0.300f;
     config->DlssNrSgsr1EdgeSharpness = 2.00f;
     config->DlssNrTransferStrength = 1.5f;      // Detail strength
     config->DlssNrColourStrength = 1.0f;
     config->DlssNrReversibleMode = 2u;          // HDR mapping: Reversible curve + replace
-    config->DlssNrReplaceDetailStrength = 2.0f;
-    config->DlssNrStyle = 0u;                   // Pass 1 Style: Standard
+    config->DlssNrReplaceDetailStrength = 0.4f;
+    config->DlssNrStyle = 1u;                   // Pass 1 Style: Natural
     config->DlssNrIntensity = 0.98f;
     config->DlssNrLocalStructure = 0.98f;
-    config->DlssNrLocalTone = 1.25f;
+    config->DlssNrLocalTone = 1.0f;
     config->DlssNrSkinStructure = -1.0f;
     config->DlssNrAutoMask = true;
     config->DlssNrWhitePointSource = 1u;        // Game exposure
@@ -506,10 +506,8 @@ void RenderMenu(Config* config, float menuResScale)
             if (!reduced)
                 ImGui::BeginDisabled();
 
-            static const char* upscaleMethodNames[] = { "Bilinear (fast)", "SGSR1 (output only)",
-                                                        "SGSR1 (input + output, sharpest)",
-                                                        "SGSR1 (input only)" };
-            int upscaleMethod = (int) std::min(config->DlssNrReducedUpscaleMethod.value_or_default(), 3u);
+            static const char* upscaleMethodNames[] = { "Bilinear (fast)", "SGSR1" };
+            int upscaleMethod = (int) std::min(config->DlssNrReducedUpscaleMethod.value_or_default(), 1u);
 
             if (ImGui::Combo("Enlarge filter", &upscaleMethod, upscaleMethodNames, IM_ARRAYSIZE(upscaleMethodNames)))
                 config->DlssNrReducedUpscaleMethod = (uint32_t) upscaleMethod;
@@ -517,7 +515,7 @@ void RenderMenu(Config* config, float menuResScale)
             if (!reduced)
                 ImGui::EndDisabled();
 
-            HelpMarker("Below 100% model resolution: filter used to enlarge the model's answer (and optionally its input) back to native before it's applied.\nBilinear is the cheapest, softest, pre-SGSR1 default. SGSR1 (output only) is sharper for less cost than enlarging both, but can still look softer than expected. SGSR1 (input + output) is the sharpest, at the cost of a second full-resolution pass every frame. SGSR1 (input only) sharpens the real frame but leaves the model's own answer on the cheap filter -- the model's per-frame answer is where SGSR1's edge-reconstruction can mistake noise for a real edge (seen on skin and hair), so this avoids that risk at the cost of the answer's own sharpening. No effect at 100% or above.");
+            HelpMarker("Below 100% model resolution: filter used to enlarge the model's answer back to native before it's applied.\nBilinear is the cheapest, softest, pre-SGSR1 default. SGSR1 does an edge-directed upscale of the answer instead. No effect at 100% or above.");
 
             const bool sgsr1Active = reduced && upscaleMethod != 0;
 
@@ -584,14 +582,14 @@ void RenderMenu(Config* config, float menuResScale)
         if (reversible == 2 || reversible == 4)
         {
             float replaceDetail = config->DlssNrReplaceDetailStrength.value_or_default();
-            if (ImGui::SliderFloat("Replace detail strength", &replaceDetail, 0.0f, 2.0f, "%.2f"))
+            if (ImGui::SliderFloat("Native sharpness recovery", &replaceDetail, 0.0f, 2.0f, "%.2f"))
                 config->DlssNrReplaceDetailStrength = replaceDetail;
 
             ImGui::SameLine();
             if (ImGui::SmallButton("Reset##replacedetail"))
                 config->DlssNrReplaceDetailStrength = 0.5f;
 
-            HelpMarker("Below 100% model resolution, Replace has no native-resolution fallback and can look soft. This restores real detail from the native frame without blending its colour. 0 = no effect (today's behaviour); no effect at all at 100% model resolution or above.");
+            HelpMarker("Below 100% model resolution, Replace mode has no native-resolution fallback and can look soft. This restores fine edge/texture sharpness from the native frame's brightness only -- no colour is blended in. No effect at 100% model resolution or above, or at 0 (today's behaviour).");
         }
 
         ImGui::SeparatorText("Model passes");

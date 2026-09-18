@@ -105,18 +105,12 @@ struct VkState
     std::unique_ptr<OS_Vk> superDown;
     Scaler nrScaler = Scaler::Count;
 
-    // Reduced up-leg (working scale < 1, DlssNrReducedUpscaleMethod >= 1): the DX12-side mirror
-    // of this is NrState::proxyNative/sgsr1UpAnswer/sgsr1UpProxy. proxyNative is the SGSR1-
-    // enlarged proxy, only built/used when the method asks for SGSR1 on the proxy (2 = both
-    // sides, 3 = proxy only) -- outputNative above already covers the answer side, shared with
-    // the >1 supersample leg.
-    // Two separate SGSR1_Vk instances, not one reused twice a frame, for the same reason
-    // superUp/superDown are already two OS_Vk instances: each is built for one Dispatch()/frame,
-    // and a single instance would have both CPU-side constant writes land before either GPU
-    // dispatch executes.
-    OwnedImage proxyNative;
+    // Reduced up-leg (working scale < 1, DlssNrReducedUpscaleMethod == 1): the DX12-side mirror
+    // of this is NrState::sgsr1UpAnswer. outputNative above covers the answer side, shared with
+    // the >1 supersample leg. Built for one Dispatch()/frame, for the same reason superUp/
+    // superDown are already two OS_Vk instances: a single instance would have both CPU-side
+    // constant writes land before either GPU dispatch executes.
     std::unique_ptr<SGSR1_Vk> sgsr1UpAnswer;
-    std::unique_ptr<SGSR1_Vk> sgsr1UpProxy;
 
     std::unique_ptr<DlssNr_Vk> pass;
 
@@ -890,27 +884,19 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
 
         DestroyImage(g_vk.proxySmall);
         DestroyImage(g_vk.outputNative);
-        DestroyImage(g_vk.proxyNative);
 
         // output is the model's target, so it is the working size. proxy and keep are full: proxy is
         // the source the downsample reads, keep is the untouched frame the resolve composites onto.
         // outputNative is the native buffer either the supersample down-leg averages the answer into,
         // or the reduced up-leg's SGSR1 answer enlarge writes into -- shared between the two legs
-        // since workScale is a single scalar (never both > 1 and < 1 in the same frame). proxyNative
-        // is the reduced up-leg's own native proxy, only needed when DlssNrReducedUpscaleMethod asks
-        // for SGSR1 on the proxy (2 = both sides, 3 = proxy only) -- over-allocating it when unused
-        // is harmless, matching the D3D12 side's identical gate.
-        const uint32_t reducedUpscaleMethod = cfg.DlssNrReducedUpscaleMethod.value_or_default();
+        // since workScale is a single scalar (never both > 1 and < 1 in the same frame).
         const bool ok = CreateImage(g_vk.output, workWidth, workHeight, working, true) &&
                         (passes == 1 || CreateImage(g_vk.scratch, workWidth, workHeight, working, true)) &&
                         CreateImage(g_vk.proxy, width, height, working, true) &&
                         CreateImage(g_vk.keep, width, height, working, true) &&
                         (!beforeSr || CreateImage(g_vk.preColor, width, height, working, false)) &&
                         (!reduced || CreateImage(g_vk.proxySmall, workWidth, workHeight, working, true)) &&
-                        (workScale == 1.0f || CreateImage(g_vk.outputNative, width, height, working, true)) &&
-                        (!(reduced && workScale < 1.0f &&
-                           (reducedUpscaleMethod == 2 || reducedUpscaleMethod == 3)) ||
-                         CreateImage(g_vk.proxyNative, width, height, working, true));
+                        (workScale == 1.0f || CreateImage(g_vk.outputNative, width, height, working, true));
 
         if (!ok)
         {
@@ -1287,28 +1273,24 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
     OwnedImage* resolveProxy = modelInput;
     OwnedImage* resolveAnswer = answer;
 
-    // Reduced up-leg (working scale < 1), mirroring D3D12's NrState::sgsr1UpAnswer/sgsr1UpProxy
-    // block exactly. DlssNrReducedUpscaleMethod: 0 Bilinear (neither side enlarged -- resolveProxy/
-    // resolveAnswer above already default to that), 1 SGSR1 answer only, 2 SGSR1 both sides, 3
-    // SGSR1 proxy only. Two separate SGSR1_Vk instances, not one reused twice a frame -- see g_vk's
-    // own sgsr1UpAnswer/sgsr1UpProxy comment for why (each is built for one Dispatch()/frame; a
-    // single instance would have both CPU-side constant writes land before either GPU dispatch
-    // executes).
+    // Reduced up-leg (working scale < 1), mirroring D3D12's NrState::sgsr1UpAnswer block exactly.
+    // DlssNrReducedUpscaleMethod: 0 Bilinear (answer not enlarged -- resolveAnswer above already
+    // defaults to that), 1 SGSR1 answer. Built for one Dispatch()/frame -- see g_vk's own
+    // sgsr1UpAnswer comment for why (a single instance would have its CPU-side constant write land
+    // before the GPU dispatch executes).
     bool sgsrAnswerOk = false;
-    bool sgsrProxyOk = false;
     const uint32_t upscaleMethod = cfg.DlssNrReducedUpscaleMethod.value_or_default();
-    const bool wantsSgsr1Answer = upscaleMethod == 1 || upscaleMethod == 2;
-    const bool wantsSgsr1Proxy = upscaleMethod == 2 || upscaleMethod == 3;
+    const bool wantsSgsr1Answer = upscaleMethod == 1;
 
     // Gated on `reduced` (the actual rounded-size flag), not just workScale < 1.0f -- a workScale
     // that rounds back to the native size would otherwise engage SGSR1 at 1:1, wasted work with no
     // correctness guarantee of being identity-preserving at unity. Matches D3D12's identical gate.
-    if (reduced && workScale < 1.0f && (wantsSgsr1Answer || wantsSgsr1Proxy))
+    if (reduced && workScale < 1.0f && wantsSgsr1Answer)
     {
         const float sgsr1EdgeThreshold = cfg.DlssNrSgsr1EdgeThreshold.value_or_default();
         const float sgsr1EdgeSharpness = cfg.DlssNrSgsr1EdgeSharpness.value_or_default();
 
-        if (wantsSgsr1Answer && g_vk.outputNative.Valid())
+        if (g_vk.outputNative.Valid())
         {
             if (!g_vk.sgsr1UpAnswer)
                 g_vk.sgsr1UpAnswer =
@@ -1328,37 +1310,16 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
             }
         }
 
-        if (wantsSgsr1Proxy && g_vk.proxyNative.Valid())
-        {
-            if (!g_vk.sgsr1UpProxy)
-                g_vk.sgsr1UpProxy =
-                    std::make_unique<SGSR1_Vk>("DLSS-NR VK SGSR1 up (proxy)", device, physicalDevice);
-
-            if (g_vk.sgsr1UpProxy && g_vk.sgsr1UpProxy->IsInit())
-            {
-                Transition(cmdBuffer, *modelInput, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                Transition(cmdBuffer, g_vk.proxyNative, VK_IMAGE_LAYOUT_GENERAL);
-
-                VkImageInfo upProxyIn = ImageInfoOf(*modelInput);
-                VkImageInfo upProxyOut = ImageInfoOf(g_vk.proxyNative);
-
-                if (g_vk.sgsr1UpProxy->Dispatch(cmdBuffer, upProxyIn, upProxyOut, resolve.ReversibleMode,
-                                                resolve.Passthrough, sgsr1EdgeThreshold, sgsr1EdgeSharpness))
-                    sgsrProxyOk = true;
-            }
-        }
-
         // INFO-level, change-gated like D3D12's own up-leg log, so a log scan can confirm Vulkan
         // parity the same way it already can for D3D12.
         static bool hasLoggedSgsrUp = false;
         static uint32_t lastLoggedState = 0xFFFFFFFFu;
-        const uint32_t state = (sgsrAnswerOk ? 1u : 0u) | (sgsrProxyOk ? 2u : 0u);
+        const uint32_t state = sgsrAnswerOk ? 1u : 0u;
         if (!hasLoggedSgsrUp || lastLoggedState != state)
         {
-            LOG_INFO("DLSS-NR Vulkan SGSR1 up-leg: answer {}, proxy {} (method {}, workScale {:.3f}, "
+            LOG_INFO("DLSS-NR Vulkan SGSR1 up-leg: answer {} (method {}, workScale {:.3f}, "
                      "{}x{} -> {}x{})",
-                     wantsSgsr1Answer ? (sgsrAnswerOk ? "engaged" : "NOT engaged") : "bilinear",
-                     wantsSgsr1Proxy ? (sgsrProxyOk ? "engaged" : "NOT engaged") : "bilinear", upscaleMethod,
+                     sgsrAnswerOk ? "engaged" : "NOT engaged", upscaleMethod,
                      workScale, workWidth, workHeight, width, height);
             lastLoggedState = state;
             hasLoggedSgsrUp = true;
@@ -1380,8 +1341,6 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
 
     if (sgsrAnswerOk)
         resolveAnswer = &g_vk.outputNative;
-    if (sgsrProxyOk)
-        resolveProxy = &g_vk.proxyNative;
 
     if (workScale > 1.0f && g_vk.superDown && g_vk.superDown->IsInit() && g_vk.outputNative.Valid())
     {
@@ -1491,7 +1450,6 @@ void ShutdownVk(bool deviceAlive)
         g_vk.superUp.release();
         g_vk.superDown.release();
         g_vk.sgsr1UpAnswer.release();
-        g_vk.sgsr1UpProxy.release();
         g_vk.nrScaler = Scaler::Count;
         g_vk.feature = nullptr;
         for (auto& feature : g_vk.laterFeatures)
@@ -1506,7 +1464,6 @@ void ShutdownVk(bool deviceAlive)
         g_vk.proxy = OwnedImage {};
         g_vk.proxySmall = OwnedImage {};
         g_vk.outputNative = OwnedImage {};
-        g_vk.proxyNative = OwnedImage {};
         g_vk.keep = OwnedImage {};
         g_vk.preColor = OwnedImage {};
         g_vk.meter = OwnedImage {};
@@ -1558,7 +1515,6 @@ void ShutdownVk(bool deviceAlive)
     DestroyImage(g_vk.proxy);
     DestroyImage(g_vk.proxySmall);
     DestroyImage(g_vk.outputNative);
-    DestroyImage(g_vk.proxyNative);
     DestroyImage(g_vk.keep);
     DestroyImage(g_vk.preColor);
     DestroyImage(g_vk.meter);
@@ -1568,7 +1524,6 @@ void ShutdownVk(bool deviceAlive)
     g_vk.superUp.reset();
     g_vk.superDown.reset();
     g_vk.sgsr1UpAnswer.reset();
-    g_vk.sgsr1UpProxy.reset();
     g_vk.nrScaler = Scaler::Count;
 
     if (g_vk.capabilityParams != nullptr)

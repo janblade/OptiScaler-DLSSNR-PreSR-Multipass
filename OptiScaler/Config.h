@@ -407,20 +407,17 @@ class Config
     // DlssNrScalingDownscaler's chosen filter, as before.
     CustomOptional<float> DlssNrWorkingScale { 1.0f };
 
-    // Below 100% model resolution only: how the model's answer and input (proxy) are enlarged
-    // back to native before the resolve. 0 = Bilinear -- neither side enlarged with SGSR1; the
-    // pre-SGSR1 implicit sampler tap the resolve already falls back to whenever SGSR1 can't
-    // build; cheapest, softest. 1 = SGSR1 (default) -- edge-directed upscale on the answer only,
-    // proxy stays on the implicit tap; theory said proxy barely affects the displayed pixel, but
-    // in-game feedback found this still visibly blurrier than enlarging both, so it's not the
-    // sharpest option, just the cheaper SGSR1 one. 2 = SGSR1 (both) -- edge-directed upscale on
-    // both answer and proxy; sharpest, costs two full-native-resolution compute passes a frame
-    // instead of one. 3 = SGSR1 (input only) -- the inverse of 1: enlarge the proxy, leave the
-    // answer on the implicit tap. The model's own per-frame answer is exactly the signal
-    // DlssNrSgsr1EdgeThreshold's comment describes SGSR1's edge-vote misreading as a false edge
-    // (skin, hair); enlarging only the real frame gets a sharper proxy without exposing that
-    // content to the vote at all, at the cost of the answer's own sharpening. No effect at 100%
-    // model resolution or above.
+    // Below 100% model resolution only: how the model's answer is enlarged back to native
+    // before the resolve. 0 = Bilinear -- the pre-SGSR1 implicit sampler tap the resolve
+    // already falls back to whenever SGSR1 can't build; cheapest, softest. 1 = SGSR1
+    // (default) -- edge-directed upscale on the answer. No effect at 100% model resolution
+    // or above. Out-of-range persisted values are clamped to 0 on load (Config.cpp).
+    //
+    // The proxy (model input) was previously also enlargeable with SGSR1 (old methods 2/3),
+    // sharper in Composed but only when applied symmetrically to both textures -- applied to
+    // just one side it fed a filter mismatch into the model/proxy comparison instead of real
+    // detail, and had no effect on Replace at all (Replace never reads the proxy). Removed
+    // rather than kept as an unclear trade-off; see plans/2026-09-18-dlssnr-enlarge-filter-simplify.md.
     CustomOptional<uint32_t> DlssNrReducedUpscaleMethod { 1 };
 
     // SGSR1's own edge-vote threshold and reconstructed-luma sharpness multiplier

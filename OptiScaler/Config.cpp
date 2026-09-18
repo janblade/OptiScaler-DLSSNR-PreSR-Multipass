@@ -367,6 +367,10 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrTagScale.set_from_config(readFloat("DlssNr", "TagScale"));
             DlssNrWorkingScale.set_from_config(readFloat("DlssNr", "WorkingScale"));
             DlssNrReducedUpscaleMethod.set_from_config(readUInt("DlssNr", "ReducedUpscaleMethod"));
+            // Only 0 (Bilinear) and 1 (SGSR1) exist -- an old config or hand-edited ini past that
+            // range falls back to Bilinear rather than being read raw by the enlarge-filter checks.
+            if (DlssNrReducedUpscaleMethod.has_value() && DlssNrReducedUpscaleMethod.value() > 1u)
+                DlssNrReducedUpscaleMethod = 0u;
             DlssNrSgsr1EdgeThreshold.set_from_config(readFloat("DlssNr", "Sgsr1EdgeThreshold"));
             DlssNrSgsr1EdgeSharpness.set_from_config(readFloat("DlssNr", "Sgsr1EdgeSharpness"));
             DlssNrModelResolutionAuto.set_from_config(readBool("DlssNr", "ModelResolutionAuto"));

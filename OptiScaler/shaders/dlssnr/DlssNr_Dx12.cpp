@@ -237,10 +237,16 @@ struct NrState
     bool passScratchFailed = false;
 
     // A pass's raw answer, saturated back into the proxy's valid range, before it becomes the next
-    // pass's input. Never a ping-pong destination itself -- passOutput still alternates between
-    // output and passScratch above; this is only the clamp step's landing spot.
+    // pass's input. Two of these ping-pong (mirroring output/passScratch above), not one: the clamp
+    // step reads the previous boundary's clamped proxy as gModel (to rescale the edit against, see the
+    // interpass clamp's own comment) while writing the new one as gTarget -- with only one buffer,
+    // the second boundary in a 3-pass chain would bind the same resource as both, an SRV/UAV alias on
+    // the same dispatch (found in review; the original always-on clamp never read a second resource,
+    // so this collision didn't exist before CubeScaleResidual needed the proxy too).
     ID3D12Resource* passClampScratch = nullptr;
+    ID3D12Resource* passClampScratch2 = nullptr;
     bool passClampScratchFailed = false;
+    bool passClampScratch2Failed = false;
 
     // The frame as the upscaler wrote it. The resolve adds the model's edit to this rather than
     // reconstructing it by inverting the tone curve, which is what turned every light in the frame into
@@ -850,12 +856,13 @@ void ReleaseSurfacesIfFormatChanged(DXGI_FORMAT needed)
     }
 
     for (ID3D12Resource** r :
-         { &g_nr.output, &g_nr.passScratch, &g_nr.passClampScratch, &g_nr.colorCopy, &g_nr.hdrCopy,
-           &g_nr.colorSmall, &g_nr.outputNative, &g_nr.activeColor })
+         { &g_nr.output, &g_nr.passScratch, &g_nr.passClampScratch, &g_nr.passClampScratch2,
+           &g_nr.colorCopy, &g_nr.hdrCopy, &g_nr.colorSmall, &g_nr.outputNative, &g_nr.activeColor })
         ParkNrResource(*r);
 
     g_nr.passScratchFailed = false;
     g_nr.passClampScratchFailed = false;
+    g_nr.passClampScratch2Failed = false;
 
     g_nr.reset = true;
 }
@@ -1928,6 +1935,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             ParkNrResource(g_nr.output);
             ParkNrResource(g_nr.passScratch);
             ParkNrResource(g_nr.passClampScratch);
+            ParkNrResource(g_nr.passClampScratch2);
             ParkNrResource(g_nr.colorCopy);
             ParkNrResource(g_nr.hdrCopy);
             ParkNrResource(g_nr.colorSmall);
@@ -1935,6 +1943,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             ParkNrResource(g_nr.activeColor);
             g_nr.passScratchFailed = false;
             g_nr.passClampScratchFailed = false;
+            g_nr.passClampScratch2Failed = false;
         }
     }
 
@@ -1966,6 +1975,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         g_nr.passScratchFailed = false;
         ParkNrResource(g_nr.passClampScratch);
         g_nr.passClampScratchFailed = false;
+        ParkNrResource(g_nr.passClampScratch2);
+        g_nr.passClampScratch2Failed = false;
     }
     else if (g_nr.passScratch == nullptr && !g_nr.passScratchFailed)
     {
@@ -1983,6 +1994,28 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
         if (g_nr.passClampScratchFailed)
             LOG_ERROR("DLSS-NR: could not allocate the interpass clamp target; extra passes are disabled");
+    }
+
+    // A second clamp target, ping-ponging with the one above exactly like output/passScratch ping-pong
+    // model answers: the clamp step reads the previous boundary's clamped proxy as well as writing the
+    // next one, so with only one buffer the second boundary would alias its own read and write. Only
+    // the second boundary (Passes=3, not Passes=2) ever reaches it -- gated on > 2, not > 1 like
+    // passClampScratch, so a Passes=2 configuration doesn't permanently carry a full working-resolution
+    // texture it structurally can never use. A failure here doesn't disable multipass outright, only
+    // caps the chain one pass short at that second boundary (the pass loop's own null-target check).
+    if (requestedPasses > 2 && g_nr.passClampScratch2 == nullptr && !g_nr.passClampScratch2Failed)
+    {
+        g_nr.passClampScratch2 = CreateScratch(device, desc.Format, workWidth, workHeight);
+        g_nr.passClampScratch2Failed = g_nr.passClampScratch2 == nullptr;
+
+        if (g_nr.passClampScratch2Failed)
+            LOG_ERROR("DLSS-NR: could not allocate the second interpass clamp target; "
+                      "the pass chain will stop one pass short of the third");
+    }
+    else if (requestedPasses <= 2 && g_nr.passClampScratch2 != nullptr)
+    {
+        ParkNrResource(g_nr.passClampScratch2);
+        g_nr.passClampScratch2Failed = false;
     }
 
     if (reduced && g_nr.colorSmall == nullptr)
@@ -2157,8 +2190,11 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // NGX feature creation records work on the supplied command list; evaluating that feature before
     // the list has been submitted is the creation-frame GPU hang that caused the old multi-pass path
     // to be removed. A new feature therefore gets an entire build-only frame and starts next time.
-    // Also gated on the clamp scratch: without it there is nowhere to land an intermediate pass's
-    // raw answer before handing it to the next pass, so no extra pass may become active.
+    // Also gated on the first clamp scratch buffer: without it there is nowhere to land an
+    // intermediate pass's raw answer before handing it to the next pass, so no extra pass may become
+    // active. Not gated on passClampScratch2 here -- a 2-pass chain (one boundary) never touches it;
+    // if it failed to allocate, the pass loop itself degrades gracefully at the second boundary
+    // instead of disabling multipass outright (see the clamp dispatch's own null check).
     if (g_nr.passScratch != nullptr && g_nr.passClampScratch != nullptr)
     {
         for (unsigned int pass = 1; pass < requestedPasses; ++pass)
@@ -2648,20 +2684,34 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // cumulative final-minus-base edit and colour/transfer controls are not compounded.
     ID3D12Resource* passInput = modelInput;
     ID3D12Resource* passOutput = g_nr.output;
+    ID3D12Resource* passClampTarget = g_nr.passClampScratch;
     ID3D12Resource* finalAnswer = nullptr;
     bool outputReadable = false;
     bool scratchReadable = false;
     bool clampReadable = false;
+    bool clamp2Readable = false;
 
-    // g_nr.passClampScratch is a third participant in this same UAV/NPSR dance: an intermediate
-    // pass's raw answer lands there, saturated, and is read back as the next pass's input -- written
-    // and read again at most once per remaining intermediate boundary, exactly like output/passScratch.
+    // g_nr.passClampScratch/passClampScratch2 are a third and fourth participant in this same
+    // UAV/NPSR dance: an intermediate pass's raw answer lands in whichever one is the current
+    // passClampTarget, saturated against the proxy it replaces, and is read back as the next pass's
+    // input -- written and read again at most once per remaining intermediate boundary, exactly like
+    // output/passScratch. Two of them, ping-ponging, because the clamp step now also reads the
+    // *previous* boundary's clamped proxy (as gModel, to rescale the edit against) while writing the
+    // next one -- with only one buffer the second boundary would alias its own read and write.
+    //
+    // The fallthrough below assumes the only resource this lambda is ever called with, besides the
+    // three named explicitly, is g_nr.passScratch -- true for every call site in this function today.
+    // A future call site passing anything else here (colorSmall, activeColor, ...) would silently
+    // share passScratch's tracked state instead of getting its own, with no compiler or runtime
+    // signal -- add it as a named case above rather than relying on the fallthrough.
     const auto ReadableFlag = [&](ID3D12Resource* resource) -> bool&
     {
         if (resource == g_nr.output)
             return outputReadable;
         if (resource == g_nr.passClampScratch)
             return clampReadable;
+        if (resource == g_nr.passClampScratch2)
+            return clamp2Readable;
         return scratchReadable;
     };
 
@@ -2685,6 +2735,16 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             readable = false;
         }
+    };
+
+    // A pass whose own feature already exists but that skips evaluating this frame -- because the
+    // chain stopped short at an earlier boundary -- must not resume next time with passReset=false:
+    // NGX would then treat the skipped frame(s) as continuous history instead of a gap, the same
+    // ghosting risk a camera cut or a freshly-created layer already guards against.
+    const auto ArmSkippedPassResets = [&](unsigned int firstSkipped)
+    {
+        for (unsigned int skipped = firstSkipped; skipped < effectivePasses; ++skipped)
+            g_nr.passNeedsReset[skipped] = true;
     };
 
     int result = NVSDK_NGX_Result_Success;
@@ -2718,29 +2778,58 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
         if (pass + 1 < effectivePasses)
         {
+            // passClampScratch2 is only allocated when the base clamp buffer (passClampScratch) is,
+            // not gated into whether multipass runs at all (a 2-pass chain, one boundary, never needs
+            // it) -- so a transient allocation failure on just this second buffer must not disable a
+            // 2-pass chain that would otherwise have worked. Ending the chain here, one pass short of
+            // requested, is the same graceful-degradation shape as the feature-readiness check above
+            // (a "ready contiguous prefix", never a hard failure over one missing extra layer).
+            if (passClampTarget == nullptr)
+            {
+                static bool warnedNoClampTarget = false;
+                if (!warnedNoClampTarget)
+                {
+                    warnedNoClampTarget = true;
+                    LOG_WARN("DLSS-NR: second interpass clamp target unavailable; stopping at {} pass(es)",
+                             pass + 1);
+                }
+                ArmSkippedPassResets(pass + 1);
+                break;
+            }
+
             // The model's raw answer is not guaranteed to stay in the [0,1]-per-channel range the
             // encode step promised it as an input (the once-per-frame resolve guard below exists for
             // exactly this reason). Restore that range here too, so an out-of-range intermediate
-            // answer cannot compound across the remaining passes.
-            MakeModelWritable(g_nr.passClampScratch);
+            // answer cannot compound across the remaining passes. Scaled back via CubeScaleResidual
+            // against this pass's own proxy (passInput, already guaranteed valid) rather than a
+            // per-channel saturate: a per-channel clamp is a hue distorter (the smallest channel hits
+            // the bound first), the same reason the Replace guard and Composed boundedRatio elsewhere
+            // in this file both rescale by one scalar instead of clamping channels independently.
+            MakeModelWritable(passClampTarget);
             DlssNrConstants clampParams {};
             clampParams.Mode = DlssNrMode_ClampProxy;
             clampParams.Width = workWidth;
             clampParams.Height = workHeight;
-            if (!DispatchPass(cmdList, clampParams, finalAnswer, nullptr, nullptr, nullptr, nullptr,
-                                g_nr.passClampScratch, nullptr))
+            if (!DispatchPass(cmdList, clampParams, finalAnswer, passInput, nullptr, nullptr, nullptr,
+                                passClampTarget, nullptr))
             {
+                // The buffer was never actually written -- feeding it to the next pass as input would
+                // hand NGX stale or uninitialized data, the opposite of what this clamp exists to
+                // prevent. Stop the chain here instead, same as the null-target case above.
                 static bool warnedClamp = false;
                 if (!warnedClamp)
                 {
                     warnedClamp = true;
-                    LOG_WARN("DLSS-NR: interpass clamp dispatch failed; a later pass may see a stale "
-                             "or out-of-range input");
+                    LOG_WARN("DLSS-NR: interpass clamp dispatch failed; stopping at {} pass(es)", pass + 1);
                 }
+                ArmSkippedPassResets(pass + 1);
+                break;
             }
-            MakeModelReadable(g_nr.passClampScratch);
+            MakeModelReadable(passClampTarget);
 
-            passInput = g_nr.passClampScratch;
+            passInput = passClampTarget;
+            passClampTarget =
+                passClampTarget == g_nr.passClampScratch ? g_nr.passClampScratch2 : g_nr.passClampScratch;
             passOutput = passOutput == g_nr.output ? g_nr.passScratch : g_nr.output;
         }
     }
@@ -3027,6 +3116,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             MakeModelWritable(g_nr.passScratch);
         if (g_nr.passClampScratch != nullptr)
             MakeModelWritable(g_nr.passClampScratch);
+        if (g_nr.passClampScratch2 != nullptr)
+            MakeModelWritable(g_nr.passClampScratch2);
 
         if (superDownOk || sgsrAnswerOk)
             Barrier(cmdList, g_nr.outputNative, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -3066,6 +3157,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         MakeModelWritable(g_nr.passScratch);
     if (g_nr.passClampScratch != nullptr)
         MakeModelWritable(g_nr.passClampScratch);
+    if (g_nr.passClampScratch2 != nullptr)
+        MakeModelWritable(g_nr.passClampScratch2);
 
     Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -3767,6 +3860,13 @@ void Shutdown()
         g_nr.passClampScratch = nullptr;
     }
     g_nr.passClampScratchFailed = false;
+
+    if (g_nr.passClampScratch2 != nullptr)
+    {
+        g_nr.passClampScratch2->Release();
+        g_nr.passClampScratch2 = nullptr;
+    }
+    g_nr.passClampScratch2Failed = false;
 
     if (g_nr.colorCopy != nullptr)
     {

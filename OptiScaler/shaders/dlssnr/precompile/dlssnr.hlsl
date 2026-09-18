@@ -639,8 +639,15 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         // encode step guarantees every pass's input, before it becomes the next pass's input.
         // Not a re-run of the encode curve: the value is already in the encoded domain, so only
         // the channel range needs restoring, not a second knee/Neutwo/Hybrid transform.
+        //
+        // CubeScaleResidual against this pass's own proxy (gModel, already valid), not a per-channel
+        // saturate: shrinks the model's edit (raw - proxy) by one scalar until it re-enters the unit
+        // cube, so an overshooting channel doesn't get clipped alone and shift hue -- same reasoning
+        // as the Replace guard and Composed boundedRatio elsewhere in this file.
         float4 raw = gSource.Load(int3(id.xy, 0));
-        gTarget[id.xy] = float4(saturate(SanitizeFinite3(raw.rgb, 0.5)), raw.a);
+        float4 proxy = gModel.Load(int3(id.xy, 0));
+        float3 restored = CubeScaleResidual(SanitizeFinite3(proxy.rgb, 0.5), SanitizeFinite3(raw.rgb, 0.5));
+        gTarget[id.xy] = float4(saturate(restored), raw.a);
         return;
     }
     if (gMode == 8)

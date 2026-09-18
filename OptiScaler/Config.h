@@ -420,16 +420,6 @@ class Config
     // rather than kept as an unclear trade-off; see plans/2026-09-18-dlssnr-enlarge-filter-simplify.md.
     CustomOptional<uint32_t> DlssNrReducedUpscaleMethod { 1 };
 
-    // SGSR1's own edge-vote threshold and reconstructed-luma sharpness multiplier
-    // (sgsr1.hlsl's EdgeThreshold/EdgeSharpness). Upstream's fixed defaults (8/255, 2.0) were
-    // tuned against ordinary game content; an in-game A/B found the vote firing on noisy
-    // high-frequency detail (skin, hair) it wasn't tuned for, smoothing texture plain bilinear
-    // preserved. Raising the threshold makes fewer pixels take the edge-reconstruction branch
-    // (closer to plain bilinear); only relevant when DlssNrReducedUpscaleMethod selects SGSR1
-    // for at least one side.
-    CustomOptional<float> DlssNrSgsr1EdgeThreshold { 0.3f };
-    CustomOptional<float> DlssNrSgsr1EdgeSharpness { 2.0f };
-
     // Post-SR placement only: derive the working scale from the render:output ratio the upscaler
     // itself already reconstructed detail at, instead of the manual slider above. That output already
     // reconstructed detail at that ratio, so running NR at the same reduced scale on it is effectively

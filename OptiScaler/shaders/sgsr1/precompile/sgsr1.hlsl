@@ -11,8 +11,8 @@
 // (fastLanczos2/weightY/SgsrYuvH) is unchanged -- only the shader stage (pixel -> compute),
 // resource bindings, and per-thread UV derivation differ from the original. Fixed at
 // OperationMode 1 (RGBA) and edge direction off, matching upstream's own defaults; neither is
-// runtime-configurable. EdgeThreshold/EdgeSharpness (upstream's own fixed constants) are,
-// via DlssNrSgsr1EdgeThreshold/DlssNrSgsr1EdgeSharpness -- see the cbuffer below.
+// runtime-configurable. EdgeThreshold/EdgeSharpness are fixed at 0.300/2.00 (set from the C++
+// caller, not user-configurable) -- see the cbuffer below.
 //
 // VK_MODE bindings are stated explicitly (same rationale as dlssnr.hlsl's own header comment):
 // D3D keeps b/t/u/s in separate register files, Vulkan has one number line per descriptor set.
@@ -60,11 +60,10 @@ cbuffer Params : register(b0)
     int2   DstSize;
     uint   ReversibleMode; // matches dlssnr.hlsl's gReversibleMode: 0 off, 1/2 Neutwo, 3/4 hybrid
     uint   Passthrough;
-    // Live-tunable versions of upstream's own fixed kEdgeThreshold/kEdgeSharpness (8/255, 2.0) --
-    // an in-game A/B found the vote firing on noisy high-frequency content (skin, hair) upstream's
-    // fixed threshold wasn't tuned for, smoothing detail plain bilinear preserved. Set from
-    // DlssNrSgsr1EdgeThreshold/DlssNrSgsr1EdgeSharpness so this is testable live, not only by
-    // recompiling.
+    // Retuned versions of upstream's own fixed kEdgeThreshold/kEdgeSharpness (8/255, 2.0) -- an
+    // in-game A/B found the vote firing on noisy high-frequency content (skin, hair) upstream's
+    // fixed threshold wasn't tuned for, smoothing detail plain bilinear preserved. Fixed constants
+    // (0.300/2.00) passed in via the cbuffer from the C++ caller, not user-configurable.
     float  EdgeThreshold;
     float  EdgeSharpness;
 };

@@ -1287,8 +1287,8 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
     // correctness guarantee of being identity-preserving at unity. Matches D3D12's identical gate.
     if (reduced && workScale < 1.0f && wantsSgsr1Answer)
     {
-        const float sgsr1EdgeThreshold = cfg.DlssNrSgsr1EdgeThreshold.value_or_default();
-        const float sgsr1EdgeSharpness = cfg.DlssNrSgsr1EdgeSharpness.value_or_default();
+        const float sgsr1EdgeThreshold = 0.300f;
+        const float sgsr1EdgeSharpness = 2.00f;
 
         if (g_vk.outputNative.Valid())
         {

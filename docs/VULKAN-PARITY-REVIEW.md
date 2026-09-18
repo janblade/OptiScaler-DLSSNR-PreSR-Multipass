@@ -23,7 +23,7 @@ benchmark against this fork; we do not claim the same speedup.
 - Shared SPIR-V regenerated; owned-image transfer barriers corrected.
 
 Keep the required NR runtime and matching forwarder. Disable **Generate before SR, apply after SR
-(DLSS)** and enable **Apply before Super Resolution**. For example, merge into the existing INI:
+(DLSS)** and set **NR Pass at:** to **Before Super Resolution**. For example, merge into the existing INI:
 
 ```ini
 [Upscalers]

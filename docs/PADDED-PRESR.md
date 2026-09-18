@@ -47,7 +47,7 @@ Dawnwalker and NVIDIA's acceptance of its exact odd-sized model inputs still nee
 Use a new build of the actual loaded OptiScaler proxy (for example `dxgi.dll`), not just a replaced
 unused `OptiScaler.dll`. Use the v0.6.1 padded-input preview or a newer build; v0.5 and earlier
 do not acquire the fix from new README/INI files.
-Start with one NR pass, **Apply before Super Resolution** on, model resolution at 100%, and RR/FG off.
+Start with one NR pass, **NR Pass at:** set to **Before Super Resolution**, model resolution at 100%, and RR/FG off.
 Switch Performance to Balanced and check `OptiScaler.log` for:
 
 - `DLSS-NR before SR: staging active ... from padded Color allocation ...`

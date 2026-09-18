@@ -129,57 +129,63 @@ static bool InheritedProfileCombo(const char* label, CustomOptional<uint32_t, No
     return true;
 }
 
-// This fork's recommended starting point. Touches only the settings named below; anything
-// else in the panel (Pass 2/3 overrides, skin/environment sliders, Compare, Debug view,
-// Hold frame, Downscaler, exposure-scan settings, etc.) is left exactly as the user had it.
-static void ApplyOptimizedDefaults(Config* config, int& pendingScale)
+// This fork's recommended starting points for the "Model passes" slider, one per pass count.
+// Each button touches only the settings named below (including Pass 2/3 overrides once the
+// preset's pass count reaches them); anything else in the panel (skin/environment sliders,
+// Compare, Debug view, Hold frame, Downscaler, exposure-scan settings, etc.) is left exactly as
+// the user had it.
+static void ApplyPassPreset(Config* config, int& pendingScale, unsigned int passes)
 {
     config->DlssNrEnabled = true;
     config->DlssNrFinishedPicture = false;
-    config->DlssNrRunBeforeSr = false;
+    config->DlssNrRunBeforeSr = true;
     config->DlssNrPrecision = 0u; // NVIDIA (FP8)
     config->DlssNrDeferredDlss = false;
     config->DlssNrResidualFg = false;
     config->DlssNrResidualFgApproxCamera = false;
     config->DlssNrApplyModel = true;
     config->DlssNrUnlockPasses = false;
-    config->DlssNrPasses = 1u;
-
-    // Total-pixel-count check against 1920x1080 (2,073,600px), not a height-only check --
-    // an ultrawide at 1080 tall but more total pixels counts as "above 1080p" here. No
-    // currentFeature (no game running yet) is treated as <=1080p.
-    const auto feature = State::Instance().currentFeature;
-    const unsigned long long outputPixels =
-        feature ? (unsigned long long) feature->TargetWidth() * feature->TargetHeight() : 0ull;
-
-    if (outputPixels > 1920ull * 1080ull)
-    {
-        config->DlssNrModelResolutionAuto = true;
-    }
-    else
-    {
-        config->DlssNrModelResolutionAuto = false;
-        config->DlssNrWorkingScale = 1.0f; // 100%
-        pendingScale = -1;                 // clear any in-flight drag
-    }
+    config->DlssNrPasses = passes;
+    config->DlssNrModelResolutionAuto = false;
+    config->DlssNrWorkingScale = 1.0f; // 100%
+    pendingScale = -1;                 // clear any in-flight drag
 
     config->DlssNrTransfer = 1u;                // Enlargement: Matched residual
     config->DlssNrReducedUpscaleMethod = 1u;    // Enlarge filter: SGSR1
     config->DlssNrSgsr1EdgeThreshold = 0.300f;
     config->DlssNrSgsr1EdgeSharpness = 2.00f;
-    config->DlssNrTransferStrength = 1.5f;      // Detail strength
+    config->DlssNrTransferStrength = 1.0f;      // Detail strength
     config->DlssNrColourStrength = 1.0f;
-    config->DlssNrReversibleMode = 2u;          // HDR mapping: Reversible curve + replace
-    config->DlssNrReplaceDetailStrength = 0.4f;
+    config->DlssNrReversibleMode = 1u;          // HDR mapping: Reversible curve + composed
     config->DlssNrStyle = 1u;                   // Pass 1 Style: Natural
-    config->DlssNrIntensity = 0.98f;
-    config->DlssNrLocalStructure = 0.98f;
-    config->DlssNrLocalTone = 1.0f;
+    config->DlssNrIntensity = 2.0f;
+    config->DlssNrLocalStructure = 2.0f;
+    config->DlssNrLocalTone = 2.0f;
     config->DlssNrSkinStructure = -1.0f;
     config->DlssNrAutoMask = true;
     config->DlssNrWhitePointSource = 1u;        // Game exposure
     config->DlssNrWhitePointTrim = 1.0f;
     config->DlssNrMaxRatio = 2.0f;               // Highlight guard
+
+    if (passes >= 2u)
+    {
+        config->DlssNrPass2Style = 1u;           // Pass 2 Style: Natural
+        config->DlssNrPass2Intensity = 1.0f;
+        config->DlssNrPass2LocalStructure = 1.25f;
+        config->DlssNrPass2LocalTone = 0.45f;
+        config->DlssNrPass2SkinStructure = 0.25f;
+        config->DlssNrPass2AutoMask = true;
+    }
+
+    if (passes >= 3u)
+    {
+        config->DlssNrPass3Style = 0u;           // Pass 3 Style: Standard
+        config->DlssNrPass3Intensity = 1.0f;
+        config->DlssNrPass3LocalStructure = 1.25f;
+        config->DlssNrPass3LocalTone = 1.25f;
+        config->DlssNrPass3SkinStructure = 1.0f;
+        config->DlssNrPass3AutoMask = true;
+    }
 }
 
 void RenderMenu(Config* config, float menuResScale)
@@ -199,12 +205,19 @@ void RenderMenu(Config* config, float menuResScale)
         static int pendingScale = -1;
 
         ImGui::SeparatorText("Presets");
-        if (ImGui::Button("Optimized Defaults"))
-            ApplyOptimizedDefaults(config, pendingScale);
-        HelpMarker("Set this fork's recommended starting point: NR after Super Resolution, FP8 precision, "
-                   "1 pass, Matched residual + SGSR1 enlargement, Reversible curve + replace HDR mapping, "
-                   "and game-exposure white point. Overwrites the settings below; anything not listed here "
-                   "is left as you have it.");
+        if (ImGui::Button("1 Pass"))
+            ApplyPassPreset(config, pendingScale, 1u);
+        ImGui::SameLine();
+        if (ImGui::Button("2 Pass"))
+            ApplyPassPreset(config, pendingScale, 2u);
+        ImGui::SameLine();
+        if (ImGui::Button("3 Pass"))
+            ApplyPassPreset(config, pendingScale, 3u);
+        HelpMarker("Set this fork's recommended starting point for the chosen pass count: NR before "
+                   "Super Resolution, FP8 precision, Matched residual + SGSR1 enlargement, Reversible "
+                   "curve + composed HDR mapping, and game-exposure white point. 2 Pass also sets Pass "
+                   "2's overrides; 3 Pass sets Pass 2 and Pass 3's overrides. Overwrites the settings "
+                   "below; anything not listed here is left as you have it.");
 
         bool enabled = config->DlssNrEnabled.value_or_default();
         if (ImGui::Checkbox("Enable Neural Rendering", &enabled))

@@ -129,39 +129,45 @@ static bool InheritedProfileCombo(const char* label, CustomOptional<uint32_t, No
     return true;
 }
 
+// Per-pass profile values the pass presets write. One table shared by ApplyPassPreset and
+// PassPresetActive (the button highlight), so what a preset sets and what counts as "that preset is
+// in effect" can't drift apart.
+struct PassProfile
+{
+    uint32_t style; // 0 Standard, 1 Natural, 2 Cinematic
+    float intensity;
+    float structure;
+    float tone;
+    float skin;
+};
+
+static constexpr PassProfile PresetPass1 { 1u, 2.0f, 2.0f, 2.0f, -1.0f };  // Natural
+static constexpr PassProfile PresetPass2 { 1u, 1.0f, 1.25f, 0.45f, 0.25f }; // Natural
+static constexpr PassProfile PresetPass3 { 0u, 1.0f, 1.25f, 1.25f, 1.0f };  // Standard
+
 // This fork's recommended starting points for the "Model passes" slider, one per pass count.
 // Each button touches only the settings named below (including Pass 2/3 overrides once the
 // preset's pass count reaches them); anything else in the panel (skin/environment sliders,
 // Compare, Debug view, Hold frame, Downscaler, exposure-scan settings, etc.) is left exactly as
 // the user had it.
-static void ApplyPassPreset(Config* config, int& pendingScale, unsigned int passes)
+static void ApplyPassPreset(Config* config, unsigned int passes)
 {
     config->DlssNrEnabled = true;
-    config->DlssNrFinishedPicture = false;
-    config->DlssNrRunBeforeSr = true;
     config->DlssNrPrecision = 0u; // NVIDIA (FP8)
-    config->DlssNrDeferredDlss = false;
-    config->DlssNrResidualFg = false;
-    config->DlssNrResidualFgApproxCamera = false;
     config->DlssNrApplyModel = true;
     config->DlssNrUnlockPasses = false;
     config->DlssNrPasses = passes;
-    config->DlssNrModelResolutionAuto = false;
-    config->DlssNrWorkingScale = 1.0f; // 100%
-    pendingScale = -1;                 // clear any in-flight drag
 
-    config->DlssNrTransfer = 1u;                // Enlargement: Matched residual
-    config->DlssNrReducedUpscaleMethod = 1u;    // Enlarge filter: SGSR1
-    config->DlssNrSgsr1EdgeThreshold = 0.300f;
-    config->DlssNrSgsr1EdgeSharpness = 2.00f;
+    // Upscale Method and Final Image Composition are deliberately not set here: the Pre-SR/Post-SR
+    // High tier sets them, and writing them from a pass preset would clear that tier's highlight.
+    config->DlssNrTransfer = 1u;                // Upscale Mode: Matched residual
     config->DlssNrTransferStrength = 1.0f;      // Detail strength
     config->DlssNrColourStrength = 1.0f;
-    config->DlssNrReversibleMode = 1u;          // HDR mapping: Reversible curve + composed
-    config->DlssNrStyle = 1u;                   // Pass 1 Style: Natural
-    config->DlssNrIntensity = 2.0f;
-    config->DlssNrLocalStructure = 2.0f;
-    config->DlssNrLocalTone = 2.0f;
-    config->DlssNrSkinStructure = -1.0f;
+    config->DlssNrStyle = PresetPass1.style;
+    config->DlssNrIntensity = PresetPass1.intensity;
+    config->DlssNrLocalStructure = PresetPass1.structure;
+    config->DlssNrLocalTone = PresetPass1.tone;
+    config->DlssNrSkinStructure = PresetPass1.skin;
     config->DlssNrAutoMask = true;
     config->DlssNrWhitePointSource = 1u;        // Game exposure
     config->DlssNrWhitePointTrim = 1.0f;
@@ -169,23 +175,160 @@ static void ApplyPassPreset(Config* config, int& pendingScale, unsigned int pass
 
     if (passes >= 2u)
     {
-        config->DlssNrPass2Style = 1u;           // Pass 2 Style: Natural
-        config->DlssNrPass2Intensity = 1.0f;
-        config->DlssNrPass2LocalStructure = 1.25f;
-        config->DlssNrPass2LocalTone = 0.45f;
-        config->DlssNrPass2SkinStructure = 0.25f;
+        config->DlssNrPass2Style = PresetPass2.style;
+        config->DlssNrPass2Intensity = PresetPass2.intensity;
+        config->DlssNrPass2LocalStructure = PresetPass2.structure;
+        config->DlssNrPass2LocalTone = PresetPass2.tone;
+        config->DlssNrPass2SkinStructure = PresetPass2.skin;
         config->DlssNrPass2AutoMask = true;
     }
 
     if (passes >= 3u)
     {
-        config->DlssNrPass3Style = 0u;           // Pass 3 Style: Standard
-        config->DlssNrPass3Intensity = 1.0f;
-        config->DlssNrPass3LocalStructure = 1.25f;
-        config->DlssNrPass3LocalTone = 1.25f;
-        config->DlssNrPass3SkinStructure = 1.0f;
+        config->DlssNrPass3Style = PresetPass3.style;
+        config->DlssNrPass3Intensity = PresetPass3.intensity;
+        config->DlssNrPass3LocalStructure = PresetPass3.structure;
+        config->DlssNrPass3LocalTone = PresetPass3.tone;
+        config->DlssNrPass3SkinStructure = PresetPass3.skin;
         config->DlssNrPass3AutoMask = true;
     }
+}
+
+static bool NearlyEqual(float a, float b)
+{
+    return std::fabs(a - b) < 0.005f;
+}
+
+// Pass 2/3 settings are optional (absent = inherit pass 1), so an absent one never matches a preset.
+template <typename FloatOpt>
+static bool OptionalIs(FloatOpt& opt, float value)
+{
+    return opt.has_value() && NearlyEqual(opt.value(), value);
+}
+
+static bool Pass1Is(Config* config, const PassProfile& p)
+{
+    return config->DlssNrStyle.value_or_default() == p.style &&
+           NearlyEqual(config->DlssNrIntensity.value_or_default(), p.intensity) &&
+           NearlyEqual(config->DlssNrLocalStructure.value_or_default(), p.structure) &&
+           NearlyEqual(config->DlssNrLocalTone.value_or_default(), p.tone) &&
+           NearlyEqual(config->DlssNrSkinStructure.value_or_default(), p.skin);
+}
+
+static bool Pass2Is(Config* config, const PassProfile& p)
+{
+    return config->DlssNrPass2Style.has_value() && config->DlssNrPass2Style.value() == p.style &&
+           OptionalIs(config->DlssNrPass2Intensity, p.intensity) &&
+           OptionalIs(config->DlssNrPass2LocalStructure, p.structure) &&
+           OptionalIs(config->DlssNrPass2LocalTone, p.tone) &&
+           OptionalIs(config->DlssNrPass2SkinStructure, p.skin);
+}
+
+static bool Pass3Is(Config* config, const PassProfile& p)
+{
+    return config->DlssNrPass3Style.has_value() && config->DlssNrPass3Style.value() == p.style &&
+           OptionalIs(config->DlssNrPass3Intensity, p.intensity) &&
+           OptionalIs(config->DlssNrPass3LocalStructure, p.structure) &&
+           OptionalIs(config->DlssNrPass3LocalTone, p.tone) &&
+           OptionalIs(config->DlssNrPass3SkinStructure, p.skin);
+}
+
+// Whether a pass preset is what is currently in effect, for highlighting its button. Derived from
+// the config (not remembered), like ResolutionTierActive: the pass count plus each pass's own
+// profile must match. Detail/Colour strength, white point and the like are left out on purpose so
+// tuning them doesn't drop the highlight.
+static bool PassPresetActive(Config* config, unsigned int passes)
+{
+    return config->DlssNrPasses.value_or_default() == passes && Pass1Is(config, PresetPass1) &&
+           (passes < 2u || Pass2Is(config, PresetPass2)) &&
+           (passes < 3u || Pass3Is(config, PresetPass3));
+}
+
+// A button drawn green while its preset is the one in effect (the overlay's existing success green).
+static bool PresetButton(const char* label, bool active)
+{
+    if (active)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.55f, 0.25f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.26f, 0.65f, 0.31f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.16f, 0.45f, 0.20f, 1.0f));
+    }
+
+    const bool pressed = ImGui::Button(label);
+
+    if (active)
+        ImGui::PopStyleColor(3);
+
+    return pressed;
+}
+
+// Quality tiers (High/Medium/Low/Potato) for running NR at a reduced model resolution, offered as
+// two preset rows that differ only in where NR runs: Pre-SR (Before Super Resolution) and Post-SR
+// (After Super Resolution). Each touches only Upscale Mode, Upscale Method, Model resolution,
+// Final Image Composition and (where the tier lists one) Restore Sharpness, plus Auto model
+// resolution -- turned off because Auto overrides the Model resolution slider when NR runs
+// post-SR, which would make the tier's resolution a silent no-op. Each also sets "NR Pass at:",
+// which includes turning off Generate-before-SR/apply-after-SR (DLSS): that mode generates pre-SR
+// and disables the placement choice, so leaving it on would contradict the row's name.
+struct ResolutionTier
+{
+    const char* name;
+    uint32_t upscaleMethod;      // 0 Bilinear, 1 SGSR1
+    float workingScale;          // model resolution as a fraction (1.0 = 100%)
+    uint32_t composition;        // 1 Reversible curve + composed, 2 Reversible curve + replace
+    float restoreSharpness;      // < 0: leave the current value (composed mode hides the slider)
+    float detailStrength;        // < 0: leave the current value
+    float colourStrength;        // < 0: leave the current value
+};
+
+static constexpr ResolutionTier ResolutionTiers[] = {
+    { "High",   1u, 1.00f, 1u, -1.0f, 1.0f, 1.0f },
+    { "Medium", 1u, 0.80f, 2u,  1.50f, -1.0f, -1.0f },
+    { "Low",    0u, 0.65f, 2u,  1.50f, -1.0f, -1.0f },
+    { "Potato", 0u, 0.50f, 2u,  1.70f, -1.0f, -1.0f },
+};
+
+static void ApplyResolutionTier(Config* config, int& pendingScale, const ResolutionTier& tier,
+                                bool beforeSuperResolution)
+{
+    // Same rule as the "NR Pass at:" combo: leaving Finished Picture clears a session failure.
+    if (config->DlssNrFinishedPicture.value_or_default())
+        DlssNr::RetryAfterFailure();
+    config->DlssNrFinishedPicture = false;
+    config->DlssNrRunBeforeSr = beforeSuperResolution;
+    config->DlssNrDeferredDlss = false;
+
+    config->DlssNrTransfer = 1u; // Upscale Mode: Matched residual
+    config->DlssNrReducedUpscaleMethod = tier.upscaleMethod;
+    config->DlssNrModelResolutionAuto = false;
+    config->DlssNrWorkingScale = tier.workingScale;
+    pendingScale = -1; // clear any in-flight drag
+    config->DlssNrReversibleMode = tier.composition;
+
+    if (tier.restoreSharpness >= 0.0f)
+        config->DlssNrReplaceDetailStrength = tier.restoreSharpness;
+
+    if (tier.detailStrength >= 0.0f)
+        config->DlssNrTransferStrength = tier.detailStrength;
+
+    if (tier.colourStrength >= 0.0f)
+        config->DlssNrColourStrength = tier.colourStrength;
+}
+
+// Whether a tier's settings are what is currently in effect, for highlighting its button. Derived
+// from the config rather than remembered, so it can never claim a preset the settings have since
+// drifted from, and it survives a restart. Restore Sharpness is left out of the comparison on
+// purpose: fine-tuning it after picking a tier shouldn't drop the highlight. At most one button
+// can match -- tiers have distinct resolutions and the two rows differ in placement.
+static bool ResolutionTierActive(Config* config, const ResolutionTier& tier, bool beforeSuperResolution)
+{
+    return !config->DlssNrFinishedPicture.value_or_default() &&
+           config->DlssNrRunBeforeSr.value_or_default() == beforeSuperResolution &&
+           config->DlssNrTransfer.value_or_default() == 1u &&
+           config->DlssNrReducedUpscaleMethod.value_or_default() == tier.upscaleMethod &&
+           !config->DlssNrModelResolutionAuto.value_or_default() &&
+           std::fabs(config->DlssNrWorkingScale.value_or_default() - tier.workingScale) < 0.005f &&
+           config->DlssNrReversibleMode.value_or_default() == tier.composition;
 }
 
 void RenderMenu(Config* config, float menuResScale)
@@ -204,118 +347,15 @@ void RenderMenu(Config* config, float menuResScale)
         // way.
         static int pendingScale = -1;
 
-        ImGui::SeparatorText("Presets");
-        if (ImGui::Button("1 Pass"))
-            ApplyPassPreset(config, pendingScale, 1u);
-        ImGui::SameLine();
-        if (ImGui::Button("2 Pass"))
-            ApplyPassPreset(config, pendingScale, 2u);
-        ImGui::SameLine();
-        if (ImGui::Button("3 Pass"))
-            ApplyPassPreset(config, pendingScale, 3u);
-        HelpMarker("Set this fork's recommended starting point for the chosen pass count: NR before "
-                   "Super Resolution, FP8 precision, Matched residual + SGSR1 enlargement, Reversible "
-                   "curve + composed HDR mapping, and game-exposure white point. 2 Pass also sets Pass "
-                   "2's overrides; 3 Pass sets Pass 2 and Pass 3's overrides. Overwrites the settings "
-                   "below; anything not listed here is left as you have it.");
-
         bool enabled = config->DlssNrEnabled.value_or_default();
         if (ImGui::Checkbox("Enable Neural Rendering", &enabled))
             config->DlssNrEnabled = enabled;
 
         HelpMarker("Enhance lighting and material appearance with the NR model. Placement selects before or after upscaling.\nRequires nvngx_dlssnr.dll plus the included nvngx.dll_dlssnr.dll helper.");
 
+        // Read early (checkbox itself is drawn down in NR Options) so the running-status block
+        // right below can already report finished-picture-specific text.
         bool finishedPicture = config->DlssNrFinishedPicture.value_or_default();
-        if (ImGui::Checkbox("Apply NR to the finished picture", &finishedPicture))
-        {
-            config->DlssNrFinishedPicture = finishedPicture;
-            DlssNr::RetryAfterFailure();
-        }
-        HelpMarker("Apply NR after the game has finished its lighting and effects. This may help with green noise.\nWorks with frame generation on or off in native DirectX 12 games, including SDR, HDR10 and scRGB.\nIt can also change the HUD and menus. Enable Run the model before Super Resolution to generate the changes earlier.");
-        if (finishedPicture && enabled)
-        {
-            const auto feature = State::Instance().currentFeature;
-            if (feature && (feature->Api() != API::DX12 || feature->IsWithDx12()))
-                ImGui::TextWrapped("This option needs a native DirectX 12 game.");
-            else
-                ImGui::TextWrapped("%s", DlssNr::FinishedPictureStatus().c_str());
-        }
-
-        bool beforeSr = config->DlssNrRunBeforeSr.value_or_default() ||
-                        (finishedPicture && config->DlssNrDeferredDlss.value_or_default());
-        const auto activeFeature = State::Instance().currentFeature;
-        const bool rayReconstruction = activeFeature && activeFeature->GetUpscalerType() == Upscaler::DLSSD;
-        const bool deferredActive = !finishedPicture && config->DlssNrDeferredDlss.value_or_default() && !rayReconstruction;
-        if (deferredActive)
-            ImGui::BeginDisabled();
-        if (ImGui::Checkbox(finishedPicture ? "Run the model before Super Resolution" : "Apply before Super Resolution", &beforeSr))
-        {
-            config->DlssNrRunBeforeSr = beforeSr;
-            if (finishedPicture) config->DlssNrDeferredDlss = false;
-        }
-        if (deferredActive)
-            ImGui::EndDisabled();
-
-        HelpMarker(finishedPicture ? "Run the model at the smaller input size, upscale its changes with DLSS, then apply them to the finished picture.\nExperimental: the colour transfer is approximate and may look different. Requires DLSS SR; does not support RR." :
-            "On: apply NR before SR. Off: apply it afterward.\nHas no effect when the game's Ray Reconstruction is active -- RR always runs NR after RR+SR. Unsupported input layouts fall back after upscaling.");
-
-        bool deferredDlss = config->DlssNrDeferredDlss.value_or_default();
-        int precisionChoice = config->DlssNrPrecision.value_or_default() == 4 ? 1 : 0;
-        const char* precisions[] = { "NVIDIA (FP8)", "Experimental (FP8+NVFP4 hybrid)" };
-        if (ImGui::Combo("Model precision", &precisionChoice, precisions, IM_ARRAYSIZE(precisions)))
-            config->DlssNrPrecision = precisionChoice == 1 ? 4u : 0u;
-        HelpMarker("NVIDIA: original FP8 model (default), with some sensitive operations kept at higher precision.\nExperimental: this fork's FP8+NVFP4 hybrid for RTX 50 GPUs; output may differ slightly.");
-        if (precisionChoice > 0)
-        {
-            ImGui::TextUnformatted(enabled && DlssNrNative::IsActive() ? "Hybrid: active" : "Hybrid: inactive");
-            ImGui::TextWrapped("Loading may pause the game and look like a freeze. Please wait.");
-        }
-        // Keep failure details in the log without displaying changing kernel counters in the menu.
-        auto hybridStatus = DlssNrNative::Status();
-        hybridStatus = hybridStatus.substr(0, hybridStatus.find(" |"));
-        static std::string lastHybridWarning;
-        if (hybridStatus.rfind("Restart required:", 0) == 0 || hybridStatus.find("fallback") != std::string::npos)
-        {
-            if (hybridStatus != lastHybridWarning)
-                LOG_WARN("Hybrid: {}", hybridStatus);
-            lastHybridWarning = hybridStatus;
-        }
-        else
-            lastHybridWarning.clear();
-        if (!finishedPicture)
-        {
-            if (ImGui::Checkbox("Generate before SR, apply after SR (DLSS)", &deferredDlss))
-                config->DlssNrDeferredDlss = deferredDlss;
-            HelpMarker("Compute NR at input resolution, upscale its changes with DLSS, then apply them after SR.\nExperimental: may flicker and adds GPU cost. Requires DLSS on DX12 or its bridges; does not support RR.\nOverrides Apply before SR. Disable Hold frame, Compare and Debug view.");
-            if (deferredDlss && rayReconstruction)
-                ImGui::TextWrapped("Generate before / apply after is unavailable with RR. Apply before SR "
-                                   "controls NR placement.");
-            else if (deferredDlss)
-                ImGui::TextWrapped("Residual DLSS: %s", DlssNr::DeferredDlssStatus().c_str());
-            ImGui::BeginDisabled(finishedPicture || !deferredDlss || rayReconstruction);
-            bool residualFg = config->DlssNrResidualFg.value_or_default();
-            if (ImGui::Checkbox("NR every second frame (NVIDIA Frame Generation, experimental)", &residualFg))
-                config->DlssNrResidualFg = residualFg;
-            HelpMarker("Run NR every other rendered frame and use NVIDIA Frame Generation (FG) to interpolate its changes.\nRequires the option above. Adds one rendered frame of latency and may misalign effects or UI.\nIf motion vectors are unavailable, each NR result is reused for two frames.");
-            bool approxCamera = config->DlssNrResidualFgApproxCamera.value_or_default();
-            if (ImGui::Checkbox("Allow approximate FG camera guides (experimental)", &approxCamera))
-                config->DlssNrResidualFgApproxCamera = approxCamera;
-            HelpMarker("Use estimated camera data when the game does not provide it. May cause artifacts during camera movement.");
-            ImGui::EndDisabled();
-
-        }
-        else if (beforeSr)
-            ImGui::TextWrapped("Pre-SR changes: %s", DlssNr::DeferredDlssStatus().c_str());
-
-        // The toggle can be bound to a key, and nobody would think to look for it under Keybinds
-        // unless told. Dimmed, because it is a note rather than a setting.
-        ImGui::TextDisabled("Set the NR toggle shortcut under Keybinds.");
-
-        bool applyModel = config->DlssNrApplyModel.value_or_default();
-        if (ImGui::Checkbox("Apply the model", &applyModel))
-            config->DlssNrApplyModel = applyModel;
-
-        HelpMarker("Show or hide the NR effect. The model still runs when hidden.\nDisable Enable Neural Rendering to stop its GPU cost.");
 
         // Either backend. The two keep separate state, and on a native Vulkan game the D3D12 side
         // is never touched -- so asking only that one reports "waiting for the upscaler" over a pass
@@ -390,15 +430,32 @@ void RenderMenu(Config* config, float menuResScale)
                 ImGui::TextDisabled("Includes time shared with other GPU work.");
         }
 
-        ImGui::Spacing();
+        ImGui::SeparatorText("Multipass Presets");
+        if (PresetButton("1 Pass", PassPresetActive(config, 1u)))
+            ApplyPassPreset(config, 1u);
+        ImGui::SameLine();
+        if (PresetButton("2 Pass", PassPresetActive(config, 2u)))
+            ApplyPassPreset(config, 2u);
+        ImGui::SameLine();
+        if (PresetButton("3 Pass", PassPresetActive(config, 3u)))
+            ApplyPassPreset(config, 3u);
+        HelpMarker("Set this fork's recommended starting point for the chosen pass count: FP8 "
+                   "precision, Matched residual upscale mode, and game-exposure white point. "
+                   "Upscale Method and Final Image Composition are left alone; use the Pre-SR or "
+                   "Post-SR presets for those. 2 Pass also sets Pass "
+                   "2's overrides; 3 Pass sets Pass 2 and Pass 3's overrides. Overwrites the settings "
+                   "below; anything not listed here, including NR Pass at:, is left as you have it.\n"
+                   "The green button is the pass count currently in effect; changing the pass count "
+                   "or a pass's Style, Intensity, Local structure, Local tone or Skin structure clears it.");
+
+        // Directly under the pass presets, since those buttons set this slider's value. The
+        // panel-wide item width is pushed further down (after NR Options), so this block pushes
+        // its own to keep the slider the same width it had before it moved.
         ImGui::PushItemWidth(220.0f * menuResScale);
 
-        ImGui::SeparatorText("Performance");
-
+        // The checkbox that sets this lives under "Apply the model" (NR Options); it is read here
+        // from config, so toggling it takes effect on the next frame.
         bool unlockPasses = config->DlssNrUnlockPasses.value_or_default();
-        if (ImGui::Checkbox("Lift model pass limit (up to 30; expensive)", &unlockPasses))
-            config->DlssNrUnlockPasses = unlockPasses;
-        HelpMarker("Allow up to 30 passes instead of 3. More passes use more GPU time and VRAM; high values may crash the game.");
         const unsigned int passLimit = unlockPasses ? MaxPassCount : DefaultMaxPassCount;
 
         {
@@ -425,6 +482,182 @@ void RenderMenu(Config* config, float menuResScale)
 
             HelpMarker("Process the image repeatedly. More passes strengthen the effect and increase GPU cost.\nEach pass has its own settings and history. Start with 1.");
         }
+
+        ImGui::PopItemWidth();
+
+        // Both rows share the same button labels, so each gets its own ImGui ID scope.
+        const auto tierRow = [&](const char* id, bool beforeSuperResolution) {
+            ImGui::PushID(id);
+            for (int i = 0; i < IM_ARRAYSIZE(ResolutionTiers); ++i)
+            {
+                if (i > 0)
+                    ImGui::SameLine();
+                if (PresetButton(ResolutionTiers[i].name,
+                                 ResolutionTierActive(config, ResolutionTiers[i], beforeSuperResolution)))
+                    ApplyResolutionTier(config, pendingScale, ResolutionTiers[i], beforeSuperResolution);
+            }
+            ImGui::PopID();
+        };
+
+        ImGui::SeparatorText("Pre-SR Presets");
+        tierRow("pre", true);
+        HelpMarker("Quality tiers for running NR before Super Resolution at a lower model resolution, from High (100%, best quality) down to Potato (50%, cheapest).\n"
+                   "Each sets Upscale Mode, Upscale Method, Model resolution and Final Image Composition (High also sets Detail and Colour strength to 1; Medium, Low and Potato also set Restore Sharpness), and turns Auto model resolution off so the resolution applies.\n"
+                   "It also sets NR Pass at: to Before Super Resolution. Anything not listed here is left as you have it.\n"
+                   "The green button is the tier currently in effect; changing NR Pass at:, Upscale Mode, Upscale Method, Model resolution or Final Image Composition clears it.");
+
+        ImGui::SeparatorText("Post-SR Presets");
+        tierRow("post", false);
+        HelpMarker("Quality tiers for running NR after Super Resolution at a lower model resolution, from High (100%, best quality) down to Potato (50%, cheapest).\n"
+                   "Each sets Upscale Mode, Upscale Method, Model resolution and Final Image Composition (High also sets Detail and Colour strength to 1; Medium, Low and Potato also set Restore Sharpness), and turns Auto model resolution off so the resolution applies.\n"
+                   "It also sets NR Pass at: to After Super Resolution. Anything not listed here is left as you have it.\n"
+                   "The green button is the tier currently in effect; changing NR Pass at:, Upscale Mode, Upscale Method, Model resolution or Final Image Composition clears it.");
+
+        ImGui::SeparatorText("NR Options");
+
+        bool beforeSr = config->DlssNrRunBeforeSr.value_or_default() ||
+                        (finishedPicture && config->DlssNrDeferredDlss.value_or_default());
+        const auto activeFeature = State::Instance().currentFeature;
+        const bool rayReconstruction = activeFeature && activeFeature->GetUpscalerType() == Upscaler::DLSSD;
+        const bool deferredActive = !finishedPicture && config->DlssNrDeferredDlss.value_or_default() && !rayReconstruction;
+
+        // A single exclusive choice, not two independent checkboxes: "before SR" used to be one
+        // checkbox whose own label AND meaning silently changed depending on finishedPicture's
+        // state, and "neither checked" was an unlabeled third placement (after SR, not on the
+        // finished picture) a user had to infer rather than see. All three are named options here.
+        //
+        // A Combo, not inline RadioButtons: this panel's width isn't user-resizable, and three
+        // radios with these labels ran off the visible edge with no way to reach the third one.
+        // Every other 3+-option control in this file (Model precision right below, Upscale Mode,
+        // Upscale Method, Final Image Composition) is already a Combo for the same reason.
+        static const char* placementNames[] = { "After Super Resolution", "Before Super Resolution",
+                                                 "Finished Picture" };
+        int placement = finishedPicture ? 2 : (beforeSr ? 1 : 0);
+
+        if (deferredActive)
+            ImGui::BeginDisabled();
+        if (ImGui::Combo("NR Pass at:", &placement, placementNames, IM_ARRAYSIZE(placementNames)))
+        {
+            if (placement == 0)
+            {
+                if (finishedPicture)
+                    DlssNr::RetryAfterFailure();
+                finishedPicture = false;
+                beforeSr = false;
+                config->DlssNrFinishedPicture = false;
+                config->DlssNrRunBeforeSr = false;
+            }
+            else if (placement == 1)
+            {
+                if (finishedPicture)
+                    DlssNr::RetryAfterFailure();
+                finishedPicture = false;
+                beforeSr = true;
+                config->DlssNrFinishedPicture = false;
+                config->DlssNrRunBeforeSr = true;
+            }
+            else
+            {
+                if (!finishedPicture)
+                    DlssNr::RetryAfterFailure();
+                finishedPicture = true;
+                config->DlssNrFinishedPicture = true;
+            }
+        }
+        if (deferredActive)
+            ImGui::EndDisabled();
+
+        HelpMarker("Choose where in the pipeline NR runs.\nAfter Super Resolution (default): apply NR once SR has upscaled the frame.\nBefore Super Resolution: apply NR to the smaller pre-upscale image instead. No effect when the game's Ray Reconstruction is active -- RR always runs NR after RR+SR, and unsupported input layouts fall back to after SR.\nFinished Picture: apply NR after the game has finished its lighting and effects, which may help with green noise. Works with frame generation on or off in native DirectX 12 games (SDR, HDR10, scRGB), and can also change the HUD and menus.");
+
+        if (finishedPicture && enabled)
+        {
+            const auto feature = State::Instance().currentFeature;
+            if (feature && (feature->Api() != API::DX12 || feature->IsWithDx12()))
+                ImGui::TextWrapped("This option needs a native DirectX 12 game.");
+            else
+                ImGui::TextWrapped("%s", DlssNr::FinishedPictureStatus().c_str());
+        }
+
+        // Nested under Finished Picture: a second, independent axis (generate the changes at the
+        // smaller pre-SR size vs. at the finished picture's own size), not a fourth top-level
+        // placement -- progressive disclosure, same as every other mode-gated control in this file.
+        if (finishedPicture)
+        {
+            if (ImGui::Checkbox("Run the model before Super Resolution", &beforeSr))
+            {
+                config->DlssNrRunBeforeSr = beforeSr;
+                config->DlssNrDeferredDlss = false;
+            }
+            HelpMarker("Run the model at the smaller input size, upscale its changes with DLSS, then apply them to the finished picture.\nExperimental: the colour transfer is approximate and may look different. Requires DLSS SR; does not support RR.");
+        }
+
+        bool deferredDlss = config->DlssNrDeferredDlss.value_or_default();
+        int precisionChoice = config->DlssNrPrecision.value_or_default() == 4 ? 1 : 0;
+        const char* precisions[] = { "NVIDIA (FP8)", "Experimental (FP8+NVFP4 hybrid)" };
+        if (ImGui::Combo("Model precision", &precisionChoice, precisions, IM_ARRAYSIZE(precisions)))
+            config->DlssNrPrecision = precisionChoice == 1 ? 4u : 0u;
+        HelpMarker("NVIDIA: original FP8 model (default), with some sensitive operations kept at higher precision.\nExperimental: this fork's FP8+NVFP4 hybrid for RTX 50 GPUs; output may differ slightly.");
+        if (precisionChoice > 0)
+        {
+            ImGui::TextUnformatted(enabled && DlssNrNative::IsActive() ? "Hybrid: active" : "Hybrid: inactive");
+            ImGui::TextWrapped("Loading may pause the game and look like a freeze. Please wait.");
+        }
+        // Keep failure details in the log without displaying changing kernel counters in the menu.
+        auto hybridStatus = DlssNrNative::Status();
+        hybridStatus = hybridStatus.substr(0, hybridStatus.find(" |"));
+        static std::string lastHybridWarning;
+        if (hybridStatus.rfind("Restart required:", 0) == 0 || hybridStatus.find("fallback") != std::string::npos)
+        {
+            if (hybridStatus != lastHybridWarning)
+                LOG_WARN("Hybrid: {}", hybridStatus);
+            lastHybridWarning = hybridStatus;
+        }
+        else
+            lastHybridWarning.clear();
+        if (!finishedPicture)
+        {
+            if (ImGui::Checkbox("Generate before SR, apply after SR (DLSS)", &deferredDlss))
+                config->DlssNrDeferredDlss = deferredDlss;
+            HelpMarker("Compute NR at input resolution, upscale its changes with DLSS, then apply them after SR.\nExperimental: may flicker and adds GPU cost. Requires DLSS on DX12 or its bridges; does not support RR.\nOverrides Apply before SR. Disable Hold frame, Compare and Debug view.");
+            if (deferredDlss && rayReconstruction)
+                ImGui::TextWrapped("Generate before / apply after is unavailable with RR. Apply before SR "
+                                   "controls NR placement.");
+            else if (deferredDlss)
+                ImGui::TextWrapped("Residual DLSS: %s", DlssNr::DeferredDlssStatus().c_str());
+            ImGui::BeginDisabled(finishedPicture || !deferredDlss || rayReconstruction);
+            bool residualFg = config->DlssNrResidualFg.value_or_default();
+            if (ImGui::Checkbox("NR every second frame (NVIDIA Frame Generation, experimental)", &residualFg))
+                config->DlssNrResidualFg = residualFg;
+            HelpMarker("Run NR every other rendered frame and use NVIDIA Frame Generation (FG) to interpolate its changes.\nRequires the option above. Adds one rendered frame of latency and may misalign effects or UI.\nIf motion vectors are unavailable, each NR result is reused for two frames.");
+            bool approxCamera = config->DlssNrResidualFgApproxCamera.value_or_default();
+            if (ImGui::Checkbox("Allow approximate FG camera guides (experimental)", &approxCamera))
+                config->DlssNrResidualFgApproxCamera = approxCamera;
+            HelpMarker("Use estimated camera data when the game does not provide it. May cause artifacts during camera movement.");
+            ImGui::EndDisabled();
+
+        }
+        else if (beforeSr)
+            ImGui::TextWrapped("Pre-SR changes: %s", DlssNr::DeferredDlssStatus().c_str());
+
+        // The toggle can be bound to a key, and nobody would think to look for it under Keybinds
+        // unless told. Dimmed, because it is a note rather than a setting.
+        ImGui::TextDisabled("Set the NR toggle shortcut under Keybinds.");
+
+        bool applyModel = config->DlssNrApplyModel.value_or_default();
+        if (ImGui::Checkbox("Apply the model", &applyModel))
+            config->DlssNrApplyModel = applyModel;
+
+        HelpMarker("Show or hide the NR effect. The model still runs when hidden.\nDisable Enable Neural Rendering to stop its GPU cost.");
+
+        if (ImGui::Checkbox("Lift model pass limit (up to 30; expensive)", &unlockPasses))
+            config->DlssNrUnlockPasses = unlockPasses;
+        HelpMarker("Allow up to 30 passes instead of 3. More passes use more GPU time and VRAM; high values may crash the game.");
+
+        ImGui::Spacing();
+        ImGui::PushItemWidth(220.0f * menuResScale);
+
+        ImGui::SeparatorText("NR Input Options");
+        ImGui::Text("Size");
 
         // Any percentage, rather than a handful of steps somebody chose in advance. The lower bound
         // is 25%: below that the model is working on so little of the picture that its answer no
@@ -495,6 +728,7 @@ void RenderMenu(Config* config, float menuResScale)
             HelpMarker("Filter used to reduce NR output when Model resolution exceeds 100%.\nSharper filters may introduce ringing around edges.");
         }
 
+        ImGui::SeparatorText("NR Output Options");
 
         // Meaningful only when the model runs BELOW the frame's size. At 100% -- and above, where
         // supersampling composites its down-legged answer at native -- the residual collapses to the
@@ -508,7 +742,7 @@ void RenderMenu(Config* config, float menuResScale)
             static const char* enlargeNames[] = { "Classic", "Matched residual" };
             int enlarge = config->DlssNrTransfer.value_or_default() == 1 ? 1 : 0;
 
-            if (ImGui::Combo("Enlargement", &enlarge, enlargeNames, IM_ARRAYSIZE(enlargeNames)))
+            if (ImGui::Combo("Upscale Mode", &enlarge, enlargeNames, IM_ARRAYSIZE(enlargeNames)))
                 config->DlssNrTransfer = (uint32_t) enlarge;
 
             if (!reduced)
@@ -522,37 +756,41 @@ void RenderMenu(Config* config, float menuResScale)
             static const char* upscaleMethodNames[] = { "Bilinear (fast)", "SGSR1" };
             int upscaleMethod = (int) std::min(config->DlssNrReducedUpscaleMethod.value_or_default(), 1u);
 
-            if (ImGui::Combo("Enlarge filter", &upscaleMethod, upscaleMethodNames, IM_ARRAYSIZE(upscaleMethodNames)))
+            if (ImGui::Combo("Upscale Method", &upscaleMethod, upscaleMethodNames, IM_ARRAYSIZE(upscaleMethodNames)))
                 config->DlssNrReducedUpscaleMethod = (uint32_t) upscaleMethod;
 
             if (!reduced)
                 ImGui::EndDisabled();
 
             HelpMarker("Below 100% model resolution: filter used to enlarge the model's answer back to native before it's applied.\nBilinear is the cheapest, softest, pre-SGSR1 default. SGSR1 does an edge-directed upscale of the answer instead. No effect at 100% or above.");
+        }
 
-            const bool sgsr1Active = reduced && upscaleMethod != 0;
+        // Experimental. 0 off (soft knee), 1 Reversible curve + our composition, 2 Reversible curve +
+        // pure-inverse replace, 3 Balanced+composed, 4 Balanced+replace (identity midtones + unclipped
+        // highlights). Always shown.
+        static const char* reversibleNames[] = { "Off (soft knee)", "Reversible curve + composed",
+                                                 "Reversible curve + replace", "Balanced curve + composed",
+                                                 "Balanced curve + replace" };
+        int reversible = (int) config->DlssNrReversibleMode.value_or_default();
+        if (reversible < 0 || reversible > 4)
+            reversible = 0;
+        if (ImGui::Combo("Final Image Composition (experimental)", &reversible, reversibleNames,
+                         IM_ARRAYSIZE(reversibleNames)))
+            config->DlssNrReversibleMode = (uint32_t) reversible;
 
-            if (!sgsr1Active)
-                ImGui::BeginDisabled();
+        HelpMarker("Choose how HDR brightness is mapped for NR.\nSoft knee compresses highlights. Reversible curve uses a reversible mapping. Balanced preserves midtones and compresses highlights.\nComposed uses the strength control and the Highlight guard below. Replace bypasses the strength control (the model's answer applies directly, uncomposited) but the Highlight guard still bounds it -- lower it if Replace flickers or shows banding near bright highlights.");
 
-            float sgsr1EdgeThreshold = config->DlssNrSgsr1EdgeThreshold.value_or_default();
-            if (ImGui::SliderFloat("SGSR1 edge threshold", &sgsr1EdgeThreshold, 0.0f, 0.3f, "%.3f"))
-                config->DlssNrSgsr1EdgeThreshold = sgsr1EdgeThreshold;
+        if (reversible == 2 || reversible == 4)
+        {
+            float replaceDetail = config->DlssNrReplaceDetailStrength.value_or_default();
+            if (ImGui::SliderFloat("Restore Sharpness", &replaceDetail, 0.0f, 2.0f, "%.2f"))
+                config->DlssNrReplaceDetailStrength = replaceDetail;
+
             ImGui::SameLine();
-            if (ImGui::SmallButton("Reset##sgsr1edgethreshold"))
-                config->DlssNrSgsr1EdgeThreshold = 0.3f;
-            HelpMarker("SGSR1's own vote for whether a pixel gets edge-directed reconstruction rather than a plain bilinear read. Higher threshold makes fewer pixels take that branch, closer to Bilinear. Default tuned to 0.3 based on in-game testing (upstream's ~0.031 fired too often on skin/hair noise).");
+            if (ImGui::SmallButton("Reset##replacedetail"))
+                config->DlssNrReplaceDetailStrength = 0.5f;
 
-            float sgsr1EdgeSharpness = config->DlssNrSgsr1EdgeSharpness.value_or_default();
-            if (ImGui::SliderFloat("SGSR1 edge sharpness", &sgsr1EdgeSharpness, 0.5f, 4.0f, "%.2f"))
-                config->DlssNrSgsr1EdgeSharpness = sgsr1EdgeSharpness;
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Reset##sgsr1edgesharpness"))
-                config->DlssNrSgsr1EdgeSharpness = 2.0f;
-            HelpMarker("Multiplier applied to the reconstructed luma on pixels that do take the edge branch, before it's clamped to its local neighbours' range. Higher can look sharper but risks ringing; upstream's default is 2.0.");
-
-            if (!sgsr1Active)
-                ImGui::EndDisabled();
+            HelpMarker("Sharpens fine edges and textures using brightness from the original frame. Helps when Final Image Composition uses a Replace mode and NR runs below 100% resolution, where the image can otherwise look soft.\nNo effect at 100% resolution or above, or when set to 0.");
         }
 
         ImGui::SeparatorText("Effect strength");
@@ -576,34 +814,6 @@ void RenderMenu(Config* config, float menuResScale)
             config->DlssNrColourStrength = 1.0f;
 
         HelpMarker("NR colour strength: 0 = preserve game colours, 1 = model colours, above 1 = stronger saturation.");
-
-        // Experimental. 0 off (soft knee), 1 Reversible curve + our composition, 2 Reversible curve +
-        // pure-inverse replace, 3 Balanced+composed, 4 Balanced+replace (identity midtones + unclipped
-        // highlights). Always shown.
-        static const char* reversibleNames[] = { "Off (soft knee)", "Reversible curve + composed",
-                                                 "Reversible curve + replace", "Balanced curve + composed",
-                                                 "Balanced curve + replace" };
-        int reversible = (int) config->DlssNrReversibleMode.value_or_default();
-        if (reversible < 0 || reversible > 4)
-            reversible = 0;
-        if (ImGui::Combo("HDR mapping (experimental)", &reversible, reversibleNames,
-                         IM_ARRAYSIZE(reversibleNames)))
-            config->DlssNrReversibleMode = (uint32_t) reversible;
-
-        HelpMarker("Choose how HDR brightness is mapped for NR.\nSoft knee compresses highlights. Reversible curve uses a reversible mapping. Balanced preserves midtones and compresses highlights.\nComposed uses the strength control and the Highlight guard below. Replace bypasses the strength control (the model's answer applies directly, uncomposited) but the Highlight guard still bounds it -- lower it if Replace flickers or shows banding near bright highlights.");
-
-        if (reversible == 2 || reversible == 4)
-        {
-            float replaceDetail = config->DlssNrReplaceDetailStrength.value_or_default();
-            if (ImGui::SliderFloat("Native sharpness recovery", &replaceDetail, 0.0f, 2.0f, "%.2f"))
-                config->DlssNrReplaceDetailStrength = replaceDetail;
-
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Reset##replacedetail"))
-                config->DlssNrReplaceDetailStrength = 0.5f;
-
-            HelpMarker("Below 100% model resolution, Replace mode has no native-resolution fallback and can look soft. This restores fine edge/texture sharpness from the native frame's brightness only -- no colour is blended in. No effect at 100% model resolution or above, or at 0 (today's behaviour).");
-        }
 
         ImGui::SeparatorText("Model passes");
         ImGui::TextWrapped("Settings apply when you release a slider.");

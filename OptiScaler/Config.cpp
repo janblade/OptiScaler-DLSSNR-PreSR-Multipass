@@ -371,8 +371,6 @@ bool Config::Reload(std::filesystem::path iniPath)
             // range falls back to Bilinear rather than being read raw by the enlarge-filter checks.
             if (DlssNrReducedUpscaleMethod.has_value() && DlssNrReducedUpscaleMethod.value() > 1u)
                 DlssNrReducedUpscaleMethod = 0u;
-            DlssNrSgsr1EdgeThreshold.set_from_config(readFloat("DlssNr", "Sgsr1EdgeThreshold"));
-            DlssNrSgsr1EdgeSharpness.set_from_config(readFloat("DlssNr", "Sgsr1EdgeSharpness"));
             DlssNrModelResolutionAuto.set_from_config(readBool("DlssNr", "ModelResolutionAuto"));
 
             if (auto v = readEnum<Scaler>("DlssNr", "ScalingDownscaler"))
@@ -1323,10 +1321,6 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "WorkingScale", GetFloatValue(Instance()->DlssNrWorkingScale.value_for_config()).c_str());
     ini.SetValue("DlssNr", "ReducedUpscaleMethod",
                  GetIntValue(Instance()->DlssNrReducedUpscaleMethod.value_for_config()).c_str());
-    ini.SetValue("DlssNr", "Sgsr1EdgeThreshold",
-                 GetFloatValue(Instance()->DlssNrSgsr1EdgeThreshold.value_for_config()).c_str());
-    ini.SetValue("DlssNr", "Sgsr1EdgeSharpness",
-                 GetFloatValue(Instance()->DlssNrSgsr1EdgeSharpness.value_for_config()).c_str());
     ini.SetValue("DlssNr", "ModelResolutionAuto",
                  GetBoolValue(Instance()->DlssNrModelResolutionAuto.value_for_config()).c_str());
     ini.SetValue("DlssNr", "ScalingDownscaler", GetIntValue(Instance()->DlssNrScalingDownscaler).c_str());

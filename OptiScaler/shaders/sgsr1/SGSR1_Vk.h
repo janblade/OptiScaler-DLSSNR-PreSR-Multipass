@@ -16,8 +16,8 @@ class SGSR1_Vk : public Shader_Vk
 
     // reversibleMode/passthrough/edgeThreshold/edgeSharpness mirror SGSR1_Dx12::Dispatch's own
     // parameters exactly -- see that header's comment for why they're needed (undo/redo the
-    // Neutwo/Hybrid domain curve around the edge-directed math) and why edge threshold/sharpness
-    // are live-tunable (DlssNrSgsr1EdgeThreshold/DlssNrSgsr1EdgeSharpness) rather than fixed.
+    // Neutwo/Hybrid domain curve around the edge-directed math). edgeThreshold/edgeSharpness are
+    // fixed constants (0.300/2.00) passed in from the caller, not user-configurable.
     bool Dispatch(VkCommandBuffer InCmdList, const VkImageInfo& InResourceView, const VkImageInfo& OutResourceView,
                  uint32_t reversibleMode, uint32_t passthrough, float edgeThreshold, float edgeSharpness);
 };

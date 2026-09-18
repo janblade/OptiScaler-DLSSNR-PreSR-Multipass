@@ -26,8 +26,8 @@ class SGSR1_Dx12 : public Shader_Dx12
     //
     // edgeThreshold/edgeSharpness were upstream's own fixed constants (8/255, 2.0) until an
     // in-game A/B found the vote firing on noisy high-frequency content (skin, hair) it wasn't
-    // tuned for, smoothing detail bilinear preserved -- now live-tunable (DlssNrSgsr1EdgeThreshold/
-    // DlssNrSgsr1EdgeSharpness) instead of requiring a shader recompile to test.
+    // tuned for, smoothing detail bilinear preserved -- retuned and now fixed at 0.300/2.00,
+    // passed in from the caller rather than baked into the shader.
     bool Dispatch(ID3D12GraphicsCommandList* InCmdList, ID3D12Resource* InResource, ID3D12Resource* OutResource,
                  uint32_t reversibleMode, uint32_t passthrough, float edgeThreshold, float edgeSharpness);
 

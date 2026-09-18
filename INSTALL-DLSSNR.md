@@ -114,8 +114,9 @@ See [validation and reporting instructions](docs/PADDED-PRESR.md).
 ## Neural Rendering with native Ray Reconstruction
 
 Enable RR in the game's settings and **Enable Neural Rendering** in OptiScaler.
-The same **Apply before Super Resolution** checkbox controls both ordinary SR and combined RR+SR:
-checked runs NR on the active colour input before reconstruction/upscaling; unchecked runs it afterward.
+The same **NR Pass at:** setting controls both ordinary SR and combined RR+SR:
+**Before Super Resolution** runs NR on the active colour input before reconstruction/upscaling;
+**After Super Resolution** runs it afterward.
 Both use the common model-resolution slider, pass count and per-pass profiles.
 
 ```ini
@@ -174,7 +175,7 @@ Then launch into a rendered scene and press `Insert` (`Alt+Insert` can help on s
 
 ## Apply NR to the finished picture
 
-Turn on **Apply NR to the finished picture** in the Neural Rendering menu to apply the effect after the game finishes its lighting and effects. This can help with green noise. It works with frame generation on or off and is off by default.
+Set **NR Pass at:** to **Finished Picture** in the Neural Rendering menu to apply the effect after the game finishes its lighting and effects. This can help with green noise. It works with frame generation on or off and is off by default.
 
 This option currently supports native DirectX 12 games using supported SDR, HDR10 or scRGB screen formats. HDR is detected automatically; no extra HDR setting is needed. It can also change the HUD and menus. Test the look and performance in your game.
 
@@ -183,7 +184,7 @@ With this option on, **Run the model before Super Resolution** chooses whether N
 The INI setting is `[DlssNr] FinishedPicture=true`. Turn it off to return to your previous placement settings. Native Vulkan and the DirectX 11/Vulkan bridges are not supported by this option.
 
 
-To run the model before upscaling but apply its changes to the finished picture, enable **Apply NR to the finished picture** and **Run the model before Super Resolution**. This uses the existing private DLSS path to upscale the saved changes. The game's picture stays unchanged until the final application, and NR is not run a second time.
+To run the model before upscaling but apply its changes to the finished picture, set **NR Pass at:** to **Finished Picture** and enable **Run the model before Super Resolution**. This uses the existing private DLSS path to upscale the saved changes. The game's picture stays unchanged until the final application, and NR is not run a second time.
 
 This combination is experimental. It converts the saved changes into bounded relative colour adjustments because the game's final tone mapping is not available to the mod. It can look different from running the model directly on the finished picture. It supports the SDR, HDR10 and scRGB output paths in native DirectX 12, with normal frame generation on or off. Ray Reconstruction and the separate NR every second frame mode are not supported in this combination. A separate DLSS pass still has a GPU cost; a smaller NR input does not guarantee a faster overall frame.
 

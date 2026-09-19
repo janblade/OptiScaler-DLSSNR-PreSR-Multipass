@@ -2,8 +2,8 @@
 
 - Branch: `fix/upstream-xefg-freeze-fg-port`
 - Created: 2026-09-19
-- Status: ported and built 2026-09-19 (7 commits on the branch, not pushed); untested in a game; awaiting push / PR
-- Task file: memory/tasks/fix_upstream-xefg-freeze-fg-port.md
+- Status: done 2026-09-19 (7 commits merged as PR #25, `b29c065b`; built, untested in a game; `2e5a8770` and `d794b18d` skipped on purpose)
+- Task file: memory/archived_tasks/fix_upstream-xefg-freeze-fg-port.md
 - Ledger: `optiscaler-upstream:xefg-freeze-fg-fixes`
 - Source: optiscaler/OptiScaler `master` (`6f0d1fdd`), GPL-3.0, authors cdozdil and FakeMichau. Merge-base with this fork `4f17a05d`.
 
@@ -68,3 +68,4 @@ Work on the branch; each group is its own commit and reverts alone.
 - **2026-09-19:** studied; trial in a throwaway worktree; 7 of 9 selected. Started execution.
 - **2026-09-19, ported:** one commit each, authors kept, `Ported-from:` trailers: `2ec0ee59` da427e20, `561fc397` 5c5e424d, `e46864a6` 04bf0b08, `f3bd70d2` d817d5b4, `b2ad6d4b` 3bc197c2, `5e8fb632` 34917612, `df8879f7` 9df3ed0c. R23 read-through: the bridge lock is real (`Present` takes a shared lock, `ResizeBuffers` / `ResizeBuffers1` take the unique lock; both gated on XeFG + `Dx11wDx12`). **The native DX12 `FGHooks::_resizeMutex` is only ever taken as a `shared_lock`, in `hkResizeBuffers`, `hkResizeBuffers1` and `FGPresent`, so it excludes nothing.** That is how upstream has it (its comment says "Let's try Dx11 like approach on Dx12"); ported as is. What changes behaviour on native DX12 is `WaitForQueueIdle` (5 s wait that logs failures) replacing four inline waits. The two `WaitForQueueIdle` definitions do not clash (one `static`, one in an anonymous namespace).
 - **2026-09-19, build:** Release x64, exit 0, 0 errors, `x64/Release/a/OptiScaler.dll` 23:50:19. The first attempt from Git Bash never compiled: MSYS rewrote `/t:` and `/p:` into paths (MSB1008); the PowerShell run is the real build. One new warning in a touched file: `IFeature.cpp(281)` C4018 signed/unsigned compare from `04bf0b08` (`long` counter against `10 * uint32_t`); harmless, the counter never goes negative, left as upstream has it. All other warnings (C4250 x58, Streamline_Hooks, Magnifier_Common, LINK) are in files this port did not touch. No game run.
+- **2026-09-19, PORT_CLOSE:** PR #25 merged to main (`b29c065b`). Ledger `optiscaler-upstream:xefg-freeze-fg-fixes` set to `ported`, untested in a game. Task file archived to `memory/archived_tasks/`.

@@ -4,6 +4,10 @@ This fork was itself forked from [wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass](htt
 
 Colour processing is derived from [RenoDX by clshortfuse](https://github.com/clshortfuse/renodx). See the [RenoDX attribution and licence](../Licenses/RenoDX_ATTRIBUTION.txt) for details.
 
+## DLSS-NR exposure controls
+
+Automatic exposure from the HDR frame, the wider exposure Trim range and the Trim Anchor points are @mattjaas's work, from [wilsjo2's PR #77](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/pull/77), adapted onto this fork's code.
+
 ## OptiScaler contributors
 
 These credits are retained from the original OptiScaler README:

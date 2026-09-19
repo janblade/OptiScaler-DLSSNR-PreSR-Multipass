@@ -28,7 +28,7 @@ cbuffer Params : register(b0)
     uint  gReversibleMode; // 0 knee, 1 Neutwo+composed, 2 Neutwo+replace, 3 hybrid+composed, 4 hybrid+replace
     uint  gApplyModel;     // 0 output the clean frame (pass still runs), 1 apply the model's edit
     uint  gUseGameExposure;// D3D12 source-1 only: 1 = read the game's live exposure in-shader (t4)
-    float gExposurePreMul; // preExposure * trim, so the live white point is gExposurePreMul / exposure
+    float gExposurePreMul; // the residual modes' fixed scale; game exposure now uses gPreExposure and the Trim fields below
     uint  gSkinProtection;
     uint  gShowSkinMask;
     float gSkinDetail;
@@ -40,6 +40,31 @@ cbuffer Params : register(b0)
     float gModelWorkScale; // Set from C++, not inferred from gSource's bound size -- SGSR1's
                            // pre-resolve enlarge (DX12) makes that read native once it succeeds,
                            // even though the model itself ran small. 1.0 = not reduced.
+    float gPreExposure;
+    uint  gExposureSourceWidth;
+    uint  gExposureSourceHeight;
+    uint  gMeterCopiesExposure; // meter mode: 1 courier the game's exposure, 0 average every tile pixel
+    float gExposureTrim;
+    uint  gUseExposureWhitePoint; // 1 = automatic exposure, read in-shader (t4 on D3D12, the motion slot on Vulkan)
+    uint  gExposureTrimAnchorCount;
+    uint  gExposureTrimPreview;
+    float gExposureTrimAnchorExposure0;
+    float gExposureTrimAnchorTrim0;
+    float gExposureTrimAnchorExposure1;
+    float gExposureTrimAnchorTrim1;
+    float gExposureTrimAnchorExposure2;
+    float gExposureTrimAnchorTrim2;
+    float gExposureTrimAnchorExposure3;
+    float gExposureTrimAnchorTrim3;
+    float gExposureTrimAnchorExposure4;
+    float gExposureTrimAnchorTrim4;
+    float gExposureTrimAnchorExposure5;
+    float gExposureTrimAnchorTrim5;
+    float gExposureTrimAnchorExposure6;
+    float gExposureTrimAnchorTrim6;
+    float gExposureTrimAnchorExposure7;
+    float gExposureTrimAnchorTrim7;
+    float gAutoExposureShadowProtection;
 };
 
 // Bringing an impossible colour back into a possible one.
@@ -248,9 +273,10 @@ Texture2D<float4>   gOriginal : register(t2);  // resolve: the untouched frame.
 #endif
 Texture2D<float4>   gMotion   : register(t3);  // resolve, accumulating: the game's motion vectors.
 
-// The game's 1x1 exposure texture, bound at t4 (DispatchPass's "prev edit" SRV slot). D3D12 only:
-// Vulkan has no eighth descriptor for it and keeps computing the white point on the CPU, so the whole
-// live path is compiled out under VK_MODE and gUseGameExposure is never set on that backend.
+// The 1x1 exposure texture, bound at t4 (DispatchPass's "prev edit" SRV slot): the game's own for
+// source 1, the automatic exposure pass's for source 3. D3D12 only: Vulkan has no eighth descriptor
+// for it. Its automatic exposure is bound in the motion slot instead, which the encode and resolve
+// dispatches do not otherwise use -- see ExposureSample.
 #ifndef VK_MODE
 Texture2D<float4>   gExposure : register(t4);
 #endif
@@ -267,23 +293,99 @@ RWTexture2D<float4> gKeep     : register(u1);  // encode: the untouched copy. un
 #endif
 SamplerState        gLinear   : register(s0);  // so the edit can be read at a different size
 
+// The Trim that applies at a given base white point (PreExposure / exposure): the slider, unless
+// anchors exist and preview is off, in which case the anchors' Trim is interpolated in log space
+// between the two that bracket the key, and held flat beyond the first and last.
+float ExposureTrimAnchorKey(uint index)
+{
+    if (index == 0) return gExposureTrimAnchorExposure0;
+    if (index == 1) return gExposureTrimAnchorExposure1;
+    if (index == 2) return gExposureTrimAnchorExposure2;
+    if (index == 3) return gExposureTrimAnchorExposure3;
+    if (index == 4) return gExposureTrimAnchorExposure4;
+    if (index == 5) return gExposureTrimAnchorExposure5;
+    if (index == 6) return gExposureTrimAnchorExposure6;
+    return gExposureTrimAnchorExposure7;
+}
+
+float ExposureTrimAnchorValue(uint index)
+{
+    if (index == 0) return gExposureTrimAnchorTrim0;
+    if (index == 1) return gExposureTrimAnchorTrim1;
+    if (index == 2) return gExposureTrimAnchorTrim2;
+    if (index == 3) return gExposureTrimAnchorTrim3;
+    if (index == 4) return gExposureTrimAnchorTrim4;
+    if (index == 5) return gExposureTrimAnchorTrim5;
+    if (index == 6) return gExposureTrimAnchorTrim6;
+    return gExposureTrimAnchorTrim7;
+}
+
+float EffectiveExposureTrim(float key)
+{
+    const float fallback = clamp(gExposureTrim, 0.25, 50.0);
+    const uint count = min(gExposureTrimAnchorCount, 8u);
+    if (gExposureTrimPreview != 0 || count == 0 || !isfinite(key) || key <= 1e-8)
+        return fallback;
+    if (count == 1)
+        return clamp(ExposureTrimAnchorValue(0), 0.25, 50.0);
+    const float firstKey = ExposureTrimAnchorKey(0);
+    const float lastKey = ExposureTrimAnchorKey(count - 1);
+    if (key <= firstKey)
+        return clamp(ExposureTrimAnchorValue(0), 0.25, 50.0);
+    if (key >= lastKey)
+        return clamp(ExposureTrimAnchorValue(count - 1), 0.25, 50.0);
+
+    // The loop is uniform: the exposure and the anchor table are the same for the whole dispatch.
+    [loop] for (uint i = 0; i < 7u; ++i)
+    {
+        if (i + 1 >= count)
+            break;
+        const float aKey = ExposureTrimAnchorKey(i);
+        const float bKey = ExposureTrimAnchorKey(i + 1);
+        if (key >= aKey && key <= bKey && bKey > aKey * 1.000001)
+        {
+            const float aTrim = max(ExposureTrimAnchorValue(i), 0.25);
+            const float bTrim = max(ExposureTrimAnchorValue(i + 1), 0.25);
+            const float t = (log(key) - log(aKey)) / (log(bKey) - log(aKey));
+            return clamp(exp(lerp(log(aTrim), log(bTrim), t)), 0.25, 50.0);
+        }
+    }
+    return clamp(ExposureTrimAnchorValue(count - 1), 0.25, 50.0);
+}
+
+// Where the live exposure is read from. D3D12 binds it at t4. Vulkan has no such descriptor, so it
+// travels in the motion slot: the encode and resolve have no use for motion vectors there, and the
+// meter's courier already borrows the same slot. Only ever bound when gUseExposureWhitePoint is set.
+float ExposureSample()
+{
+#ifdef VK_MODE
+    return gMotion.Load(int3(0, 0, 0)).r;
+#else
+    return gExposure.Load(int3(0, 0, 0)).r;
+#endif
+}
+
 // The picture white point. Sources 0 (paper white) and 2 (scan) resolve it on the CPU and pass it in
-// gWhitePoint; source 1 (the game's own exposure) also passes a CPU value in gWhitePoint as a fallback,
-// but when the exposure texture is bound (D3D12) it is recomputed HERE from the live exposure --
-// gExposurePreMul (= preExposure * trim) / exposure -- which removes the 3-4 frame CPU-readback lag the
-// meter path has. The clamp matches the CPU path's [0.01, 4096]. Vulkan compiles the live path out and
-// always returns the CPU value, so its behaviour is unchanged.
+// gWhitePoint. Source 1 (the game's own exposure) and source 3 (automatic exposure) also pass a CPU
+// value in gWhitePoint as a fallback, but when their 1x1 exposure texture is bound the white point is
+// recomputed HERE from the live exposure -- PreExposure / exposure, times the Trim that applies at that
+// base white point -- which removes the 3-4 frame CPU-readback lag the meter path has. The clamp
+// matches the CPU path's [0.01, 4096]. Vulkan sets only gUseExposureWhitePoint: the game's own
+// exposure stays on the CPU there, because the layout its image is left in is not known.
 float WhitePoint()
 {
-#ifndef VK_MODE
-    if (gUseGameExposure != 0)
+    if (gUseGameExposure != 0 || gUseExposureWhitePoint != 0)
     {
-        float e = gExposure.Load(int3(0, 0, 0)).r;
-        if (e > 1e-6 && e < 1e6)
-            return clamp(gExposurePreMul / e, 0.01, 4096.0);
+        const float e = ExposureSample();
+        if (isfinite(e) && e > 1e-8 && e < 1e8)
+        {
+            const float preExposure =
+                (isfinite(gPreExposure) && gPreExposure > 1e-6) ? gPreExposure : 1.0;
+            const float baseWhitePoint = preExposure / e;
+            return clamp(baseWhitePoint * EffectiveExposureTrim(baseWhitePoint), 0.01, 4096.0);
+        }
         // A missing or absurd sample falls through to the CPU value the meter path still maintains.
     }
-#endif
     return max(gWhitePoint, 1e-4);
 }
 
@@ -586,9 +688,198 @@ float3 ApplyReplaceGuard(float3 v, float3 nativeOriginal, float referenceLuma, f
     return v * (boundedRatio / max(ratio, 1e-6));
 }
 
+// Automatic exposure uses the same 8x8 group as every other mode, but spreads the expensive work
+// across all 64 lanes. Only 1 KiB of groupshared memory is reserved, so the ordinary encode/resolve
+// passes keep effectively the same occupancy.
+groupshared float4 gExposureReduce[64];
+
 [numthreads(8, 8, 1)]
-void CSMain(uint3 id : SV_DispatchThreadID)
+void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
+    const uint lane = groupThreadId.y * 8u + groupThreadId.x;
+
+    // Automatic exposure, stage 1: one thread group per 64x64 meter tile, so the dispatch is
+    // gWidth x gHeight groups rather than gWidth x gHeight threads. Every source pixel is read exactly
+    // once and contributes to its tile's mean; the additions are spread over 64 lanes and combined by
+    // a tree in shared memory.
+    //
+    // The frame it reads is the one the encode is about to consume -- the upscaler's fresh output --
+    // and nothing this pass or the resolve writes goes back into it, which is what the old
+    // white-point meter got wrong (it read its own output and chased it).
+    if (gMode == 3 && gMeterCopiesExposure == 0)
+    {
+        if (groupId.x >= gWidth || groupId.y >= gHeight)
+            return;
+
+        uint fullW, fullH;
+        gSource.GetDimensions(fullW, fullH);
+
+        const uint tx0 = (groupId.x * fullW) / gWidth;
+        const uint tx1 = ((groupId.x + 1u) * fullW) / gWidth;
+        const uint ty0 = (groupId.y * fullH) / gHeight;
+        const uint ty1 = ((groupId.y + 1u) * fullH) / gHeight;
+        const uint endX = max(tx1, tx0 + 1u);
+        const uint endY = max(ty1, ty0 + 1u);
+
+        float localSum = 0.0;
+        [loop] for (uint ty = ty0 + groupThreadId.y; ty < endY; ty += 8u)
+        {
+            [loop] for (uint tx = tx0 + groupThreadId.x; tx < endX; tx += 8u)
+            {
+                const float3 c = max(gSource.Load(int3(min(tx, fullW - 1u), min(ty, fullH - 1u), 0)).rgb, 0.0);
+                const float luma = dot(c, kLuma);
+                localSum += isfinite(luma) ? max(luma, 0.0) : 0.0;
+            }
+        }
+
+        gExposureReduce[lane] = float4(localSum, 0.0, 0.0, 0.0);
+        GroupMemoryBarrierWithGroupSync();
+        [unroll] for (uint stride = 32u; stride > 0u; stride >>= 1u)
+        {
+            if (lane < stride)
+                gExposureReduce[lane].x += gExposureReduce[lane + stride].x;
+            GroupMemoryBarrierWithGroupSync();
+        }
+
+        if (lane == 0u)
+        {
+            const uint taken = (endX - tx0) * (endY - ty0);
+            gTarget[groupId.xy] = float4(taken > 0u ? gExposureReduce[0].x / (float) taken : 0.0,
+                                         0.0, 0.0, 1.0);
+        }
+        return;
+    }
+
+    // Exposure-texture courier: tile (0,0) carries the game's own exposure, a single value. Kept
+    // ahead of the generic bounds check so all lanes of an otherwise 1x1 dispatch take one path.
+    //
+    // The exposure is a 1x1 texture the game owns, in a resource state this pass did not set and
+    // must not assume. Copying it would mean transitioning someone else's resource on a guess,
+    // which is how a device is lost. Reading it as an SRV in a pass that is already running costs
+    // nothing and touches no state -- and it rides back on the readback that already exists.
+    //
+    // The motion slot is free here: the meter has no use for motion vectors.
+    if (gMode == 3 && gMeterCopiesExposure != 0)
+    {
+        if (all(groupId.xy == uint2(0, 0)) && lane == 0u)
+            gTarget[uint2(0, 0)] = float4(gMotion.Load(int3(0, 0, 0)).r, 0.0, 0.0, 1.0);
+        return;
+    }
+
+    // Automatic exposure, stage 2: the 4096 tile means -> one exposure value. Every lane handles 64
+    // tiles, then a shared-memory tree combines the weighted sums.
+    //
+    // Exposure is 0.18 / (0.82 * average scene luminance), the usual middle-grey metering. The tile
+    // means come from a buffer that has the game's PreExposure baked in, so they are divided by it
+    // first and the result is in scene units. Highlight protection compresses tiles more than a knee
+    // above the scene's log-average before averaging: the knee runs from 3 EV (protection 0) to
+    // 1 EV (100), the slope above it from 1.0 to 0.35. No tile is discarded, and at 0 the result is
+    // the plain full-frame arithmetic average.
+    if (gMode == 13)
+    {
+        const uint srcW = max(gExposureSourceWidth, 1u);
+        const uint srcH = max(gExposureSourceHeight, 1u);
+        const float preExposure =
+            (isfinite(gPreExposure) && gPreExposure > 1e-6) ? gPreExposure : 1.0;
+        const float protection = saturate(gAutoExposureShadowProtection * 0.01);
+
+        float weightedBufferLuma = 0.0;
+        float weightedSceneLogLuma = 0.0;
+        float totalPixels = 0.0;
+
+        [loop] for (uint index = lane; index < 4096u; index += 64u)
+        {
+            const uint tx = index & 63u;
+            const uint ty = index >> 6u;
+            const uint x0 = (tx * srcW) / 64u;
+            const uint x1 = ((tx + 1u) * srcW) / 64u;
+            const uint y0 = (ty * srcH) / 64u;
+            const uint y1 = ((ty + 1u) * srcH) / 64u;
+            const uint tileW = max(x1 - x0, 1u);
+            const uint tileH = max(y1 - y0, 1u);
+            const float pixels = (float) tileW * (float) tileH;
+            const float tileMean = max(SanitizeFinite(gSource.Load(int3(tx, ty, 0)).r, 0.0), 0.0);
+
+            weightedBufferLuma += tileMean * pixels;
+            totalPixels += pixels;
+            if (protection > 0.0)
+            {
+                const float sceneLuma = max(tileMean / preExposure, 1e-8);
+                weightedSceneLogLuma += clamp(log2(sceneLuma), -24.0, 24.0) * pixels;
+            }
+        }
+
+        gExposureReduce[lane] = float4(weightedBufferLuma, weightedSceneLogLuma, totalPixels, 0.0);
+        GroupMemoryBarrierWithGroupSync();
+        [unroll] for (uint stride = 32u; stride > 0u; stride >>= 1u)
+        {
+            if (lane < stride)
+                gExposureReduce[lane].xyz += gExposureReduce[lane + stride].xyz;
+            GroupMemoryBarrierWithGroupSync();
+        }
+
+        const float allPixels = gExposureReduce[0].z;
+        const float averageBufferLuma =
+            allPixels > 0.0 ? gExposureReduce[0].x / allPixels : 0.0;
+        float meteredSceneLuma = averageBufferLuma / preExposure;
+
+        if (protection > 0.0 && allPixels > 0.0)
+        {
+            const float referenceLogLuma = gExposureReduce[0].y / allPixels;
+            const float highlightKneeEv = lerp(3.0, 1.0, protection);
+            const float highlightCompressionSlope = lerp(1.0, 0.35, protection);
+            float protectedLinearSum = 0.0;
+
+            // Nothing below may read gExposureReduce[0] until every lane has finished with the
+            // reduction above, so the second tree starts behind a barrier.
+            GroupMemoryBarrierWithGroupSync();
+
+            [loop] for (uint index2 = lane; index2 < 4096u; index2 += 64u)
+            {
+                const uint tx2 = index2 & 63u;
+                const uint ty2 = index2 >> 6u;
+                const uint x0 = (tx2 * srcW) / 64u;
+                const uint x1 = ((tx2 + 1u) * srcW) / 64u;
+                const uint y0 = (ty2 * srcH) / 64u;
+                const uint y1 = ((ty2 + 1u) * srcH) / 64u;
+                const uint tileW = max(x1 - x0, 1u);
+                const uint tileH = max(y1 - y0, 1u);
+                const float pixels = (float) tileW * (float) tileH;
+                const float tileMean = max(SanitizeFinite(gSource.Load(int3(tx2, ty2, 0)).r, 0.0), 0.0);
+                const float sceneLuma = max(tileMean / preExposure, 1e-8);
+                const float logLuma = clamp(log2(sceneLuma), -24.0, 24.0);
+                const float deltaEv = logLuma - referenceLogLuma;
+                float compressedLogLuma = logLuma;
+                if (deltaEv > highlightKneeEv)
+                    compressedLogLuma = referenceLogLuma + highlightKneeEv +
+                                        (deltaEv - highlightKneeEv) * highlightCompressionSlope;
+                protectedLinearSum += exp2(clamp(compressedLogLuma, -24.0, 24.0)) * pixels;
+            }
+
+            gExposureReduce[lane].w = protectedLinearSum;
+            GroupMemoryBarrierWithGroupSync();
+            [unroll] for (uint stride2 = 32u; stride2 > 0u; stride2 >>= 1u)
+            {
+                if (lane < stride2)
+                    gExposureReduce[lane].w += gExposureReduce[lane + stride2].w;
+                GroupMemoryBarrierWithGroupSync();
+            }
+
+            const float protectedAverage = gExposureReduce[0].w / allPixels;
+            if (isfinite(protectedAverage) && protectedAverage > 1e-8)
+                meteredSceneLuma = protectedAverage;
+        }
+
+        if (lane == 0u)
+        {
+            float exposure = meteredSceneLuma > 1e-8 ? 0.18 / (meteredSceneLuma * 0.82) : 1.0;
+            if (!isfinite(exposure) || exposure <= 0.0)
+                exposure = 1.0;
+            gTarget[uint2(0, 0)] = float4(exposure, 0.0, 0.0, 1.0);
+        }
+        return;
+    }
+
     if (id.x >= gWidth || id.y >= gHeight)
         return;
 
@@ -730,52 +1021,6 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         }
 
         gTarget[id.xy] = float4(peak, 0.0, 0.0, 1.0);
-        return;
-    }
-
-    if (gMode == 3)
-    {
-        // Tile (0,0) carries the game's own exposure rather than a tile mean.
-        //
-        // The exposure is a 1x1 texture the game owns, in a resource state this pass did not set and
-        // must not assume. Copying it would mean transitioning someone else's resource on a guess,
-        // which is how a device is lost. Reading it as an SRV in a pass that is already running costs
-        // nothing and touches no state -- and it rides back on the readback that already exists.
-        //
-        // The motion slot is free here: the meter has no use for motion vectors.
-        if (id.x == 0 && id.y == 0)
-        {
-            gTarget[id.xy] = float4(gMotion.Load(int3(0, 0, 0)).r, 0.0, 0.0, 1.0);
-            return;
-        }
-
-        uint fullW, fullH;
-        gSource.GetDimensions(fullW, fullH);
-
-        const uint tx0 = (uint) (((float) id.x * (float) fullW) / (float) gWidth);
-        const uint tx1 = (uint) (((float) (id.x + 1) * (float) fullW) / (float) gWidth);
-        const uint ty0 = (uint) (((float) id.y * (float) fullH) / (float) gHeight);
-        const uint ty1 = (uint) (((float) (id.y + 1) * (float) fullH) / (float) gHeight);
-
-        // A tile of a 4K frame is 60x34 pixels. Sampling a bounded number of them is within a percent
-        // of the true mean and keeps the pass flat regardless of resolution.
-        const uint stepX = max((tx1 - tx0) / 8u, 1u);
-        const uint stepY = max((ty1 - ty0) / 8u, 1u);
-
-        float sum = 0.0;
-        uint taken = 0;
-
-        for (uint ty = ty0; ty < max(ty1, ty0 + 1u); ty += stepY)
-        {
-            for (uint tx = tx0; tx < max(tx1, tx0 + 1u); tx += stepX)
-            {
-                float3 c = max(gSource.Load(int3(min(tx, fullW - 1u), min(ty, fullH - 1u), 0)).rgb, 0.0);
-                sum += dot(c, kLuma);
-                taken++;
-            }
-        }
-
-        gTarget[id.xy] = float4(taken > 0u ? sum / (float) taken : 0.0, 0.0, 0.0, 1.0);
         return;
     }
 
@@ -955,7 +1200,11 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // the shadow branch never fires, every pixel takes the highlight branch, and the clamp flattens
     // the result to a near-constant scale. Colour still moves, because that comes from the model's
     // own hue, which is what makes the failure so confusing to look at.
-    const float normScale = gPassthrough != 0 ? 1.0 : WhitePoint();
+    // Resolved once: the live path samples the exposure texture and walks the anchor table.
+    float resolvedWhitePoint = 1.0;
+    if (gPassthrough == 0 || onDivider)
+        resolvedWhitePoint = WhitePoint();
+    const float normScale = gPassthrough != 0 ? 1.0 : resolvedWhitePoint;
     float3 original = originalSample.rgb / normScale;
 
     float originalLuma = dot(original, kLuma);
@@ -1288,7 +1537,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 
     // A hairline so the two sides are never mistaken for one picture.
     if (onDivider)
-        result = float3(WhitePoint(), WhitePoint(), WhitePoint());
+        result = float3(resolvedWhitePoint, resolvedWhitePoint, resolvedWhitePoint);
 
     gTarget[id.xy] = float4(max(result, float3(0.0, 0.0, 0.0)), originalSample.a);
 }

@@ -69,6 +69,12 @@ std::optional<double> LastGpuTimeVk();
 // whether reading it is worth the risk on any real Vulkan game.
 bool ExposureOfferedVk();
 
+// What has been read of the game's exposure on this path, in the shape the D3D12 accessor returns, so
+// the menu can show the base white point and capture Trim anchors against it.
+struct ExposureStatus;
+ExposureStatus GameExposureStatusVk();
+ExposureStatus AutoExposureStatusVk();
+
 void ShutdownVk(bool deviceAlive = true);
 
 } // namespace DlssNr

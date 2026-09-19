@@ -2,7 +2,7 @@
 
 - Branch: `fix/upstream-shared-stability-port`
 - Created: 2026-09-19
-- Status: planned (awaiting plan approval)
+- Status: in progress 2026-09-19 (steps 1-3 done on the branch; DXGI exports group, `bd6407da`, `b52cf663` not decided; built, not game-tested)
 - Task file: memory/tasks/fix_upstream-shared-stability-port.md
 - Ledger: `optiscaler-upstream:shared-stability-fixes`
 - Source: optiscaler/OptiScaler `master` (`6f0d1fdd`), GPL-3.0. Merge-base with this fork `4f17a05d`.
@@ -37,13 +37,13 @@
 
 ## Steps
 
-1. [ ] **Branch** `fix/upstream-shared-stability-port` from `main`, on a clean tree (R9).
-2. [ ] **`7dbc379d`.** Apply by hand if patching fails on whitespace. Both files. Confirm no other use of `scBuffer` after the block.
-3. [ ] **Guards:** `f740a763`, `4bd61744`, `7168655f`, `1ec11b8c`, one commit each.
+1. [x] **Branch** `fix/upstream-shared-stability-port` from `main`, on a clean tree (R9).
+2. [x] **`7dbc379d`.** *(Already in HEAD as `ComPtr`, cherry-pick was empty and was skipped. The Study's 'applied in trial' was wrong.)* Apply by hand if patching fails on whitespace. Both files. Confirm no other use of `scBuffer` after the block.
+3. [x] **Guards:** `f740a763`, `4bd61744`, `7168655f`, `1ec11b8c`, one commit each.
 4. [ ] **Decide the DXGI exports group.** If yes, apply `b4924e30`, `32f5f3db`, `42dc02af`, `b0dd6b02` in that order as one commit series, and read how `exports/dxgi.h` and `Source.def` differ in HEAD first (R23: this is process-wide).
 5. [ ] **Decide `bd6407da` and `b52cf663` separately.** Default skip.
-6. [ ] **Provenance.** `Ported-from: optiscaler/OptiScaler@<sha>` trailers, upstream authors credited.
-7. [ ] **Build (Release x64)** when told.
+6. [x] **Provenance.** `Ported-from: optiscaler/OptiScaler@<sha>` trailers, upstream authors credited.
+7. [x] **Build (Release x64).** *(2026-09-19 22:40, exit 0, 0 errors, no warnings in the ported files; game test still to do)*
 
 ## Verification
 
@@ -63,3 +63,8 @@
 ## Rollback
 
 Work on the branch; each step is its own commit and reverts alone.
+
+## Execution log
+
+- **2026-09-19:** cut `fix/upstream-shared-stability-port` from `main` (`98dc3d78`). `7dbc379d` is already in HEAD (both files use `ComPtr<ID3D12Resource> scBuffer`, from `3d083723`); `git cherry-pick` came out empty and was skipped. Ported one commit each, authors kept, `Ported-from:` trailers: `e650e07f` f740a763, `183465d9` 4bd61744, `1a3bb535` 7168655f, `552d1519` 1ec11b8c. Read the diffs: `GpuTime_Dx12` methods already check `_init`, so the early return is safe; `1ec11b8c` also resets `_hudCopy` / `_hudlessCompareCompute` in `ReleaseObjects`. Steps 4-5 left at default (skip) pending the user's call. Not built.
+- **2026-09-19, build:** user lifted the no-auto-build rule. First Release x64 attempt hung (orphaned cl.exe, killed); rebuild exit 0, 0 errors, only pre-existing C4250 warnings, none in FSRFG_Dx12 / GpuTime_Dx12 / D3D11_Hooks. `x64/Release/a/OptiScaler.dll` 22:40:51. No game run.

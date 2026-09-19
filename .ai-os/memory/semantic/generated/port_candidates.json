@@ -675,8 +675,8 @@
         "basis": "heuristic"
       },
       "already_have": {
-        "state": "no",
-        "evidence": "Not in HEAD. 11 of 12 applied in a throwaway worktree trial; the twelfth, dc7489fb, repairs 5ee53e38 and moves to the bridge plan. HEAD has only empty stubs for the DXGI Compat exports."
+        "state": "partial",
+        "evidence": "7dbc379d (scBuffer use-after-free in HC_Dx12/RUI_Dx12) is already in HEAD as ComPtr, brought in with 3d083723; cherry-picking it produced an empty commit. The earlier throwaway trial said it 'applied', which was wrong: it applied as a no-op."
       },
       "overlap": [
         "OptiScaler/shaders/hudless_compare/HC_Dx12.cpp",
@@ -695,7 +695,17 @@
         "by": "user",
         "at": "2026-09-19",
         "reason": "User asked to plan the two high-relevance upstream candidates. Approval is for planning only; each plan still needs its own PLAN_WRITE approval before code is edited."
-      }
+      },
+      "ported_refs": [
+        "f740a763",
+        "4bd61744",
+        "7168655f",
+        "1ec11b8c"
+      ],
+      "already_have_refs": [
+        "7dbc379d"
+      ],
+      "ported_in": "branch fix/upstream-shared-stability-port, 4 commits e650e07f 183465d9 1a3bb535 552d1519 (not merged, not built, UNTESTED). Still undecided and untouched: DXGI exports group (b4924e30 32f5f3db 42dc02af b0dd6b02), bd6407da, b52cf663. dc7489fb went with the bridge port."
     },
     {
       "id": "optiscaler-upstream:hudfix-restrack-overhaul",

@@ -687,7 +687,7 @@
         "spdx": "GPL-3.0",
         "portable": true
       },
-      "status": "planned",
+      "status": "ported",
       "created": "2026-09-19",
       "study": "memory/plans/2026-09-19-port-upstream-shared-stability.md",
       "plan": "memory/plans/2026-09-19-port-upstream-shared-stability.md",
@@ -705,7 +705,17 @@
       "already_have_refs": [
         "7dbc379d"
       ],
-      "ported_in": "branch fix/upstream-shared-stability-port, 4 commits e650e07f 183465d9 1a3bb535 552d1519 (not merged, not built, UNTESTED). Still undecided and untouched: DXGI exports group (b4924e30 32f5f3db 42dc02af b0dd6b02), bd6407da, b52cf663. dc7489fb went with the bridge port."
+      "ported_in": "merged to main 2026-09-19 as PR #24 (merge commit 2083a1dd), branch fix/upstream-shared-stability-port: e650e07f 183465d9 1a3bb535 552d1519. Release x64 built (exit 0); UNTESTED in a game (1ec11b8c needs an FSR FG game).",
+      "closed": "2026-09-19",
+      "skipped_refs": [
+        "b4924e30",
+        "32f5f3db",
+        "42dc02af",
+        "b0dd6b02",
+        "bd6407da",
+        "b52cf663"
+      ],
+      "decision_note": "Skipped on purpose, not marked already_have: DXGI exports group (process-wide, least evidence), bd6407da (changes game-root detection), b52cf663 (not a crash fix). Reopen only if a Windows 11 exports-logging crash or a UE NGX DLL search failure shows up. 7dbc379d was already in HEAD; dc7489fb went with the bridge port."
     },
     {
       "id": "optiscaler-upstream:hudfix-restrack-overhaul",

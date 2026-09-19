@@ -2,8 +2,8 @@
 
 - Branch: `fix/upstream-shared-stability-port`
 - Created: 2026-09-19
-- Status: in progress 2026-09-19 (steps 1-3 done on the branch; DXGI exports group, `bd6407da`, `b52cf663` not decided; built, not game-tested)
-- Task file: memory/tasks/fix_upstream-shared-stability-port.md
+- Status: done 2026-09-19 (4 guards merged as PR #24, `2083a1dd`; built, untested in a game; exports group, `bd6407da`, `b52cf663` skipped on purpose)
+- Task file: memory/archived_tasks/fix_upstream-shared-stability-port.md
 - Ledger: `optiscaler-upstream:shared-stability-fixes`
 - Source: optiscaler/OptiScaler `master` (`6f0d1fdd`), GPL-3.0. Merge-base with this fork `4f17a05d`.
 
@@ -68,3 +68,4 @@ Work on the branch; each step is its own commit and reverts alone.
 
 - **2026-09-19:** cut `fix/upstream-shared-stability-port` from `main` (`98dc3d78`). `7dbc379d` is already in HEAD (both files use `ComPtr<ID3D12Resource> scBuffer`, from `3d083723`); `git cherry-pick` came out empty and was skipped. Ported one commit each, authors kept, `Ported-from:` trailers: `e650e07f` f740a763, `183465d9` 4bd61744, `1a3bb535` 7168655f, `552d1519` 1ec11b8c. Read the diffs: `GpuTime_Dx12` methods already check `_init`, so the early return is safe; `1ec11b8c` also resets `_hudCopy` / `_hudlessCompareCompute` in `ReleaseObjects`. Steps 4-5 left at default (skip) pending the user's call. Not built.
 - **2026-09-19, build:** user lifted the no-auto-build rule. First Release x64 attempt hung (orphaned cl.exe, killed); rebuild exit 0, 0 errors, only pre-existing C4250 warnings, none in FSRFG_Dx12 / GpuTime_Dx12 / D3D11_Hooks. `x64/Release/a/OptiScaler.dll` 22:40:51. No game run.
+- **2026-09-19, PORT_CLOSE:** PR #24 merged to main (`2083a1dd`). Ledger `optiscaler-upstream:shared-stability-fixes` set to `ported`, untested in a game. Steps 4-5 closed as skip. Task file archived to `memory/archived_tasks/`.

@@ -2,7 +2,7 @@
 
 - Branch: `feat/nr-auto-exposure-trim-port` (cut from `main` at execution, on a clean tree, R9)
 - Created: 2026-09-20
-- Status: planned, awaiting approval to execute
+- Status: executed and built 2026-09-20 on `feat/nr-auto-exposure-trim-port` (6 commits, not pushed); Release x64 exit 0; shader and Vulkan GPU tests pass; not run in a game
 - Task file: memory/tasks/feat_nr-auto-exposure-trim-port.md
 - Ledger: `wilsjo2-fork:pr-77-auto-exposure-trim`
 - Source: wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass PR #77 (open, not merged), one commit `59855487` by mattjaas, head fetched to `refs/port/wilsjo2-fork/pr-77`. Base of the PR is `codex/release-v0.8.4` (`8802b2b4`). GPL-3.0.
@@ -44,16 +44,16 @@ It also changes the two exposure-based sources that already exist here:
 
 ## Steps
 
-1. [ ] **Branch** `feat/nr-auto-exposure-trim-port` from `main` on a clean tree. Commit this plan, the ledger entry and the task file first (they are uncommitted now).
-2. [ ] **Re-fetch and re-diff the PR.** It is open and can still change. If the head is not `59855487`, diff `59855487..new-head` and re-read before writing code.
-3. [ ] **Commit 1: Trim range and Anchor Points, Game exposure.**
+1. [x] **Branch** `feat/nr-auto-exposure-trim-port` from `main` on a clean tree. Commit this plan, the ledger entry and the task file first (they are uncommitted now).
+2. [x] **Re-fetch and re-diff the PR.** It is open and can still change. If the head is not `59855487`, diff `59855487..new-head` and re-read before writing code.
+3. [x] **Commit 1: Trim range and Anchor Points, Game exposure.**
    - `Config.h/.cpp`: `DlssNrAutoExposureTrim` (5.0), `DlssNrAutoExposureShadowProtection` (100.0), the two anchor strings, the two non-persisted preview flags, ini read and save with the same key names.
    - `DlssNr_Common.h`: the 25 new constants, plus `DlssNrMode_AutoExposure = 11`. Add the matching HLSL cbuffer fields (no padding fields).
    - `dlssnr.hlsl`: `ExposureTrimAnchorKey/Value`, `EffectiveExposureTrim`, `WhitePoint()` reading `gPreExposure` and the trim; resolve the white point once per pixel as the PR does.
    - `DlssNr_Dx12.cpp`: `ParseTrimAnchors`, `TrimForKey`, `FillExposureTrimConstants` as file-local helpers; use them in `ResolveWhitePoint` (line ~1183) and in the encode/resolve constants (~2426, ~3099); widen the 4x clamp to 50x for source 1. Fill the new fields at every site from the audit above.
    - `DlssNrFeature_Vk.cpp`: the same helpers, used where line ~1007 clamps Trim.
    - `DlssNr_Menu.cpp`: Game-exposure Trim slider 0.25-50x with Reset, the anchor controls (`RenderExposureTrimAnchorControls` and its parser, put beside the menu code), the live "white point" line using anchors.
-4. [ ] **Commit 2: automatic exposure, D3D12.**
+4. [x] **Commit 2: automatic exposure, D3D12.**
    - `dlssnr.hlsl`: mode 3 parallel tile meter (`MeterCopiesExposure == 0`), the `gMode == 11` reduction, `groupshared gExposureReduce`, new `CSMain` signature with group ids.
    - `DlssNr_Dx12.cpp` `DispatchPass` (~1567): dispatch one group per tile when `Mode == Meter && MeterCopiesExposure == 0`; set `MeterCopiesExposure = 1` on the existing game-exposure meter dispatch.
    - `g_nr` state: `autoExposure` texture (R32_FLOAT 1x1), `autoExposureReadable`, `autoExposureValue`, `autoExposurePreExposure`, `autoExposureFrames`, `exposureReadbackSource`; `meterExposureValid[4]` becomes `meterExposureKind[4]` (0 none, 1 game, 2 auto) with `meterExposurePreExposure[4]`. Update `CopyMeterToReadback`, `ConsumeMeterReadback`, `InvalidateExposureMeter`, and the release path (`ParkNrResource`).
@@ -61,10 +61,10 @@ It also changes the two exposure-based sources that already exist here:
    - `DlssNr_Proxy.h/.cpp`: add the `exposure` parameter to `Context::Run` and set `DLSSNR.ExposureTexture`; pass it from the model `Run` call only when auto exposure is in use.
    - Status: `AutoExposureStatus()` for the menu. We have no `DlssNr_Status.cpp`: `ExposureStatus` and `GameExposureStatus()` are declared in `DlssNrFeature_Dx12.h` (118, 127) and defined at the end of `DlssNr_Dx12.cpp` (~3786); add `AutoExposureStatus()` and the `autoExposure` snapshot member there, and the Vulkan twin beside `ExposureOfferedVk`.
    - Menu: source list gets the 4th entry, range check `<= 3`, the auto-exposure Trim slider (default 5x, Reset to 5x), shadow protection slider, anchor controls, status text.
-5. [ ] **Commit 3: automatic exposure, Vulkan.** `DlssNrFeature_Vk.cpp`: `autoExposure` image, the meter and reduce dispatches, readback copy with the host barrier, `meterExposureKind`, source-change reset, `autoExposureActive` in the status, CPU white point for source 3, exposure forwarded to the private feature. `DlssNr_Vk.cpp` `Dispatch`: same one-group-per-tile rule.
-6. [ ] **Commit 4: regenerate shader binaries.** After the last shader edit, recompile `dlssnr.hlsl` with `dxc` for DX12 (`DlssNr_Shader.cso` + `.h`) and Vulkan (`DlssNr_Shader_Vk.spv` + `.h`) the way earlier tasks did. Both must compile clean. Never copy the PR's generated files: they were built from v0.8.4's HLSL.
-7. [ ] **Provenance.** Each source commit carries `Ported-from: wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass PR #77 (59855487)` and `Co-Authored-By: Claude Sonnet 5`; author set to `mattjaas <183701493+mattjaas@users.noreply.github.com>` since the code is adapted by hand. Add a `docs/CREDITS.md` entry (substantial feature).
-8. [ ] **Build** Release x64 (PowerShell, memory: build allowed) and read the log for warnings in touched files.
+5. [x] **Commit 3: automatic exposure, Vulkan.** `DlssNrFeature_Vk.cpp`: `autoExposure` image, the meter and reduce dispatches, readback copy with the host barrier, `meterExposureKind`, source-change reset, `autoExposureActive` in the status, CPU white point for source 3, exposure forwarded to the private feature. `DlssNr_Vk.cpp` `Dispatch`: same one-group-per-tile rule.
+6. [x] **Commit 4: regenerate shader binaries.** After the last shader edit, recompile `dlssnr.hlsl` with `dxc` for DX12 (`DlssNr_Shader.cso` + `.h`) and Vulkan (`DlssNr_Shader_Vk.spv` + `.h`) the way earlier tasks did. Both must compile clean. Never copy the PR's generated files: they were built from v0.8.4's HLSL.
+7. [x] **Provenance.** Each source commit carries `Ported-from: wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass PR #77 (59855487)` and `Co-Authored-By: Claude Sonnet 5`; author set to `mattjaas <183701493+mattjaas@users.noreply.github.com>` since the code is adapted by hand. Add a `docs/CREDITS.md` entry (substantial feature).
+8. [x] **Build** Release x64 (PowerShell, memory: build allowed) and read the log for warnings in touched files.
 
 ## Verification
 
@@ -91,3 +91,12 @@ Work on the branch; the four commits revert independently in reverse order (bina
 ## Execution log
 
 - **2026-09-20:** studied (diff read in full, trial cherry-pick in a throwaway worktree); plan written. Not started.
+- **2026-09-20, executed.** Branch `feat/nr-auto-exposure-trim-port` from `main` (`b0191d86`). PR head re-checked: still `59855487`, open. Commits: `f1e7ca9b` config, constants and shader groundwork; `8515b5f4` Game exposure Trim to 50x and Trim anchors (D3D12 CPU and shader, Vulkan CPU, menu); `3ebd6f50` automatic exposure on D3D12; `66c1beca` automatic exposure on Vulkan; `69fcf9e4` regenerated shader binaries; `0a4e85d4` GPU smoke test and credits line. The first four source commits authored as mattjaas with `Ported-from:` trailers. Differences from the plan and the PR, all deliberate:
+  - **Mode number.** Automatic exposure is mode 13 here; 11 and 12 were already `ZeroMotion` and `ClampProxy`.
+  - **Constants.** 25 new scalars (149 bytes of 256); the PR's 4 residual padding fields left out.
+  - **Shared helper.** The anchor parse/interpolate/serialize code lives once in `shaders/dlssnr/DlssNr_TrimAnchors.h`; the PR had three copies (D3D12, Vulkan, menu). The shader keeps its own copy of the interpolation.
+  - **Vulkan live path.** The PR's shader reads the exposure from the motion slot on Vulkan; the plan said Vulkan compiled the live path out. Ported as the PR has it: only automatic exposure sets the flag on Vulkan, the game's own exposure stays on the CPU. The meter image goes from 8x8 to 64x64.
+  - **Model exposure not forwarded.** The PR hands the automatic exposure to the NR model as `DLSSNR.ExposureTexture`. Here the model call goes through the forwarder (`dlssnr_call_evaluate_v2` / `dlssnr_vk_evaluate_v2`), which has no such argument and does not get the game's exposure either, so that part is not ported. If a game looks different from wilsjo2's build this is the first suspect.
+  - **`DlssNr_Proxy`** is not touched: in this tree it is not the main model path.
+  - **Feedback hazard, checked by reading.** This fork removed a frame-statistics white point because it read its own output. The automatic meter reads `target` at encode entry (the upscaler's fresh output) before anything of ours writes to it; not run in finished-picture mode. Only a game can confirm no feedback: toggle NR at a fixed spot and compare the reported exposure on and off.
+- **2026-09-20, verification.** Release x64: `MSBuild ... /t:OptiScaler` exit 0, 0 errors, no new warnings in touched files (`x64/Release/a/OptiScaler.dll` 00:51). `dxc` compiled both targets clean. `tests/nr_vulkan_shader_smoke` (existing) passes on the new SPIR-V. New `tests/nr_auto_exposure_smoke` (17 checks) passes on an RTX 5070 Ti: meter and reduction against hand-worked exposures, and the shader's live white point (Trim, 50x clamp, anchors, flat ends, single anchor, Preview, CPU fallback). A host check of `DlssNr_TrimAnchors.h` (parse, malformed input, 9th anchor, upsert, interpolation, struct layout `static_assert`s) also passed; that one is not committed. No game run.

@@ -196,3 +196,18 @@
   crash. What holds the back buffer at SRWE resize was not traced. The check that settled it:
   build `main`, confirm by log header and file hash that the main DLL is the one loaded, and
   repeat the same resize.
+
+- **`DlssNrMode` numbers and the generated shader files differ from wilsjo2's v0.8.x, so a port
+  that names a mode by number silently means something else here.** wilsjo2's v0.8.4 has
+  `ClampProxy = 8` and `ResizePrivateGuides = 10`; this tree has `NormalizeMotion = 8`,
+  `ZeroMotion = 11` and `ClampProxy = 12`, so the PR #77 port's automatic exposure (mode 11
+  there) is mode 13 here. The same goes for constants-struct fields: v0.8.4 pads the shared
+  struct with residual fields this fork lacks, so its cbuffer offsets are not ours. Never copy
+  a `precompile/*.cso/.spv/.h` from a wilsjo2 branch -- they are compiled from his HLSL; recompile
+  ours with `shader_tools/dxc.exe` (DX12 `-T cs_6_0 -E CSMain -O3 -Qstrip_debug -Qstrip_reflect`,
+  Vulkan `-spirv ... -D VK_MODE -Cc -Vi`, array names `DlssNr_cso` and `dlssnr_spv`). Also: the NR
+  model here is called through `dlssnr_call_evaluate_v2` / `dlssnr_vk_evaluate_v2` in the
+  forwarder, which has no exposure argument, so anything of his that hands the model a resource
+  the forwarder does not know (`DLSSNR.ExposureTexture`) cannot be ported without changing that ABI.
+  A GPU test that runs the production SPIR-V (`tests/nr_auto_exposure_smoke.cpp`) is the quick way to
+  check a shader-side port without a game.

@@ -1111,7 +1111,7 @@
         "spdx": "GPL-3.0",
         "portable": true
       },
-      "status": "in-progress",
+      "status": "ported",
       "study": ".ai-os/memory/plans/2026-09-20-port-wilsjo2-pr77-auto-exposure-trim.md",
       "plan": ".ai-os/memory/plans/2026-09-20-port-wilsjo2-pr77-auto-exposure-trim.md",
       "decision": {
@@ -1119,8 +1119,18 @@
         "at": "2026-09-20",
         "reason": "Asked for an ai-os plan to port PR #77 into our fork. Read as approval to plan, not to execute."
       },
-      "decision_note": "PR is open and unmerged upstream; base is codex/release-v0.8.4 which main does not contain (trial cherry-pick: 8 modify/delete conflicts). Not tested in a game at source. Depends on nothing else in the ledger but will collide with wilsjo2-fork:v0.8-nr-rewrite if that is ported later. Executed 2026-09-20 on feat/nr-auto-exposure-trim-port (6 commits, unpushed): built, shader and Vulkan GPU tests pass, not run in a game. Skipped on purpose: forwarding the automatic exposure to the NR model as DLSSNR.ExposureTexture (this fork's model call has no such argument), and the PR's 4 residual padding constants.",
-      "created": "2026-09-20"
+      "decision_note": "Hand-adapted, not applied: the PR sits on wilsjo2's v0.8.4 file split which main does not have. Automatic exposure is mode 13 here (11 and 12 were taken). Forwarding the automatic exposure to the NR model was not ported: the model call goes through the forwarder, which has no exposure argument. Reopen if a game looks different from mattjaas's build. The PR was still open upstream at 59855487 when ported.",
+      "created": "2026-09-20",
+      "ported_refs": [
+        "59855487",
+        "wilsjo2 PR #77"
+      ],
+      "ported_in": "merged to main 2026-09-20 as PR #27 (merge commit ce826161), branch feat/nr-auto-exposure-trim-port: f1e7ca9b config/constants/shader groundwork, 8515b5f4 Trim to 50x and anchors, 3ebd6f50 automatic exposure D3D12, 66c1beca automatic exposure Vulkan, 69fcf9e4 regenerated shader binaries, 0a4e85d4 GPU smoke test and credits, 64ec11fa review fix, 1bae0750 anchor host test. Shipped in release v0.1.9-auto-exposure-upstream-ports. Release x64 built (exit 0); shader checked by GPU tests on an RTX 5070 Ti; UNTESTED in a game (needs an HDR-linear NR game on D3D12 and on Vulkan).",
+      "closed": "2026-09-20",
+      "skipped_refs": [
+        "DLSSNR.ExposureTexture forwarding to the NR model",
+        "4 residual padding constants"
+      ]
     }
   ],
   "schema": {

@@ -2,8 +2,8 @@
 
 - Branch: `feat/nr-auto-exposure-trim-port` (cut from `main` at execution, on a clean tree, R9)
 - Created: 2026-09-20
-- Status: executed and built 2026-09-20 on `feat/nr-auto-exposure-trim-port` (6 commits, not pushed); Release x64 exit 0; shader and Vulkan GPU tests pass; not run in a game
-- Task file: memory/tasks/feat_nr-auto-exposure-trim-port.md
+- Status: done 2026-09-20 (merged as PR #27, `ce826161`; released in v0.1.9; built, shader and Vulkan GPU tests pass; not run in a game)
+- Task file: memory/archived_tasks/feat_nr-auto-exposure-trim-port.md
 - Ledger: `wilsjo2-fork:pr-77-auto-exposure-trim`
 - Source: wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass PR #77 (open, not merged), one commit `59855487` by mattjaas, head fetched to `refs/port/wilsjo2-fork/pr-77`. Base of the PR is `codex/release-v0.8.4` (`8802b2b4`). GPL-3.0.
 

@@ -4155,7 +4155,11 @@ void Shutdown()
     g_nr.autoExposureValue = 0.0f;
     g_nr.autoExposurePreExposure = 1.0f;
     g_nr.autoExposureFrames = 0;
-    g_nr.exposureReadbackSource = 0;
+
+    // exposureReadbackSource is deliberately left alone. The ring's frame counter and slot kinds are
+    // reset below, which is all a recreate needs; resetting the source too would make the next frame
+    // look like a change of source, and that clears the held game exposure -- the value the note
+    // further down says must survive a recreate.
 
     if (g_nr.calib != nullptr)
     {

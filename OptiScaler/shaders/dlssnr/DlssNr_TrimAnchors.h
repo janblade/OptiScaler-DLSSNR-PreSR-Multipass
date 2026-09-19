@@ -21,9 +21,22 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <string>
 #include <vector>
+
+// FillConstants below writes the anchor pairs by walking floats from ExposureTrimAnchorExposure0, and
+// the shader reads them by name in this order. A reordered or inserted field would silently shift the
+// table, so the layout is pinned here rather than trusted.
+static_assert(offsetof(DlssNrConstants, ExposureTrimAnchorTrim0) ==
+              offsetof(DlssNrConstants, ExposureTrimAnchorExposure0) + sizeof(float));
+static_assert(offsetof(DlssNrConstants, ExposureTrimAnchorExposure1) ==
+              offsetof(DlssNrConstants, ExposureTrimAnchorExposure0) + 2 * sizeof(float));
+static_assert(offsetof(DlssNrConstants, ExposureTrimAnchorExposure7) ==
+              offsetof(DlssNrConstants, ExposureTrimAnchorExposure0) + 14 * sizeof(float));
+static_assert(offsetof(DlssNrConstants, ExposureTrimAnchorTrim7) ==
+              offsetof(DlssNrConstants, ExposureTrimAnchorExposure0) + 15 * sizeof(float));
 
 namespace DlssNrTrim
 {

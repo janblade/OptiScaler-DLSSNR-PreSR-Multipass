@@ -45,7 +45,7 @@ cbuffer Params : register(b0)
     uint  gExposureSourceHeight;
     uint  gMeterCopiesExposure; // meter mode: 1 courier the game's exposure, 0 average every tile pixel
     float gExposureTrim;
-    uint  gUseExposureWhitePoint; // 1 = automatic exposure, read in-shader from t4
+    uint  gUseExposureWhitePoint; // 1 = automatic exposure, read in-shader (t4 on D3D12, the motion slot on Vulkan)
     uint  gExposureTrimAnchorCount;
     uint  gExposureTrimPreview;
     float gExposureTrimAnchorExposure0;
@@ -275,8 +275,8 @@ Texture2D<float4>   gMotion   : register(t3);  // resolve, accumulating: the gam
 
 // The 1x1 exposure texture, bound at t4 (DispatchPass's "prev edit" SRV slot): the game's own for
 // source 1, the automatic exposure pass's for source 3. D3D12 only: Vulkan has no eighth descriptor
-// for it and keeps computing the white point on the CPU, so the whole live path is compiled out under
-// VK_MODE and neither gUseGameExposure nor gUseExposureWhitePoint is ever set on that backend.
+// for it. Its automatic exposure is bound in the motion slot instead, which the encode and resolve
+// dispatches do not otherwise use -- see ExposureSample.
 #ifndef VK_MODE
 Texture2D<float4>   gExposure : register(t4);
 #endif
@@ -353,19 +353,30 @@ float EffectiveExposureTrim(float key)
     return clamp(ExposureTrimAnchorValue(count - 1), 0.25, 50.0);
 }
 
+// Where the live exposure is read from. D3D12 binds it at t4. Vulkan has no such descriptor, so it
+// travels in the motion slot: the encode and resolve have no use for motion vectors there, and the
+// meter's courier already borrows the same slot. Only ever bound when gUseExposureWhitePoint is set.
+float ExposureSample()
+{
+#ifdef VK_MODE
+    return gMotion.Load(int3(0, 0, 0)).r;
+#else
+    return gExposure.Load(int3(0, 0, 0)).r;
+#endif
+}
+
 // The picture white point. Sources 0 (paper white) and 2 (scan) resolve it on the CPU and pass it in
 // gWhitePoint. Source 1 (the game's own exposure) and source 3 (automatic exposure) also pass a CPU
-// value in gWhitePoint as a fallback, but when their 1x1 exposure texture is bound at t4 (D3D12) the
-// white point is recomputed HERE from the live exposure -- PreExposure / exposure, times the Trim that
-// applies at that base white point -- which removes the 3-4 frame CPU-readback lag the meter path has.
-// The clamp matches the CPU path's [0.01, 4096]. Vulkan compiles the live path out and always
-// returns the CPU value, so neither flag is ever set on that backend.
+// value in gWhitePoint as a fallback, but when their 1x1 exposure texture is bound the white point is
+// recomputed HERE from the live exposure -- PreExposure / exposure, times the Trim that applies at that
+// base white point -- which removes the 3-4 frame CPU-readback lag the meter path has. The clamp
+// matches the CPU path's [0.01, 4096]. Vulkan sets only gUseExposureWhitePoint: the game's own
+// exposure stays on the CPU there, because the layout its image is left in is not known.
 float WhitePoint()
 {
-#ifndef VK_MODE
     if (gUseGameExposure != 0 || gUseExposureWhitePoint != 0)
     {
-        const float e = gExposure.Load(int3(0, 0, 0)).r;
+        const float e = ExposureSample();
         if (isfinite(e) && e > 1e-8 && e < 1e8)
         {
             const float preExposure =
@@ -375,7 +386,6 @@ float WhitePoint()
         }
         // A missing or absurd sample falls through to the CPU value the meter path still maintains.
     }
-#endif
     return max(gWhitePoint, 1e-4);
 }
 

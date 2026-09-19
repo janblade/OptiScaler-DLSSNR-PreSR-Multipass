@@ -73,6 +73,7 @@ bool ExposureOfferedVk();
 // the menu can show the base white point and capture Trim anchors against it.
 struct ExposureStatus;
 ExposureStatus GameExposureStatusVk();
+ExposureStatus AutoExposureStatusVk();
 
 void ShutdownVk(bool deviceAlive = true);
 

@@ -1102,7 +1102,7 @@ void RenderMenu(Config* config, float menuResScale)
             }
             else if (source == 3)
             {
-                const auto autoEx = DlssNr::AutoExposureStatus();
+                const auto autoEx = vk ? DlssNr::AutoExposureStatusVk() : DlssNr::AutoExposureStatus();
 
                 if (autoEx.exposure > 1e-8f)
                 {
@@ -1325,7 +1325,8 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nRange: 0.25x to 50.00x. Default: 5.00x"
                        "\nTry to use the highest value that subjectively looks best; excessive values"
                        "\nwill degrade image quality. Anchor points can use different Trim values for"
-                       "\ndifferent Base White Point values.");
+                       "\ndifferent Base White Point values."
+                       "\nAutomatic exposure is available on D3D12 and Vulkan.");
 
             float protection = config->DlssNrAutoExposureShadowProtection.value_or_default();
             if (ImGui::SliderFloat("Shadow protection from bright highlights", &protection, 0.0f, 100.0f, "%.0f%%"))
@@ -1339,8 +1340,9 @@ void RenderMenu(Config* config, float menuResScale)
 
             RenderExposureTrimAnchorControls(config->DlssNrAutoExposureTrimAnchors,
                                              config->DlssNrAutoExposureTrimPreview,
-                                             BaseWhitePointOf(DlssNr::AutoExposureStatus()), autoTrim,
-                                             "automaticExposureTrim");
+                                             BaseWhitePointOf(DlssNr::IsRunningVk() ? DlssNr::AutoExposureStatusVk()
+                                                                                    : DlssNr::AutoExposureStatus()),
+                                             autoTrim, "automaticExposureTrim");
         }
         else
         {

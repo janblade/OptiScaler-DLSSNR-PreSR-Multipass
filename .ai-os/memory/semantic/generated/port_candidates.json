@@ -1068,6 +1068,59 @@
       },
       "status": "already-have",
       "created": "2026-09-19"
+    },
+    {
+      "id": "wilsjo2-fork:pr-77-auto-exposure-trim",
+      "source": "wilsjo2-fork",
+      "title": "Automatic exposure from the HDR frame, Trim up to 50x, Trim Anchor Points (wilsjo2 PR #77, mattjaas)",
+      "refs": [
+        "59855487",
+        "wilsjo2 PR #77"
+      ],
+      "files": [
+        "OptiScaler/dlssnr/",
+        "OptiScaler/shaders/dlssnr/",
+        "OptiScaler/Config.cpp",
+        "OptiScaler/Config.h"
+      ],
+      "summary": "Adds a fourth White Point source that meters the linear HDR frame on the GPU (64x64 tile means, then a 1x1 exposure texture used the same frame), widens the exposure Trim range from 4x to 50x, and lets Game and Automatic exposure keep up to 8 base-white-point to Trim anchors interpolated in log space. D3D12 and Vulkan. Written against wilsjo2's v0.8.4 file split, so it has to be hand-adapted onto our monolithic DlssNr_Dx12.cpp, DlssNrFeature_Vk.cpp and DlssNr_Menu.cpp.",
+      "relevance": {
+        "level": "high",
+        "reasons": [
+          "touches dlssnr/ and shaders/dlssnr/",
+          "new NR White Point source"
+        ],
+        "basis": "heuristic"
+      },
+      "already_have": {
+        "state": "no",
+        "evidence": "59855487 is not an ancestor of HEAD; AutoExposure, DlssNrAutoExposureTrim and ExposureTrimAnchor symbols are absent from main."
+      },
+      "overlap": [
+        "OptiScaler/Config.cpp",
+        "OptiScaler/Config.h",
+        "OptiScaler/dlssnr/DlssNrFeature_Vk.cpp",
+        "OptiScaler/dlssnr/DlssNr_Proxy.cpp",
+        "OptiScaler/dlssnr/DlssNr_Proxy.h",
+        "OptiScaler/shaders/dlssnr/DlssNr_Common.h",
+        "OptiScaler/shaders/dlssnr/DlssNr_Dx12.cpp",
+        "OptiScaler/shaders/dlssnr/DlssNr_Vk.cpp",
+        "OptiScaler/shaders/dlssnr/precompile/dlssnr.hlsl"
+      ],
+      "licence": {
+        "spdx": "GPL-3.0",
+        "portable": true
+      },
+      "status": "planned",
+      "study": ".ai-os/memory/plans/2026-09-20-port-wilsjo2-pr77-auto-exposure-trim.md",
+      "plan": ".ai-os/memory/plans/2026-09-20-port-wilsjo2-pr77-auto-exposure-trim.md",
+      "decision": {
+        "by": "user",
+        "at": "2026-09-20",
+        "reason": "Asked for an ai-os plan to port PR #77 into our fork. Read as approval to plan, not to execute."
+      },
+      "decision_note": "PR is open and unmerged upstream; base is codex/release-v0.8.4 which main does not contain (trial cherry-pick: 8 modify/delete conflicts). Not tested in a game at source. Depends on nothing else in the ledger but will collide with wilsjo2-fork:v0.8-nr-rewrite if that is ported later.",
+      "created": "2026-09-20"
     }
   ],
   "schema": {

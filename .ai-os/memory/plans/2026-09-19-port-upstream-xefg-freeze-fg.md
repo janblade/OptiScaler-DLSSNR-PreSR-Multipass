@@ -2,7 +2,7 @@
 
 - Branch: `fix/upstream-xefg-freeze-fg-port`
 - Created: 2026-09-19
-- Status: in progress (executing 2026-09-19)
+- Status: ported and built 2026-09-19 (7 commits on the branch, not pushed); untested in a game; awaiting push / PR
 - Task file: memory/tasks/fix_upstream-xefg-freeze-fg-port.md
 - Ledger: `optiscaler-upstream:xefg-freeze-fg-fixes`
 - Source: optiscaler/OptiScaler `master` (`6f0d1fdd`), GPL-3.0, authors cdozdil and FakeMichau. Merge-base with this fork `4f17a05d`.
@@ -36,12 +36,12 @@
 ## Steps
 
 1. [x] **Branch** `fix/upstream-xefg-freeze-fg-port` from `main` (`3395ee57`) on a clean tree (R9).
-2. [ ] **Count limits:** `da427e20`, then `5c5e424d`.
-3. [ ] **Freeze detection:** `04bf0b08`, then `d817d5b4`.
-4. [ ] **XeFG locks, in order:** `3bc197c2`, `34917612`, `9df3ed0c`. One commit each. R23: `FG_Hooks.cpp` and `wrapped_swapchain.cpp` run on every FG game, so read the diff against HEAD before committing and confirm each new lock is gated on XeFG.
-5. [ ] **Provenance.** `git cherry-pick -x`, rewritten to a `Ported-from: optiscaler/OptiScaler@<sha>` trailer; keep the upstream authors.
-6. [ ] **Build (Release x64).** Read the log for warnings in the touched files.
-7. [ ] **Decide `2e5a8770` and `d794b18d`.** Default skip, recorded in the ledger.
+2. [x] **Count limits:** `da427e20`, then `5c5e424d`.
+3. [x] **Freeze detection:** `04bf0b08`, then `d817d5b4`.
+4. [x] **XeFG locks, in order:** `3bc197c2`, `34917612`, `9df3ed0c`. One commit each. R23: `FG_Hooks.cpp` and `wrapped_swapchain.cpp` run on every FG game, so read the diff against HEAD before committing and confirm each new lock is gated on XeFG.
+5. [x] **Provenance.** `git cherry-pick -x`, rewritten to a `Ported-from: optiscaler/OptiScaler@<sha>` trailer; keep the upstream authors.
+6. [x] **Build (Release x64).** *(2026-09-19 23:50, exit 0, 0 errors; game test still to do)* Read the log for warnings in the touched files.
+7. [x] **Decide `2e5a8770` and `d794b18d`.** Default skip (not overridden by the user), noted in the ledger decision.
 
 ## Verification
 
@@ -66,3 +66,5 @@ Work on the branch; each group is its own commit and reverts alone.
 ## Execution log
 
 - **2026-09-19:** studied; trial in a throwaway worktree; 7 of 9 selected. Started execution.
+- **2026-09-19, ported:** one commit each, authors kept, `Ported-from:` trailers: `2ec0ee59` da427e20, `561fc397` 5c5e424d, `e46864a6` 04bf0b08, `f3bd70d2` d817d5b4, `b2ad6d4b` 3bc197c2, `5e8fb632` 34917612, `df8879f7` 9df3ed0c. R23 read-through: the bridge lock is real (`Present` takes a shared lock, `ResizeBuffers` / `ResizeBuffers1` take the unique lock; both gated on XeFG + `Dx11wDx12`). **The native DX12 `FGHooks::_resizeMutex` is only ever taken as a `shared_lock`, in `hkResizeBuffers`, `hkResizeBuffers1` and `FGPresent`, so it excludes nothing.** That is how upstream has it (its comment says "Let's try Dx11 like approach on Dx12"); ported as is. What changes behaviour on native DX12 is `WaitForQueueIdle` (5 s wait that logs failures) replacing four inline waits. The two `WaitForQueueIdle` definitions do not clash (one `static`, one in an anonymous namespace).
+- **2026-09-19, build:** Release x64, exit 0, 0 errors, `x64/Release/a/OptiScaler.dll` 23:50:19. The first attempt from Git Bash never compiled: MSYS rewrote `/t:` and `/p:` into paths (MSB1008); the PowerShell run is the real build. One new warning in a touched file: `IFeature.cpp(281)` C4018 signed/unsigned compare from `04bf0b08` (`long` counter against `10 * uint32_t`); harmless, the counter never goes negative, left as upstream has it. All other warnings (C4250 x58, Streamline_Hooks, Magnifier_Common, LINK) are in files this port did not touch. No game run.

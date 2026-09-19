@@ -126,6 +126,9 @@ struct ExposureStatus
 
 ExposureStatus GameExposureStatus();
 
+// What the OptiScaler-owned automatic exposure (white point source 3) has measured from the frame.
+ExposureStatus AutoExposureStatus();
+
 // The model resolution actually applied last frame, as a percentage of the frame it processes --
 // the manual slider, or (post-SR + Auto) the derived render:output ratio. So the menu can show the
 // live value instead of the stale manual one while Auto is overriding it.

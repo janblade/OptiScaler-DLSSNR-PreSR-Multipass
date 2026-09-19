@@ -1054,11 +1054,12 @@ void RenderMenu(Config* config, float menuResScale)
             const bool haveAnchor = !DlssNr::ExposureScan::Anchors().empty();
 
             static const char* sourceNames[] = { "Manual paper white", "Game exposure",
-                                                 "Scanned exposure (experimental)" };
+                                                 "Scanned exposure (experimental)",
+                                                 "Automatic exposure from HDR frame" };
 
             int source = (int) config->DlssNrWhitePointSource.value_or_default();
 
-            if (source < 0 || source > 2)
+            if (source < 0 || source > 3)
                 source = 0;
 
             if (ImGui::Combo("White point source", &source, sourceNames, IM_ARRAYSIZE(sourceNames)))
@@ -1070,7 +1071,7 @@ void RenderMenu(Config* config, float menuResScale)
                 // step, and so no way for the two to disagree.
             }
 
-            HelpMarker("Manual: use Paper white. Game exposure: use exposure supplied by the game.\nScanned exposure: estimate it from game buffers; requires calibration and may select the wrong buffer.");
+            HelpMarker("Manual: use Paper white. Game exposure: use exposure supplied by the game.\nScanned exposure: estimate it from game buffers; requires calibration and may select the wrong buffer.\nAutomatic exposure: OptiScaler meters the linear HDR frame itself, so it needs nothing from the game.");
 
             // Availability, in colour, for the option currently chosen.
             if (source == 1)
@@ -1098,6 +1099,26 @@ void RenderMenu(Config* config, float menuResScale)
                 }
                 else
                     ImGui::TextDisabled("Reading exposure...");
+            }
+            else if (source == 3)
+            {
+                const auto autoEx = DlssNr::AutoExposureStatus();
+
+                if (autoEx.exposure > 1e-8f)
+                {
+                    const float baseWhitePoint = autoEx.preExposure / autoEx.exposure;
+                    const auto trimAnchors =
+                        DlssNrTrim::Parse(config->DlssNrAutoExposureTrimAnchors.value_or_default());
+                    const float trim = DlssNrTrim::TrimForKey(
+                        baseWhitePoint, config->DlssNrAutoExposureTrim.value_or_default(), trimAnchors,
+                        config->DlssNrAutoExposureTrimPreview.value_or_default());
+                    ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
+                                       "Automatic exposure %.4f  ->  white point %.2f", autoEx.exposure,
+                                       baseWhitePoint * trim);
+                    ImGui::TextDisabled("Exposure calculated automatically from a linear HDR frame");
+                }
+                else
+                    ImGui::TextDisabled("Calculating automatic exposure...");
             }
             else if (source == 2)
             {
@@ -1281,6 +1302,45 @@ void RenderMenu(Config* config, float menuResScale)
                                              BaseWhitePointOf(DlssNr::IsRunningVk() ? DlssNr::GameExposureStatusVk()
                                                                                     : DlssNr::GameExposureStatus()),
                                              trim, "gameExposureTrim");
+        }
+        else if (wpSource == 3)
+        {
+            // 5x by default: the PR this came from found that a useful starting point across several
+            // games. It is independent of the Game exposure Trim.
+            float autoTrim = config->DlssNrAutoExposureTrim.value_or_default();
+
+            if (ImGui::SliderFloat("Trim (x automatic exposure)", &autoTrim, DlssNrTrim::kMinTrim,
+                                   DlssNrTrim::kMaxTrim, "%.2fx", ImGuiSliderFlags_Logarithmic))
+                config->DlssNrAutoExposureTrim = DlssNrTrim::ClampTrim(autoTrim);
+
+            ImGui::SameLine();
+
+            if (ImGui::SmallButton("Reset##autoexposuretrim"))
+            {
+                config->DlssNrAutoExposureTrim = 5.0f;
+                autoTrim = 5.0f;
+            }
+
+            HelpMarker("OptiScaler calculates exposure from the ORIGINAL linear-HDR frame before Neural Rendering."
+                       "\nRange: 0.25x to 50.00x. Default: 5.00x"
+                       "\nTry to use the highest value that subjectively looks best; excessive values"
+                       "\nwill degrade image quality. Anchor points can use different Trim values for"
+                       "\ndifferent Base White Point values.");
+
+            float protection = config->DlssNrAutoExposureShadowProtection.value_or_default();
+            if (ImGui::SliderFloat("Shadow protection from bright highlights", &protection, 0.0f, 100.0f, "%.0f%%"))
+                config->DlssNrAutoExposureShadowProtection = std::clamp(protection, 0.0f, 100.0f);
+
+            HelpMarker("Controls how strongly very bright highlights are prevented from driving Automatic exposure."
+                       "\n0% keeps the original full-frame arithmetic average."
+                       "\n100% uses the strongest soft highlight compression. No tiles are discarded.");
+
+            ImGui::TextDisabled("Metering: highlight-compressed arithmetic average.");
+
+            RenderExposureTrimAnchorControls(config->DlssNrAutoExposureTrimAnchors,
+                                             config->DlssNrAutoExposureTrimPreview,
+                                             BaseWhitePointOf(DlssNr::AutoExposureStatus()), autoTrim,
+                                             "automaticExposureTrim");
         }
         else
         {

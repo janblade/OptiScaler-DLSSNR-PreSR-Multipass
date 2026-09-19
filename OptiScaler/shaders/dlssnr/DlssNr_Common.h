@@ -28,7 +28,8 @@ enum DlssNrMode : uint32_t
     DlssNrMode_ComposeMotion = 9, // compose two successive fields at the displaced coordinate
     DlssNrMode_ApplyInterpolatedResidual = 10, // t4: R8_UNORM NVIDIA suppression flag
     DlssNrMode_ZeroMotion = 11, // private reset-only NR/SR guide, never passed to residual FG
-    DlssNrMode_ClampProxy = 12 // a pass's raw answer -> the same value saturated back into the proxy's valid range, before it becomes the next pass's input
+    DlssNrMode_ClampProxy = 12, // a pass's raw answer -> the same value saturated back into the proxy's valid range, before it becomes the next pass's input
+    DlssNrMode_AutoExposure = 13 // the 64x64 meter's tile means -> one exposure value, 1x1
 };
 
 // A successful sample may be reused only on the immediately following frame.
@@ -252,6 +253,40 @@ struct alignas(256) DlssNrConstants
     // itself ran small. 1.0 means "not reduced" and disables anything gated on it. Trailing
     // scalar, mirrored in the shader cbuffer.
     float ModelWorkScale;
+
+    // Automatic exposure and exposure-dependent Trim. Trailing scalars, mirrored in the shader cbuffer
+    // in the same order.
+    //
+    // The live white point is PreExposure / exposure * Trim, where Trim is either the slider
+    // (ExposureTrim) or, when anchors exist, interpolated from them at that base white point. Eight
+    // anchors at most, as key/trim pairs in consecutive fields. UseExposureWhitePoint asks for the
+    // in-shader path for automatic exposure, which reads its own 1x1 texture; game exposure keeps
+    // signalling through UseGameExposure. Left zero, none of it applies and the CPU white point is used.
+    float PreExposure;
+    uint32_t ExposureSourceWidth;
+    uint32_t ExposureSourceHeight;
+    uint32_t MeterCopiesExposure; // meter mode: 1 courier the game's exposure, 0 average every tile pixel
+    float ExposureTrim;
+    uint32_t UseExposureWhitePoint;
+    uint32_t ExposureTrimAnchorCount;
+    uint32_t ExposureTrimPreview; // 1 = ignore the anchors and apply the slider as it is
+    float ExposureTrimAnchorExposure0;
+    float ExposureTrimAnchorTrim0;
+    float ExposureTrimAnchorExposure1;
+    float ExposureTrimAnchorTrim1;
+    float ExposureTrimAnchorExposure2;
+    float ExposureTrimAnchorTrim2;
+    float ExposureTrimAnchorExposure3;
+    float ExposureTrimAnchorTrim3;
+    float ExposureTrimAnchorExposure4;
+    float ExposureTrimAnchorTrim4;
+    float ExposureTrimAnchorExposure5;
+    float ExposureTrimAnchorTrim5;
+    float ExposureTrimAnchorExposure6;
+    float ExposureTrimAnchorTrim6;
+    float ExposureTrimAnchorExposure7;
+    float ExposureTrimAnchorTrim7;
+    float AutoExposureShadowProtection; // percent, 0..100
 };
 static_assert(sizeof(DlssNrConstants) == 256);
 

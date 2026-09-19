@@ -26,6 +26,11 @@
     "simplify": "SIMPLIFY_REVIEW",
     "bloat": "SIMPLIFY_AUDIT",
     "overengineered": "SIMPLIFY_AUDIT",
-    "debt": "DEBT_LEDGER"
+    "debt": "DEBT_LEDGER",
+    "scout": "PORT_SCOUT",
+    "port": "PORT_LIST",
+    "candidates": "PORT_LIST",
+    "study": "PORT_STUDY",
+    "decide": "PORT_DECIDE"
   }
 }

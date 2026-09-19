@@ -230,6 +230,30 @@
         "core.observability.sk"
       ],
       "protected": false
+    },
+    {
+      "id": "core.port.sk",
+      "name": "Port - Candidate Ledger for Selective Feature Porting",
+      "version": "1.0.0",
+      "description": "Scouts a registered list of upstream repos for features relevant to this fork, keeps a ranked candidate ledger, and gates each one through study, human approval, planning and execution. Never merges wholesale, never self-approves, never ports code from an unlicensed source.",
+      "entrypoint": "registry/core.port.sk/SKILL.md",
+      "commands": [
+        "PORT_SCOUT",
+        "PORT_LIST",
+        "PORT_STUDY",
+        "PORT_DECIDE",
+        "PORT_PLAN",
+        "PORT_CLOSE"
+      ],
+      "dependencies": [
+        "core.infra.sk",
+        "core.planning.sk",
+        "core.dev-loop.sk",
+        "core.security.sk",
+        "core.self-healing.sk",
+        "core.observability.sk"
+      ],
+      "protected": false
     }
   ]
 }

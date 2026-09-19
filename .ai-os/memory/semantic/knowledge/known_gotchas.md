@@ -182,3 +182,17 @@
   already gets this right by construction -- it checks deactivation before adding its own
   Reset button. Any future Reset/helper button added next to an existing slider in this file
   needs the same ordering, not just this one call site.
+
+- **A window-resize crash in a DX11 game running through the bridge is not necessarily a
+  bridge regression -- A/B against `main` before blaming a port.** Assetto Corsa with
+  Custom Shaders Patch (CSP), resized with Simple Runtime Window Editor (SRWE), crashed on
+  `main` (`3255bc02`, no bridge port) exactly as on the bridge-port branch: the game's
+  *real* swapchain `ResizeBuffers` returned `DXGI_ERROR_INVALID_CALL` (`0x887A0001`, usually
+  an outstanding back-buffer reference somewhere), and CSP's `dx_hooks::dx_resize_swap_chain`
+  treats any resize failure as fatal and shows its own crash dialog. In our debug log the
+  line `ResizeBuffers results: real 887A0001, fg 887A0005` is misleading: `0x887A0005`
+  (device removed) is only the default for the FG swapchain when FG resize was not attempted,
+  so read the `real` value, not the `fg` one. Ordinary drag-resizing of the window did not
+  crash. What holds the back buffer at SRWE resize was not traced. The check that settled it:
+  build `main`, confirm by log header and file hash that the main DLL is the one loaded, and
+  repeat the same resize.

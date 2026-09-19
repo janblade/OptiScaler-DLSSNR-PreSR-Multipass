@@ -750,6 +750,104 @@
           "required": true
         }
       }
+    },
+    {
+      "name": "PORT_SCOUT",
+      "skill": "core.port.sk",
+      "description": "Fetch the enabled sources in registry/port_sources.json, find what is new since the last scout (or the merge-base on first run), drop noise, detect what this fork already has (git cherry, merge-base, our own PRs coming back), rank by a labeled heuristic, and add candidates to the ledger. One feature or PR is one candidate, never one per commit. Changes no source code. Reports counts of found / dropped / already-have",
+      "parameters": {
+        "source": {
+          "type": "string",
+          "default": "all"
+        },
+        "since": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "number",
+          "default": 15
+        }
+      }
+    },
+    {
+      "name": "PORT_LIST",
+      "skill": "core.port.sk",
+      "description": "Show the candidate ledger ranked by relevance then lowest overlap, hiding ported / rejected / already-have unless asked. Read-only. An empty ledger says to run PORT_SCOUT, not 'nothing to port'",
+      "parameters": {
+        "status": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "min-relevance": {
+          "type": "enum",
+          "values": [
+            "high",
+            "medium",
+            "low"
+          ]
+        }
+      }
+    },
+    {
+      "name": "PORT_STUDY",
+      "skill": "core.port.sk",
+      "description": "Read one candidate's actual diff and write a study note in memory/plans/: what it does, why it might matter here, where it would land, conflict picture, already-have evidence, per-file licence, evidence it works, cost and risk, and a labeled recommendation. Read-only; ends by asking the user to decide, never by planning",
+      "parameters": {
+        "candidate": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    {
+      "name": "PORT_DECIDE",
+      "skill": "core.port.sk",
+      "description": "Record the user's approve / defer / reject on a studied candidate with a reason. The approval gate: needs an explicit decision from the user in this conversation, and only a studied candidate can be approved. The agent never decides for the user",
+      "parameters": {
+        "candidate": {
+          "type": "string",
+          "required": true
+        },
+        "decision": {
+          "type": "enum",
+          "values": [
+            "approve",
+            "defer",
+            "reject"
+          ],
+          "required": true
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "name": "PORT_PLAN",
+      "skill": "core.port.sk",
+      "description": "Turn an approved candidate into a normal PLAN_WRITE plan: adapt onto our seams (never paste), resolve overlap files first, a provenance step, verification split into game-free and game-needed checks, and a rollback branch. Executes nothing",
+      "parameters": {
+        "candidate": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    {
+      "name": "PORT_CLOSE",
+      "skill": "core.port.sk",
+      "description": "Record a finished port after the user confirms it is done: status ported, our commit SHA, a Ported-from trailer, a docs/CREDITS.md entry for substantial work, and the source refs marked so scout never reports them as new again. A port the user has not tested is closed as ported-untested, not verified",
+      "parameters": {
+        "candidate": {
+          "type": "string",
+          "required": true
+        },
+        "sha": {
+          "type": "string"
+        }
+      }
     }
   ]
 }

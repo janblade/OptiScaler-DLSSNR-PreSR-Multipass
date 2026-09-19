@@ -27,7 +27,8 @@
     "core.planning.sk",
     "core.dev-loop.sk",
     "core.simplicity.sk",
-    "core.ux-review.sk"
+    "core.ux-review.sk",
+    "core.port.sk"
   ],
   "custom_commands": [],
   "tech_stack": {

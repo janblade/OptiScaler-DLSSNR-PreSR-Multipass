@@ -263,9 +263,12 @@ bool DlssNr_Vk::Dispatch(VkCommandBuffer InCmdList, const DlssNrConstants& InCon
     vkCmdBindDescriptorSets(InCmdList, VK_PIPELINE_BIND_POINT_COMPUTE, _pipelineLayout, 0, 1, &_descriptorSets[slot], 0,
                             nullptr);
 
-    // The shader's thread group is 8x8, the same as the D3D12 path.
-    const uint32_t groupsX = (InThreadsX + 7) / 8;
-    const uint32_t groupsY = (InThreadsY + 7) / 8;
+    // The shader's thread group is 8x8, the same as the D3D12 path. Automatic exposure's meter is the
+    // one exception: its shader spends a whole group on each 64x64 tile, so it dispatches one per tile.
+    const bool parallelExposureMeter =
+        InConstants.Mode == DlssNrMode_Meter && InConstants.MeterCopiesExposure == 0;
+    const uint32_t groupsX = parallelExposureMeter ? InConstants.Width : (InThreadsX + 7) / 8;
+    const uint32_t groupsY = parallelExposureMeter ? InConstants.Height : (InThreadsY + 7) / 8;
 
     vkCmdDispatch(InCmdList, groupsX, groupsY, 1);
 

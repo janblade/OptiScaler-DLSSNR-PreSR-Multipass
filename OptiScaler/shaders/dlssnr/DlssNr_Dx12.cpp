@@ -19,6 +19,7 @@
 #include "DlssNr_ActiveColor.h"
 #include "DlssNr_Guides.h"
 #include "DlssNr_SeamClock.h"
+#include "DlssNr_TrimAnchors.h"
 
 #include <Config.h>
 #include <State.h>
@@ -1180,9 +1181,15 @@ float ResolveWhitePoint(const Config& cfg, bool isHdrBuffer)
         //
         // Their value is left in the config untouched, so switching back to manual restores the
         // number they arrived at. It is only what this path consumes that is limited.
-        const float trim = std::clamp(cfg.DlssNrWhitePointTrim.value_or_default(), 0.25f, 4.0f);
+        //
+        // The Trim is the slider, or interpolated from the Trim anchors at this base white point when
+        // there are any. See DlssNr_TrimAnchors.h.
+        const float baseWhitePoint = g_nr.gamePreExposure / g_nr.gameExposure;
+        const auto anchors = DlssNrTrim::Parse(cfg.DlssNrGameExposureTrimAnchors.value_or_default());
+        const float trim = DlssNrTrim::TrimForKey(baseWhitePoint, cfg.DlssNrWhitePointTrim.value_or_default(),
+                                                  anchors, cfg.DlssNrGameExposureTrimPreview.value_or_default());
 
-        return std::clamp(g_nr.gamePreExposure / g_nr.gameExposure * trim, 0.01f, 4096.0f);
+        return std::clamp(baseWhitePoint * trim, 0.01f, 4096.0f);
     }
 
     // Otherwise the slider, and only the slider.
@@ -1194,6 +1201,24 @@ float ResolveWhitePoint(const Config& cfg, bool isHdrBuffer)
     // a noisy one and neither held. A constant cannot do that, which is the whole argument for it,
     // and is what RenoDX has always done.
     return slider;
+}
+
+// The exposure fields of an encode or resolve dispatch, for the source in force. The shader uses them
+// when it recomputes the white point from a live exposure texture, and ignores them otherwise.
+void FillExposureConstants(DlssNrConstants& params, const Config& cfg, uint32_t source, float preExposure)
+{
+    const bool automatic = source == 3;
+    const auto anchors = DlssNrTrim::Parse(automatic ? cfg.DlssNrAutoExposureTrimAnchors.value_or_default()
+                                                     : cfg.DlssNrGameExposureTrimAnchors.value_or_default());
+
+    params.PreExposure = preExposure;
+    DlssNrTrim::FillConstants(params,
+                              automatic ? cfg.DlssNrAutoExposureTrim.value_or_default()
+                                        : cfg.DlssNrWhitePointTrim.value_or_default(),
+                              anchors,
+                              automatic ? cfg.DlssNrAutoExposureTrimPreview.value_or_default()
+                                        : cfg.DlssNrGameExposureTrimPreview.value_or_default(),
+                              cfg.DlssNrAutoExposureShadowProtection.value_or_default());
 }
 
 ID3D12Resource* CreateScratch(ID3D12Device* device, DXGI_FORMAT format, unsigned int width,
@@ -1613,9 +1638,14 @@ bool DlssNr_Dx12::DispatchPass(ID3D12GraphicsCommandList* InCmdList, const DlssN
     InCmdList->SetComputeRootDescriptorTable(0, currentHeap.GetTableGPUStart());
 
     // Sized from the constants rather than from a resource, because the pass that shrinks the proxy
-    // writes fewer pixels than its source has.
-    const UINT dispatchWidth = (InConstants.Width + _numThreadsX - 1) / _numThreadsX;
-    const UINT dispatchHeight = (InConstants.Height + _numThreadsY - 1) / _numThreadsY;
+    // writes fewer pixels than its source has. Automatic exposure's meter is the one exception: its
+    // shader spends a whole 8x8 thread group on each tile, so it dispatches one group per tile.
+    const bool parallelExposureMeter =
+        InConstants.Mode == DlssNrMode_Meter && InConstants.MeterCopiesExposure == 0;
+    const UINT dispatchWidth =
+        parallelExposureMeter ? InConstants.Width : (InConstants.Width + _numThreadsX - 1) / _numThreadsX;
+    const UINT dispatchHeight =
+        parallelExposureMeter ? InConstants.Height : (InConstants.Height + _numThreadsY - 1) / _numThreadsY;
     InCmdList->Dispatch(dispatchWidth, dispatchHeight, 1);
 
     return true;
@@ -2392,10 +2422,11 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         DlssNrConstants meterParams {};
         meterParams.Mode = DlssNrMode_Meter;
 
-        // One pixel. Only tile (0,0) is read back, and the tile-mean branch below it in the shader is
-        // dead code the dispatch simply never reaches.
+        // One pixel. Only tile (0,0) is read back, and it is a courier: the shader copies the game's
+        // exposure into it rather than averaging tile pixels, which is what MeterCopiesExposure asks for.
         meterParams.Width = 1;
         meterParams.Height = 1;
+        meterParams.MeterCopiesExposure = 1;
 
         const D3D12_RESOURCE_STATES priorTargetState = targetState;
         TransitionTarget(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -2423,8 +2454,9 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     {
         exposureTex = (ID3D12Resource*) frame.ExposureTexture;
         useGameExposure = 1;
-        const float trim = std::clamp(cfg.DlssNrWhitePointTrim.value_or_default(), 0.25f, 4.0f);
-        exposurePreMul = g_nr.gamePreExposure * trim;
+        // The Trim no longer rides in here. It goes to the shader in the trim fields, so anchors can
+        // move it with the live base white point.
+        exposurePreMul = g_nr.gamePreExposure;
     }
 
     // Frame hold. Freeze the encode's input so a live setting change re-renders the same frame. This
@@ -2502,6 +2534,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     encodeParams.WhitePoint = whitePoint;
     encodeParams.UseGameExposure = useGameExposure;
     encodeParams.ExposurePreMul = exposurePreMul;
+    FillExposureConstants(encodeParams, cfg, 1, frame.PreExposure);
     encodeParams.ReversibleMode = cfg.DlssNrReversibleMode.value_or_default();
     // Match only takes effect once a fit exists; until then the table is empty and the shader would
     // read a curve of zeros, so it falls back to the plain proxy.
@@ -2909,6 +2942,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         resolveParams.WhitePoint = whitePoint;
         resolveParams.UseGameExposure = useGameExposure;
         resolveParams.ExposurePreMul = exposurePreMul;
+        FillExposureConstants(resolveParams, cfg, 1, frame.PreExposure);
         resolveParams.Width = width;
         resolveParams.Height = height;
         resolveParams.TransferStrength = cfg.DlssNrTransferStrength.value_or_default();

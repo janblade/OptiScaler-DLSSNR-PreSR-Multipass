@@ -11,6 +11,7 @@
 
 #include <shaders/dlssnr/DlssNr_Vk.h>
 #include <shaders/dlssnr/DlssNr_Guides.h>
+#include <shaders/dlssnr/DlssNr_TrimAnchors.h>
 #include <shaders/output_scaling/OS_Vk.h>
 #include <shaders/sgsr1/SGSR1_Vk.h>
 
@@ -523,6 +524,17 @@ unsigned long long FramesVk() { return g_vk.frames; }
 
 bool ExposureOfferedVk() { return g_vk.exposureOffered; }
 
+ExposureStatus GameExposureStatusVk()
+{
+    ExposureStatus s {};
+    s.seenFrames = g_vk.frames;
+    s.offeredNow = g_vk.exposureOffered;
+    s.everOffered = g_vk.exposureOffered;
+    s.exposure = g_vk.gameExposure;
+    s.preExposure = g_vk.gamePreExposure;
+    return s;
+}
+
 std::optional<double> LastGpuTimeVk() { return g_vk.lastGpuTime; }
 
 static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* params, VkInstance instance,
@@ -1004,8 +1016,13 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
 
     if (cfg.DlssNrWhitePointSource.value_or_default() == 1 && g_vk.gameExposure > 1e-6f)
     {
-        const float trim = std::clamp(cfg.DlssNrWhitePointTrim.value_or_default(), 0.25f, 4.0f);
-        whitePoint = std::clamp(g_vk.gamePreExposure / g_vk.gameExposure * trim, 0.01f, 4096.0f);
+        // The Trim is the slider, or interpolated from the Trim anchors at this base white point when
+        // there are any. Resolved here on the CPU: this backend has no live exposure path in the shader.
+        const float baseWhitePoint = g_vk.gamePreExposure / g_vk.gameExposure;
+        const auto anchors = DlssNrTrim::Parse(cfg.DlssNrGameExposureTrimAnchors.value_or_default());
+        const float trim = DlssNrTrim::TrimForKey(baseWhitePoint, cfg.DlssNrWhitePointTrim.value_or_default(),
+                                                  anchors, cfg.DlssNrGameExposureTrimPreview.value_or_default());
+        whitePoint = std::clamp(baseWhitePoint * trim, 0.01f, 4096.0f);
     }
 
     static bool saidEncoding = false;
@@ -1175,6 +1192,8 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
             meter.Mode = DlssNrMode_Meter;
             meter.Width = kMeterSide;
             meter.Height = kMeterSide;
+            // A courier for the game's exposure into tile (0,0), not an average of tile pixels.
+            meter.MeterCopiesExposure = 1;
 
             Transition(cmdBuffer, g_vk.meter, VK_IMAGE_LAYOUT_GENERAL);
 

@@ -2,8 +2,8 @@
 
 - Branch: `fix/streamline-nr-path-and-depth-srv`
 - Created: 2026-09-19
-- Status: ported and built 2026-09-20 (2 commits on the branch, not pushed); untested in a game; awaiting push / PR
-- Task file: memory/tasks/fix_streamline-nr-path-and-depth-srv.md
+- Status: done 2026-09-20 (2 commits merged as PR #26, `397c1654`; built, untested in a game; smoke test skipped)
+- Task file: memory/archived_tasks/fix_streamline-nr-path-and-depth-srv.md
 - Ledger: `wilsjo2-fork:streamline-plugin-binding`
 - Source: wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass, GPL-3.0, refs `3fbffdc7` `7543d143` `b3618c05`. Final code read from `codex/release-v0.8.4`.
 
@@ -56,3 +56,4 @@ Work on the branch above. Two independent small edits, each revertable alone.
 ## Execution log
 
 - **2026-09-20:** cut `fix/streamline-nr-path-and-depth-srv` from `main` (`886200f9`). Both edits match what is in wilsjo2's `v0.8.4` (`8802b2b4`, 2026-09-15; the search-path line is carried there by his `6c52a033`, and `b3618c05` itself is not an ancestor of `codex/release-v0.8.4`, so the ledger's hash is a sibling of the released one; content identical). `v0.8.4` is not in our `main`. Two commits, authored as wilsjo2: `7df67eed` (b3618c05, search path) and `733c2db0` (7543d143, Shader_Dx12.cpp part only). Release x64 built, exit 0, 0 errors, no warnings in the touched files (`x64/Release/a/OptiScaler.dll` 00:04:15). No game run.
+- **2026-09-20, PORT_CLOSE:** PR #26 merged to main (`397c1654`). Ledger `wilsjo2-fork:streamline-plugin-binding` set to `ported`, untested in a game. Task file archived to `memory/archived_tasks/`.

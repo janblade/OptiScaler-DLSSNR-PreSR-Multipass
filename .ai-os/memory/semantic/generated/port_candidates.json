@@ -227,7 +227,7 @@
         "spdx": "GPL-3.0",
         "portable": true
       },
-      "status": "planned",
+      "status": "ported",
       "created": "2026-09-19",
       "study": "memory/plans/2026-09-19-port-streamline-nr-path-and-depth-srv.md",
       "plan": "memory/plans/2026-09-19-port-streamline-nr-path-and-depth-srv.md",
@@ -236,6 +236,16 @@
         "at": "2026-09-19",
         "reason": "User asked to plan the port of these three candidates. Approval is for planning only; each plan still needs its own PLAN_WRITE approval before any code is edited."
       },
+      "ported_refs": [
+        "b3618c05",
+        "7543d143"
+      ],
+      "already_have_refs": [
+        "3fbffdc7"
+      ],
+      "ported_in": "merged to main 2026-09-20 as PR #26 (merge commit 397c1654), branch fix/streamline-nr-path-and-depth-srv: 7df67eed (b3618c05, nvngx_dlssnr.dll search path) 733c2db0 (7543d143, Shader_Dx12.cpp depth-plane SRV format). Both are also in wilsjo2 v0.8.4 (8802b2b4). Release x64 built (exit 0); UNTESTED in a game (needs a Streamline game with NR, and a game whose NR depth guide is R32G8X24).",
+      "closed": "2026-09-20",
+      "decision_note": "Plugin binding (3fbffdc7, and the rest of 7543d143) and the Vulkan Framebuffer guard were already in HEAD via 42127e2d. tests/streamline_active_plugin_smoke.cpp was not ported: it needs an installed sl.interposer.dll and a game bin directory.",
       "also_in": "optiscaler-upstream master: 7543d143 (and 02e8d8b9) are in upstream, so the Shader_Dx12 SRV-format fix can be taken from there under the same SHA."
     },
     {

@@ -21,3 +21,9 @@ Pending: the user's confirmation to close (`PORT_CLOSE`); push and PR when they 
 ## 2026-09-20 — unofficial test release published
 
 Pre-release `v0.1.10-rtx40-mfg-test1` (tag on `4051cf70`, not Latest). Branch `feat/mfg-kleber-port` pushed. Awaiting RTX 40 tester reports: whether presented counts follow the ratio, whether `AdaTemporalFix=ptx` differs from `retarget`, `sl::Result` 38 gone in STALKER-2-like games, and whether `AdaFlipMeteringPatch` ends a 3X+ freeze. Details in the plan's execution log.
+
+## 2026-09-20 -- retargeted to wilsjo2 v0.8.4 (PR #79) and the deadlock it exposed (PR #80)
+
+The main-line branch here is unchanged (`3542869d`, pre-release `v0.1.10-rtx40-mfg-test1`). For wilsjo2 the work was redone on his release line: branch `feat/rtx40-mfg-options-on-v0.8.4` (3 commits, 27 files, no `.ai-os`) -> PR #79 to `codex/release-v0.8.4`. Testing it on the user's RTX 5070 Ti exposed a v0.8.4 deadlock (OptiFG + NR), fixed separately as PR #80 (`fix/nr-finished-picture-swapchain-deadlock`, 7a055d40); the user confirmed it in game. Details, evidence and builds are in the plan's execution log.
+
+Pending: `PORT_CLOSE` confirmation; RTX 40 hardware report; wilsjo's review of #79 and #80; #79 lacks the #80 fix; decide whether to merge this branch into our `main`. Nothing about the unlock itself has been run on Ada.

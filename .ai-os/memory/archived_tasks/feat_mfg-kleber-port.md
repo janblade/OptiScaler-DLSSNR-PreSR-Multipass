@@ -27,3 +27,7 @@ Pre-release `v0.1.10-rtx40-mfg-test1` (tag on `4051cf70`, not Latest). Branch `f
 The main-line branch here is unchanged (`3542869d`, pre-release `v0.1.10-rtx40-mfg-test1`). For wilsjo2 the work was redone on his release line: branch `feat/rtx40-mfg-options-on-v0.8.4` (3 commits, 27 files, no `.ai-os`) -> PR #79 to `codex/release-v0.8.4`. Testing it on the user's RTX 5070 Ti exposed a v0.8.4 deadlock (OptiFG + NR), fixed separately as PR #80 (`fix/nr-finished-picture-swapchain-deadlock`, 7a055d40); the user confirmed it in game. Details, evidence and builds are in the plan's execution log.
 
 Pending: `PORT_CLOSE` confirmation; RTX 40 hardware report; wilsjo's review of #79 and #80; #79 lacks the #80 fix; decide whether to merge this branch into our `main`. Nothing about the unlock itself has been run on Ada.
+
+## 2026-09-20 -- closed
+
+The user closed the port (PORT_CLOSE / TASK_CLOSE). Ledger `klebermotta-mfg:builtin-mfg-unlock` is `ported`, untested on RTX 40 hardware. Branch `feat/mfg-kleber-port` is pushed and not merged into main. A local test branch `test/kleber-blackwell-mfg` (96b7fcb1, not pushed) lets the unlock run on Blackwell for testing only. A Blackwell run does not validate the Ada path.

@@ -58,6 +58,12 @@ struct Status
     // The Streamline DLSS-G plugin's own frame-count clamp. A string literal, empty until a plugin has
     // been seen, so the overlay can read it while a hook thread writes it.
     const char* PluginCeiling = "";
+
+    // Software frame pacing (the flip-metering patch). A string literal like PluginCeiling: empty until a
+    // plugin has been seen, "patched", or the reason it was not.
+    const char* FlipMetering = "";
+    unsigned int FlipSites = 0;
+    bool FlipRequested = false; // [DLSSG] AdaFlipMeteringPatch at load, for the restart line
 };
 
 const Status& LastStatus();
@@ -99,4 +105,7 @@ void RecordState(unsigned int presented);
 // put it. Its own frame-count clamp is neutralised once the snippet unlock has landed, so a wrapper
 // that cached 1 cannot lower the ceiling again. Ordinary threads and the load hook; never scans.
 void OnStreamlinePluginLoaded(HMODULE plugin);
+
+// Whether the Streamline plugin was put on software frame pacing.
+bool SoftwarePacing();
 } // namespace MfgUnlock

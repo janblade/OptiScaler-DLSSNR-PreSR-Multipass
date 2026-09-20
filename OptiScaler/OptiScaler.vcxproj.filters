@@ -803,6 +803,9 @@
     <ClInclude Include="framegen\dlssg\MfgUnlockMethod.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="framegen\dlssg\MfgUnlockFlip.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="framegen\dlssg\AmpereMfgLoader.h">
       <Filter>Header Files</Filter>
     </ClInclude>

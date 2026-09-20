@@ -9,6 +9,7 @@
 #include <scanner/scanner.h>
 #include <misc/IdentifyGpu.h>
 
+#include "MfgUnlockFlip.h"
 #include "MfgUnlockPlugin.h"
 #include "MfgUnlockPtx.h"
 
@@ -184,6 +185,57 @@ bool AdaUnlockWanted()
 
     const auto& gpu = IdentifyGpu::getPrimaryGpu();
     return gpu.vendorId == VendorId::Nvidia && gpu.nvidiaArchInfo.architecture_id == NV_GPU_ARCHITECTURE_AD100;
+}
+
+// Software frame pacing: pin the plugin's flip-metering state to its own software fallback. Applied when
+// the plugin is loaded, before Streamline uses it, because rewriting a register store is a seven byte
+// write into code that no other thread should be executing yet. Caller holds g_pluginLock.
+void PatchFlipMetering(HMODULE plugin)
+{
+    g_status.FlipRequested = Config::Instance()->FGDLSSGAdaFlipMeteringPatch.value_or_default();
+
+    if (std::string_view(g_status.FlipMetering) == "patched")
+        return;
+
+    // A plugin has been seen; "off" tells the overlay that, and that nothing was asked of it.
+    if (!g_status.FlipRequested)
+    {
+        g_status.FlipMetering = "off";
+        return;
+    }
+
+    wchar_t path[MAX_PATH] {};
+    GetModuleFileNameW(plugin, path, MAX_PATH);
+    const auto pluginPath = wstring_to_string(path);
+
+    MfgUnlock::Flip::Plan plan;
+    const auto found = MfgUnlock::Flip::FindPlan(plugin, plan);
+
+    if (found != MfgUnlock::Flip::FindResult::Found)
+    {
+        g_status.FlipMetering = MfgUnlock::Flip::Describe(found);
+        LOG_WARN("MFG unlock: {}: software frame pacing not applied: {}", pluginPath, g_status.FlipMetering);
+        return;
+    }
+
+    switch (MfgUnlock::Flip::Apply(plan))
+    {
+    case MfgUnlock::Flip::ApplyResult::Patched:
+        g_status.FlipMetering = "patched";
+        g_status.FlipSites = static_cast<unsigned int>(plan.sites.size());
+        LOG_INFO("MFG unlock: {}: flip-metering state +0x{:X} pinned to {} at {} site(s); multi-frame should pace in "
+                 "software",
+                 pluginPath, plan.field, plan.value, plan.sites.size());
+        break;
+    case MfgUnlock::Flip::ApplyResult::Mismatch:
+        g_status.FlipMetering = "the plugin changed while it was being patched";
+        LOG_WARN("MFG unlock: {}: software frame pacing not applied: {}", pluginPath, g_status.FlipMetering);
+        break;
+    case MfgUnlock::Flip::ApplyResult::ProtectFailed:
+        g_status.FlipMetering = "its memory could not be made writable";
+        LOG_WARN("MFG unlock: {}: software frame pacing not applied: {}", pluginPath, g_status.FlipMetering);
+        break;
+    }
 }
 
 // Only once the snippet unlock has landed. Raising the plugin's ceiling while the snippet still answers
@@ -581,8 +633,20 @@ MfgUnlock::Telemetry g_telemetry;
 
 const MfgUnlock::Telemetry& MfgUnlock::GetTelemetry() { return g_telemetry; }
 
+bool MfgUnlock::SoftwarePacing() { return std::string_view(g_status.FlipMetering) == "patched"; }
+
 void MfgUnlock::RecordSetOptions(unsigned int requested, unsigned int sent, bool active, unsigned int result)
 {
+    // Above 2X with hardware flip metering still on can freeze presentation. Say so once, and change
+    // nothing: whether it freezes depends on the game and the plugin build.
+    static std::atomic_bool warned { false };
+
+    if (active && sent > 1 && UnlockedMax() > 0 && !SoftwarePacing() &&
+        !Config::Instance()->DisableFlipMetering.value_or(false) && !warned.exchange(true))
+        LOG_WARN("MFG unlock: {}X requested with hardware flip metering still on. If presentation freezes, try "
+                 "[NvApi] DisableFlipMetering=true, then [DLSSG] AdaFlipMeteringPatch=true.",
+                 sent + 1);
+
     g_telemetry.requested.store(requested, std::memory_order_relaxed);
     g_telemetry.sent.store(sent, std::memory_order_relaxed);
     g_telemetry.result.store(result, std::memory_order_relaxed);
@@ -612,7 +676,12 @@ void MfgUnlock::OnStreamlinePluginLoaded(HMODULE plugin)
         std::lock_guard lock(g_pluginLock);
 
         if (std::find(g_plugins.begin(), g_plugins.end(), plugin) == g_plugins.end())
+        {
             g_plugins.push_back(plugin);
+
+            // At load, ahead of any use of the plugin.
+            PatchFlipMetering(plugin);
+        }
     }
 
     // A no-op until the snippet unlock has landed; TryApply calls it again then.

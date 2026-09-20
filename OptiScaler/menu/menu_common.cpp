@@ -3129,6 +3129,40 @@ static void RenderAdaUnlockOptions(Config* config, const MfgUnlock::Status& stat
     if (status.ModuleFound && status.TemporalAttempted != resolved)
         ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "Save Settings and restart to apply.");
 
+    ImGui::Spacing();
+
+    // Software frame pacing. Second because it is the rarer need: a freeze above 2X, not a setting every
+    // unlock user wants.
+    bool softwarePacing = config->FGDLSSGAdaFlipMeteringPatch.value_or_default();
+
+    if (ImGui::Checkbox("Software frame pacing (only if 3X+ freezes)##ada", &softwarePacing))
+        config->FGDLSSGAdaFlipMeteringPatch = softwarePacing;
+    showHelp("Asking for more than one generated frame while hardware flip metering is on can freeze the picture.\n"
+             "This edits NVIDIA's Streamline DLSS-G plugin in memory, when it loads, so that it paces in\n"
+             "software instead. It refuses unless the plugin's code is of the shape it recognises.\n"
+             "Use it only if 3X or more freezes. [NvApi] DisableFlipMetering=true (ini only) is milder; try\n"
+             "that first.\n"
+             "ini: [DLSSG] AdaFlipMeteringPatch. Save Settings and restart to apply.");
+
+    const std::string_view pacing = status.FlipMetering;
+
+    if (pacing.empty())
+    {
+        if (softwarePacing)
+            ImGui::TextDisabled("Not applied yet: the Streamline DLSS-G plugin has not loaded.");
+    }
+    else if (pacing == "patched")
+    {
+        ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Applied at %u site(s).", status.FlipSites);
+    }
+    else if (pacing != "off")
+    {
+        ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "Not applied: %s.", status.FlipMetering);
+    }
+
+    if (!pacing.empty() && softwarePacing != status.FlipRequested)
+        ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "Save Settings and restart to apply.");
+
     ImGui::Unindent();
 }
 
@@ -3162,6 +3196,10 @@ static void RenderDlssgTelemetry()
 
     if (result != 0)
         ImGui::TextColored(amber, "slDLSSGSetOptions returned sl::Result %u for that request.", result);
+
+    // Only when the symptom is there: 3X or more sent, fewer presented, and nothing pacing in software.
+    if (result == 0 && sentX > 2 && presented < sentX && MfgUnlock::UnlockedMax() > 0 && !MfgUnlock::SoftwarePacing())
+        ImGui::TextColored(amber, "If the picture froze: try Software frame pacing under RTX 40 (Ada) MFG Unlock Options.");
 }
 
 void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)

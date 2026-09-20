@@ -3074,6 +3074,64 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
     }
 }
 
+// Options for the built-in RTX 40 unlock, shown only while it is on and not overridden by another
+// unlocker. Startup settings: they apply when DLSSG loads, so a change needs a restart, and the result of
+// each is shown directly under it.
+static void RenderAdaUnlockOptions(Config* config, const MfgUnlock::Status& status,
+                                   void (*showHelp)(const char*))
+{
+    if (!ImGui::CollapsingHeader("RTX 40 (Ada) MFG Unlock Options"))
+        return;
+
+    ImGui::Indent();
+
+    // Frame timing fix. Auto is resolved inline, like the RTX 20/30 "Kernel Image" combo below.
+    const auto resolved = MfgUnlock::ConfiguredTemporalMethod();
+    const std::string autoLabel = resolved == MfgUnlock::TemporalMethod::None
+                                      ? "Auto (off: AdaBlackwellKernels=false)"
+                                      : "Auto (reuse Blackwell kernel)";
+    const char* options[] = { autoLabel.c_str(), "Reuse Blackwell kernel", "Rewrite blend weight (PTX)" };
+
+    const std::string chosen = config->FGDLSSGAdaTemporalFix.value_or("Auto");
+    int index = chosen == "Retarget" ? 1 : chosen == "Ptx" ? 2 : 0;
+
+    if (ImGui::Combo("Frame timing fix##ada", &index, options, 3))
+    {
+        const char* stored[] = { "Auto", "Retarget", "Ptx" };
+        config->FGDLSSGAdaTemporalFix = std::string(stored[index]);
+    }
+    showHelp("Above 2X, every generated frame can land at the midpoint between two real frames, so 3X/4X\n"
+             "shows more frames but no smoother motion. This gives each its own time.\n"
+             "Auto / Reuse Blackwell kernel: uses the Blackwell interpolation kernel the DLSSG module\n"
+             "already carries. This is the default.\n"
+             "Rewrite blend weight: edits the Ada kernel's PTX instead. It only works on DLSSG builds\n"
+             "it recognises. Try it only if 3X/4X motion is not smoother.\n"
+             "ini: [DLSSG] AdaTemporalFix. Save Settings and restart to apply.");
+
+    // The result, directly under the control (which method applied, or the specific reason it did not).
+    if (!status.ModuleFound)
+    {
+        ImGui::TextDisabled("Not applied yet: DLSSG has not loaded.");
+    }
+    else if (status.KernelsRewritten > 0)
+    {
+        const bool ptx = status.TemporalAttempted == MfgUnlock::TemporalMethod::Ptx;
+        ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Applied: %s, %u %s",
+                           ptx ? "rewrite blend weight" : "reuse Blackwell kernel", status.KernelsRewritten,
+                           ptx ? "descriptor(s)" : "kernel group(s)");
+    }
+    else
+    {
+        ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "Not applied: %s.",
+                           status.TemporalDetail.empty() ? "no reason recorded" : status.TemporalDetail.c_str());
+    }
+
+    if (status.ModuleFound && status.TemporalAttempted != resolved)
+        ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "Save Settings and restart to apply.");
+
+    ImGui::Unindent();
+}
+
 // One line under "Override DLSSG Ratio". The combo says what was requested; this says whether it
 // happened: what the game asked for, what was sent on after any override, and what Streamline reports it
 // presented at the last check. Nothing is drawn while DLSS-G is off.
@@ -3173,6 +3231,8 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
                            status.AdvertiseMatched ? "matched" : "not matched",
                            status.ValidateMatched ? "matched" : "not matched", status.KernelsRewritten,
                            status.PluginCeiling[0] != '\0' ? status.PluginCeiling : "not seen");
+
+        RenderAdaUnlockOptions(config, status, [](const char* tip) { ShowHelpMarker(tip); });
     }
 
     // ── Ampere/Turing (SM86/SM75) MFG Unlock ─────────────────────────

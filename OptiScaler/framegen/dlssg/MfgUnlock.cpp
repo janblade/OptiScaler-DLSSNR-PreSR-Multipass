@@ -10,6 +10,7 @@
 #include <misc/IdentifyGpu.h>
 
 #include "MfgUnlockPlugin.h"
+#include "MfgUnlockPtx.h"
 
 #include <mutex>
 #include <tlhelp32.h>
@@ -521,14 +522,36 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
             }
 
             // Default on where it applies: below Blackwell the unlock alone produces frames that do
-            // not advance the picture, so the two belong together. dlssCapable is set from the same
-            // field, so an architecture that never reported leaves this off.
-            const bool preBlackwell = gpu.vendorId == VendorId::Nvidia &&
-                                      gpu.nvidiaArchInfo.architecture_id >= NV_GPU_ARCHITECTURE_TU100 &&
-                                      gpu.nvidiaArchInfo.architecture_id <= NV_GPU_ARCHITECTURE_AD100;
+            // not advance the picture, so the two belong together. One method per session, since both
+            // edit the same fatbin.
+            const auto method = ConfiguredTemporalMethod();
+            g_status.TemporalAttempted = method;
 
-            if (Config::Instance()->FGDLSSGAdaBlackwellKernels.value_or(preBlackwell))
+            if (method == TemporalMethod::Retarget)
+            {
                 g_status.KernelsRewritten = RewriteBlackwellKernels(module);
+
+                g_status.TemporalDetail = g_status.KernelsRewritten > 0
+                                              ? "reused the Blackwell interpolation kernel"
+                                              : "no compatible Blackwell interpolation kernel image";
+            }
+            else if (method == TemporalMethod::Ptx)
+            {
+                Ptx::Result ptx;
+
+                Ptx::Apply(module, ptx);
+                g_status.KernelsRewritten = static_cast<unsigned int>(ptx.redirected);
+                g_status.TemporalDetail = ptx.detail;
+
+                if (ptx.redirected > 0)
+                    LOG_INFO("MFG unlock: PTX temporal fix: {}", ptx.detail);
+                else
+                    LOG_WARN("MFG unlock: PTX temporal fix not applied: {}", ptx.detail);
+            }
+            else
+            {
+                g_status.TemporalDetail = "off by AdaBlackwellKernels=false in the ini";
+            }
 
             if (g_status.KernelsRewritten == 0)
             {
@@ -615,3 +638,18 @@ bool MfgUnlock::Pending()
 }
 
 const MfgUnlock::Status& MfgUnlock::LastStatus() { return g_status; }
+
+MfgUnlock::TemporalMethod MfgUnlock::ConfiguredTemporalMethod()
+{
+    const auto* config = Config::Instance();
+
+    std::optional<std::string> fix;
+    if (config->FGDLSSGAdaTemporalFix.has_value())
+        fix = config->FGDLSSGAdaTemporalFix.value_or("Auto");
+
+    std::optional<bool> legacy;
+    if (config->FGDLSSGAdaBlackwellKernels.has_value())
+        legacy = config->FGDLSSGAdaBlackwellKernels.value();
+
+    return ResolveTemporalMethod(fix, legacy);
+}

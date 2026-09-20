@@ -1,6 +1,7 @@
 // Adapted from y4my4my4m/OptiScaler_DLSSNR_Multipass_MFG, tag v4 (7b7220bb), GPL-3.0.
 #pragma once
 
+#include "MfgUnlockMethod.h"
 #include "MfgUnlockProvider.h"
 
 #include <SysUtils.h>
@@ -49,7 +50,9 @@ struct Status
     bool ModuleFound = false; // nvngx_dlssg.dll was loaded
     bool AdvertiseMatched = false;
     bool ValidateMatched = false;
-    unsigned int KernelsRewritten = 0;
+    unsigned int KernelsRewritten = 0; // kernel groups relabelled, or descriptors redirected to the PTX rebuild
+    TemporalMethod TemporalAttempted = TemporalMethod::None; // what the configuration asked for at load
+    std::string TemporalDetail; // why the attempt did not land, or what it did
     std::string SnippetVersion; // file version of nvngx_dlssg.dll, empty if it could not be read
 
     // The Streamline DLSS-G plugin's own frame-count clamp. A string literal, empty until a plugin has
@@ -58,6 +61,12 @@ struct Status
 };
 
 const Status& LastStatus();
+
+// The method the configuration selects right now, on this GPU. [DLSSG] AdaTemporalFix wins when it names
+// one; otherwise the older AdaBlackwellKernels on/off applies (false leaves the unlock unapplied);
+// otherwise Retarget on Ada. The overlay compares it with Status::TemporalAttempted to show that a change
+// needs a restart.
+TemporalMethod ConfiguredTemporalMethod();
 
 // Applies the patches once per process. Silent and harmless when the config option is off, when
 // nvngx_dlssg.dll is not loaded, or when a signature does not match exactly once.

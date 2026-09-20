@@ -63,7 +63,8 @@ inline bool IsProviderPath(std::wstring_view path)
 // Calls fn(data, size, characteristics) for every section of a mapped 64-bit PE image, using only the
 // initialised part of the section. Sections that claim to run past SizeOfImage are skipped rather than
 // trusted. Returns false when the image is not a 64-bit PE, or when it is unmapped while this runs.
-template <typename Fn> bool ForEachSection(void* image, Fn&& fn)
+// `imageSizeOut`, if given, receives SizeOfImage before the first call to fn.
+template <typename Fn> bool ForEachSection(void* image, Fn&& fn, size_t* imageSizeOut = nullptr)
 {
     if (image == nullptr)
         return false;
@@ -83,6 +84,9 @@ template <typename Fn> bool ForEachSection(void* image, Fn&& fn)
 
         const size_t imageSize = nt->OptionalHeader.SizeOfImage;
         const auto* section = IMAGE_FIRST_SECTION(nt);
+
+        if (imageSizeOut != nullptr)
+            *imageSizeOut = imageSize;
 
         for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++section)
         {

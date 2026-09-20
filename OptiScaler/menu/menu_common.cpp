@@ -3255,7 +3255,7 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
     {
         if (ImGui::Checkbox("Built-in RTX 40 MFG unlock (experimental; restart)", &adaUnlock))
             config->FGDLSSGAdaMfgUnlock = adaUnlock;
-        ShowHelpMarker("Optional y4my4my4m Ada unlock. Save Settings and restart to enable or remove it.\n"
+        ShowHelpMarker("Optional RTX 40 (Ada) unlock. Save Settings and restart to enable or remove it.\n"
                        "Requires a supported DLSSG runtime and Streamline 2.7.1+ for multiplier overrides.\n"
                        "Do not combine with another MFG unlocker. Does not add FG to an unsupported game.\n"
                        "Not validated on RTX 40 hardware here; RTX 20/30/50 are left unchanged.");

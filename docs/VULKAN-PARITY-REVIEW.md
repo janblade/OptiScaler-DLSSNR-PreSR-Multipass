@@ -83,6 +83,8 @@ frames advance, not merely a larger FPS number. No NVIDIA DLLs from the other fo
 distribution; existing runtime download/license instructions still apply. Never disable antivirus
 or use these patches in anti-cheat-protected multiplayer games.
 
+Later additions to this unlock (provider discovery by OTA path, the Streamline plugin frame ceiling, a selectable frame timing fix, optional software frame pacing, and overlay telemetry) are described in [RTX40-MFG.md](RTX40-MFG.md), with what was and was not checked.
+
 ## Not imported wholesale
 
 - `DualFeature`/`DualEnlarger` changes the first upscaler to a render-sized stage and adds another

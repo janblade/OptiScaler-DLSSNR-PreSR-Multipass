@@ -8,6 +8,10 @@ Colour processing is derived from [RenoDX by clshortfuse](https://github.com/cls
 
 Automatic exposure from the HDR frame, the wider exposure Trim range and the Trim Anchor points are @mattjaas's work, from [wilsjo2's PR #77](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/pull/77), adapted onto this fork's code.
 
+## RTX 40 MFG unlock
+
+The built-in RTX 40 multi frame generation unlock is adapted from [y4my4my4m's fork](https://github.com/y4my4my4m/OptiScaler_DLSSNR_Multipass_MFG) (GPL-3.0). The provider discovery, the Streamline plugin frame-ceiling patch, the software frame pacing option and the PTX temporal fix are adapted from [KleberMotta's fork](https://github.com/KleberMotta/OptiScaler-DLSS5-MFG-RTX40) (MIT), a port of the MFG Unlock ReShade addon by [Dreamt](https://github.com/ImDreamt/MFGAdaUnlock-RenoDx) and [mavismmg](https://github.com/mavismmg/MFGAdaUnlock-RenoDx). The technique originates from [dashdogy's RTX40MFG-Unlock](https://github.com/dashdogy/RTX40MFG-Unlock), which is also the optional external unlocker (see [RTX40-MFG.md](RTX40-MFG.md)). See the [licences](../Licenses/MFGUnlock_LICENSE.txt).
+
 ## OptiScaler contributors
 
 These credits are retained from the original OptiScaler README:

@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "last_updated": "2026-09-19",
+  "last_updated": "2026-09-20",
   "note": "Configuration only, read by core.port.sk. No scouting state lives here -- per-branch last-scouted SHAs and every candidate live in memory/semantic/generated/port_candidates.json. `remote` names an existing git remote; null means PORT_SCOUT fetches by URL into refs/port/<id>/* without adding a permanent remote. `licence` was checked against the GitHub API on 2026-09-19 and is a fact about the source, not a ruling on porting -- PORT_STUDY re-checks it per candidate. `enabled: false` sources are known and listed but not scouted until switched on.",
   "sources": [
     {
@@ -55,6 +55,19 @@
       "why": "Packaging dependency only (package_release.ps1 -IncludeAmpereMfg, pinned in .github/workflows/package_release.yml). The repo declares no licence, so no code may be ported from it -- scout it only to decide when to bump the pinned SHA.",
       "watch_paths": [],
       "ignore_paths": []
+    },
+    {
+      "id": "klebermotta-mfg",
+      "name": "KleberMotta/OptiScaler-DLSS5-MFG-RTX40 (built-in RTX 40 MFG unlock)",
+      "url": "https://github.com/KleberMotta/OptiScaler-DLSS5-MFG-RTX40.git",
+      "remote": null,
+      "branches": ["main"],
+      "tier": "sibling-fork",
+      "licence": "MIT",
+      "enabled": true,
+      "why": "Built-in Ada MFG unlock ported from the RenoDX addon (Dreamt / mavismmg, MIT), technique from dashdogy's RTX40MFG-Unlock. Only OptiScaler/mfgunlock/ is in scope: the rest of the repo is Dagherbou's NR fork and OptiScaler under GPL-3.0 and is already covered by other sources. A-XIANGQAQ/OptiScaler-DLSS5-MFG-RTX40 is byte-identical at the same commit and is not a separate source. The MIT licence applies to mfgunlock/ (see its Licenses/MFGUnlock_LICENSE.txt); PORT_STUDY re-checks it per candidate.",
+      "watch_paths": ["OptiScaler/mfgunlock/"],
+      "ignore_paths": [".github/", "Licenses/", "docs/", "images/", "Changelog.md"]
     }
   ]
 }

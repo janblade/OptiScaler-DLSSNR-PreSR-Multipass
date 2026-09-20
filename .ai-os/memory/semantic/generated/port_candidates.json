@@ -1131,6 +1131,67 @@
         "DLSSNR.ExposureTexture forwarding to the NR model",
         "4 residual padding constants"
       ]
+    },
+    {
+      "id": "klebermotta-mfg:builtin-mfg-unlock",
+      "source": "klebermotta-mfg",
+      "title": "Selected pieces of KleberMotta's built-in RTX 40 MFG unlock (provider discovery, sl.dlss_g ceiling and flip-metering patches, telemetry, selectable temporal fix)",
+      "refs": [
+        "74c3bac",
+        "KleberMotta/OptiScaler-DLSS5-MFG-RTX40",
+        "A-XIANGQAQ/OptiScaler-DLSS5-MFG-RTX40 (identical commit)"
+      ],
+      "files": [
+        "OptiScaler/mfgunlock/MfgUnlock_Patches.cpp",
+        "OptiScaler/mfgunlock/MfgUnlock_Patches.h",
+        "OptiScaler/mfgunlock/MfgUnlock_Midpoint.h",
+        "OptiScaler/mfgunlock/MfgUnlock_Host.cpp",
+        "OptiScaler/mfgunlock/MfgUnlock_Menu.cpp"
+      ],
+      "summary": "A built-in Ada MFG unlock that is a port of the RenoDX MFG Unlock addon (Dreamt, maintained by mavismmg, both MIT), whose technique comes from dashdogy's RTX40MFG-Unlock. Compared with ours (adapted from y4my4my4m v4) it adds detection of DLSSG providers by content marker and OTA path, a one-byte frame-ceiling patch in the Streamline DLSS-G plugin, a memory patch that pins the plugin's flip-metering fallback field so it paces in software, overlay telemetry, and a PTX-rewrite temporal fix as an alternative to our kernel retarget. Its gate patches, forced multiplier and GetState ceiling raise we already have.",
+      "relevance": {
+        "level": "high",
+        "reasons": [
+          "touches framegen/dlssg and Streamline hooks",
+          "open RTX 40 MFG report (issue #12) with no way to verify frames advance"
+        ],
+        "basis": "heuristic"
+      },
+      "already_have": {
+        "state": "partial",
+        "evidence": "Gate patches: PatchAdvertise/PatchValidate in OptiScaler/framegen/dlssg/MfgUnlock.cpp. Forced multiplier: FGDLSSGOverrideInterpolationCount in Streamline_Hooks.cpp ~1180. GetState raise: MfgUnlock::UnlockedMax() in Streamline_Hooks.cpp ~1247/1268. Kernel fix: RewriteBlackwellKernels. Not present: marker or OTA-path provider identification (lookup is by file name only), the sl.dlss_g ceiling patch, the flip-metering plugin patch, runtime telemetry, the PTX-rewrite temporal fix."
+      },
+      "overlap": [
+        "OptiScaler/framegen/dlssg/MfgUnlock.cpp",
+        "OptiScaler/framegen/dlssg/MfgUnlock.h",
+        "OptiScaler/hooks/Streamline_Hooks.cpp",
+        "OptiScaler/hooks/LibraryLoad_Hooks.cpp",
+        "OptiScaler/menu/menu_common.cpp",
+        "OptiScaler/Config.cpp",
+        "OptiScaler/Config.h"
+      ],
+      "licence": {
+        "spdx": "MIT",
+        "portable": true,
+        "note": "mfgunlock/ files carry SPDX MIT and Licenses/MFGUnlock_LICENSE.txt (Copyright 2026 ImDreamt); dashdogy's RTX40MFG-Unlock is MIT (Copyright 2026 Michael Robles, verified in our pinned submodule). MIT into GPL-3.0 is compatible with the notice kept."
+      },
+      "status": "approved",
+      "study": ".ai-os/memory/plans/2026-09-20-port-klebermotta-mfg-unlock.md",
+      "plan": ".ai-os/memory/plans/2026-09-20-port-klebermotta-mfg-unlock.md",
+      "decision": {
+        "by": "user",
+        "at": "2026-09-20",
+        "reason": "Asked for an ai-os plan to integrate KleberMotta's built-in unlock, added the selectable temporal fix and the flip-metering patch, then approved the plan on condition that UI placements follow core.ux-review.sk."
+      },
+      "decision_note": "Selective port: gate patches, forced multiplier, GetState raise, RestoreAll, ForceOTAPlugins, raiseCeiling and the [MfgUnlock] config section are not taken. The temporal fix is added as a selectable method, ours stays the default.",
+      "created": "2026-09-20",
+      "skipped_refs": [
+        "[MfgUnlock] config section",
+        "RestoreAll",
+        "ForceOTAPlugins at slInit",
+        "raiseCeiling",
+        "refusal to force a multiplier without patched pacing"
+      ]
     }
   ],
   "schema": {

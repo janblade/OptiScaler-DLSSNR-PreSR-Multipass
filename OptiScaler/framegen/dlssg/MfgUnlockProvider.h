@@ -22,8 +22,10 @@
 
 namespace MfgUnlock::Provider
 {
-// A string only the DLSS-G snippet carries. Used for a module whose path says nothing.
-inline constexpr std::string_view kMarker = "dlfg_kernel";
+// The NGX parameter the unlock is about, present in the DLSS-G snippet builds checked (310.8 and 310.9).
+// Used for a module whose path says nothing. The kernel name "dlfg_kernel" would not do: 310.9 renamed
+// every kernel and no longer carries it.
+inline constexpr std::string_view kMarker = "DLSSG.MultiFrameCountMax";
 
 // Lower-cased, backslash-only, doubled separators collapsed, so the two spellings the loader hands us
 // ("models//dlssg" and "models\dlssg") compare equal.

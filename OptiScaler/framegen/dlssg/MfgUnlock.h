@@ -5,6 +5,8 @@
 
 #include <SysUtils.h>
 
+#include <atomic>
+
 #include <string>
 
 // Multi Frame Generation on Ada.
@@ -64,6 +66,25 @@ bool Pending();
 
 // The generated frame ceiling the patches opened, or 0 when they did not land.
 unsigned int UnlockedMax();
+
+// What the game's own DLSS-G is doing, for the overlay. Written on the game's threads and read by the
+// overlay, so plain atomics. A checkbox proves nothing about MFG: these are the counts Streamline itself
+// reported. Not filled while OptiScaler's own frame generation stands in for DLSS-G.
+struct Telemetry
+{
+    std::atomic_bool optionsSeen { false };
+    std::atomic_bool active { false };         // the last slDLSSGSetOptions sent left DLSS-G on
+    std::atomic<unsigned int> requested { 1 }; // generated frames the game asked for (1 = 2X)
+    std::atomic<unsigned int> sent { 1 };      // generated frames sent on, after any override
+    std::atomic<unsigned int> result { 0 };    // sl::Result of that call (0 = ok)
+    std::atomic_bool stateSeen { false };
+    std::atomic<unsigned int> presented { 0 }; // numFramesActuallyPresented at the last slDLSSGGetState
+    std::atomic<unsigned int> maxPresented { 0 };
+};
+
+const Telemetry& GetTelemetry();
+void RecordSetOptions(unsigned int requested, unsigned int sent, bool active, unsigned int result);
+void RecordState(unsigned int presented);
 
 // A Streamline DLSS-G plugin (sl.dlss_g) was loaded, from wherever the game or the driver's OTA store
 // put it. Its own frame-count clamp is neutralised once the snippet unlock has landed, so a wrapper

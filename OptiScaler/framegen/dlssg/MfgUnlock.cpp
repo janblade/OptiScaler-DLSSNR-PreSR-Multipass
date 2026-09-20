@@ -551,6 +551,35 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
     }
 }
 
+namespace
+{
+MfgUnlock::Telemetry g_telemetry;
+}
+
+const MfgUnlock::Telemetry& MfgUnlock::GetTelemetry() { return g_telemetry; }
+
+void MfgUnlock::RecordSetOptions(unsigned int requested, unsigned int sent, bool active, unsigned int result)
+{
+    g_telemetry.requested.store(requested, std::memory_order_relaxed);
+    g_telemetry.sent.store(sent, std::memory_order_relaxed);
+    g_telemetry.result.store(result, std::memory_order_relaxed);
+    g_telemetry.active.store(active, std::memory_order_relaxed);
+    g_telemetry.optionsSeen.store(true, std::memory_order_release);
+}
+
+void MfgUnlock::RecordState(unsigned int presented)
+{
+    g_telemetry.presented.store(presented, std::memory_order_relaxed);
+
+    auto seenMax = g_telemetry.maxPresented.load(std::memory_order_relaxed);
+    while (presented > seenMax &&
+           !g_telemetry.maxPresented.compare_exchange_weak(seenMax, presented, std::memory_order_relaxed))
+    {
+    }
+
+    g_telemetry.stateSeen.store(true, std::memory_order_release);
+}
+
 void MfgUnlock::OnStreamlinePluginLoaded(HMODULE plugin)
 {
     if (plugin == nullptr || !AdaUnlockWanted())

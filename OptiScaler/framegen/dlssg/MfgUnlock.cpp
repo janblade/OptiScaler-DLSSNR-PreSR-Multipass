@@ -9,6 +9,9 @@
 #include <scanner/scanner.h>
 #include <misc/IdentifyGpu.h>
 
+#include "MfgUnlockPlugin.h"
+
+#include <mutex>
 #include <tlhelp32.h>
 
 namespace
@@ -163,6 +166,84 @@ HMODULE FindProvider()
     CloseHandle(snapshot);
 
     return found;
+}
+
+// The Streamline DLSS-G plugins seen so far, and the ones already tried. A plugin is tried once: the
+// answer does not change, and a repeat would only repeat the log line.
+std::mutex g_pluginLock;
+std::vector<HMODULE> g_plugins;
+std::vector<HMODULE> g_pluginsTried;
+
+// Same guards as TryApply: the option on, no other unlocker or external FG in charge, an Ada GPU.
+bool AdaUnlockWanted()
+{
+    if (!Config::Instance()->FGDLSSGAdaMfgUnlock.value_or_default() ||
+        Config::Instance()->FGDLSSGAmpereMfgUnlock.value_or_default() || State::Instance().externalFrameGeneration)
+        return false;
+
+    const auto& gpu = IdentifyGpu::getPrimaryGpu();
+    return gpu.vendorId == VendorId::Nvidia && gpu.nvidiaArchInfo.architecture_id == NV_GPU_ARCHITECTURE_AD100;
+}
+
+// Only once the snippet unlock has landed. Raising the plugin's ceiling while the snippet still answers
+// Ada's 1 would only move the rejection from the plugin to the snippet.
+void PatchPluginCeilings()
+{
+    if (MfgUnlock::UnlockedMax() == 0)
+        return;
+
+    std::lock_guard lock(g_pluginLock);
+
+    for (HMODULE plugin : g_plugins)
+    {
+        if (std::find(g_pluginsTried.begin(), g_pluginsTried.end(), plugin) != g_pluginsTried.end())
+            continue;
+
+        g_pluginsTried.push_back(plugin);
+
+        wchar_t path[MAX_PATH] {};
+        GetModuleFileNameW(plugin, path, MAX_PATH);
+        const auto pluginPath = wstring_to_string(path);
+
+        // A plugin that was patched stays patched; a second one that cannot be does not change that.
+        const bool alreadyPatched = std::string_view(g_status.PluginCeiling) == "patched";
+
+        MfgUnlock::Plugin::CeilingSite site;
+        const char* result = "not matched";
+
+        switch (MfgUnlock::Plugin::FindCeilingSite(plugin, site))
+        {
+        case MfgUnlock::Plugin::FindResult::Found:
+            switch (MfgUnlock::Plugin::ApplyCeilingPatch(site))
+            {
+            case MfgUnlock::Plugin::ApplyResult::Patched:
+                result = "patched";
+                LOG_INFO("MFG unlock: {}: frame-count clamp neutralised, compiled maximum {} generated frame(s)",
+                         pluginPath, site.compiled);
+                break;
+            case MfgUnlock::Plugin::ApplyResult::ProtectFailed:
+                result = "not writable";
+                LOG_WARN("MFG unlock: {}: frame-count clamp found but its page could not be made writable",
+                         pluginPath);
+                break;
+            case MfgUnlock::Plugin::ApplyResult::Mismatch:
+                LOG_WARN("MFG unlock: {}: frame-count clamp changed under us; left unchanged", pluginPath);
+                break;
+            }
+            break;
+        case MfgUnlock::Plugin::FindResult::Ambiguous:
+            result = "ambiguous";
+            LOG_WARN("MFG unlock: {}: more than one frame-count clamp; left unchanged", pluginPath);
+            break;
+        case MfgUnlock::Plugin::FindResult::None:
+        case MfgUnlock::Plugin::FindResult::BadImage:
+            LOG_WARN("MFG unlock: {}: no frame-count clamp of the known shape; left unchanged", pluginPath);
+            break;
+        }
+
+        if (!alreadyPatched)
+            g_status.PluginCeiling = result;
+    }
 }
 
 bool WriteBytes(uintptr_t address, const uint8_t* bytes, size_t count)
@@ -463,8 +544,27 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
                 LOG_INFO("MFG unlock: nvngx_dlssg.dll patched for {} generated frames", kMaxGeneratedFrames);
             else
                 LOG_WARN("MFG unlock: nvngx_dlssg.dll incomplete, advertise {}, validate {}", advertise, validate);
+
+            // A plugin that was loaded first has been waiting for this.
+            PatchPluginCeilings();
         }
     }
+}
+
+void MfgUnlock::OnStreamlinePluginLoaded(HMODULE plugin)
+{
+    if (plugin == nullptr || !AdaUnlockWanted())
+        return;
+
+    {
+        std::lock_guard lock(g_pluginLock);
+
+        if (std::find(g_plugins.begin(), g_plugins.end(), plugin) == g_plugins.end())
+            g_plugins.push_back(plugin);
+    }
+
+    // A no-op until the snippet unlock has landed; TryApply calls it again then.
+    PatchPluginCeilings();
 }
 
 unsigned int MfgUnlock::UnlockedMax()

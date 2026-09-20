@@ -3135,10 +3135,12 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
     if (adaUnlock && !disableAda)
     {
         const auto& status = MfgUnlock::LastStatus();
-        ImGui::TextWrapped("DLSSG %s: capability %s, validation %s, retargeted kernel groups %u",
+        ImGui::TextWrapped("DLSSG %s: capability %s, validation %s, retargeted kernel groups %u, "
+                           "Streamline plugin ceiling %s",
                            status.SnippetVersion.empty() ? "not patched" : status.SnippetVersion.c_str(),
                            status.AdvertiseMatched ? "matched" : "not matched",
-                           status.ValidateMatched ? "matched" : "not matched", status.KernelsRewritten);
+                           status.ValidateMatched ? "matched" : "not matched", status.KernelsRewritten,
+                           status.PluginCeiling[0] != '\0' ? status.PluginCeiling : "not seen");
     }
 
     // ── Ampere/Turing (SM86/SM75) MFG Unlock ─────────────────────────

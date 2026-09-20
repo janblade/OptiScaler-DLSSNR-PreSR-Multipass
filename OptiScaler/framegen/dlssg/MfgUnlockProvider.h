@@ -60,17 +60,17 @@ inline bool IsProviderPath(std::wstring_view path)
     return name == L"nvngx_dlssg.dll" || view.find(L"\\models\\dlssg\\") != std::wstring_view::npos;
 }
 
-// Whether a mapped PE image holds `needle` inside the initialised part of one of its readable sections.
-// Sections that claim to run past SizeOfImage are skipped rather than trusted. A module that is
-// unloaded while this runs answers false instead of faulting.
-inline bool ImageContains(const void* image, std::string_view needle)
+// Calls fn(data, size, characteristics) for every section of a mapped 64-bit PE image, using only the
+// initialised part of the section. Sections that claim to run past SizeOfImage are skipped rather than
+// trusted. Returns false when the image is not a 64-bit PE, or when it is unmapped while this runs.
+template <typename Fn> bool ForEachSection(void* image, Fn&& fn)
 {
-    if (image == nullptr || needle.empty())
+    if (image == nullptr)
         return false;
 
     __try
     {
-        const auto* base = static_cast<const uint8_t*>(image);
+        auto* base = static_cast<uint8_t*>(image);
         const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
 
         if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0)
@@ -86,20 +86,13 @@ inline bool ImageContains(const void* image, std::string_view needle)
 
         for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++section)
         {
-            if (!(section->Characteristics & IMAGE_SCN_MEM_READ))
-                continue;
-
             const size_t start = section->VirtualAddress;
             const size_t size = section->Misc.VirtualSize;
 
-            if (size < needle.size() || start > imageSize || size > imageSize - start)
+            if (start > imageSize || size > imageSize - start)
                 continue;
 
-            const auto* begin = base + start;
-            const auto* end = begin + size;
-
-            if (std::search(begin, end, needle.begin(), needle.end()) != end)
-                return true;
+            fn(base + start, size, static_cast<DWORD>(section->Characteristics));
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
@@ -107,6 +100,26 @@ inline bool ImageContains(const void* image, std::string_view needle)
         return false;
     }
 
-    return false;
+    return true;
+}
+
+// Whether a mapped PE image holds `needle` inside the initialised part of one of its readable sections.
+inline bool ImageContains(const void* image, std::string_view needle)
+{
+    if (needle.empty())
+        return false;
+
+    bool found = false;
+
+    ForEachSection(const_cast<void*>(image),
+                   [&](const uint8_t* data, size_t size, DWORD characteristics)
+                   {
+                       if (found || !(characteristics & IMAGE_SCN_MEM_READ) || size < needle.size())
+                           return;
+
+                       found = std::search(data, data + size, needle.begin(), needle.end()) != data + size;
+                   });
+
+    return found;
 }
 } // namespace MfgUnlock::Provider

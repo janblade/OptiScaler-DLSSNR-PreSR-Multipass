@@ -49,6 +49,10 @@ struct Status
     bool ValidateMatched = false;
     unsigned int KernelsRewritten = 0;
     std::string SnippetVersion; // file version of nvngx_dlssg.dll, empty if it could not be read
+
+    // The Streamline DLSS-G plugin's own frame-count clamp. A string literal, empty until a plugin has
+    // been seen, so the overlay can read it while a hook thread writes it.
+    const char* PluginCeiling = "";
 };
 
 const Status& LastStatus();
@@ -60,4 +64,9 @@ bool Pending();
 
 // The generated frame ceiling the patches opened, or 0 when they did not land.
 unsigned int UnlockedMax();
+
+// A Streamline DLSS-G plugin (sl.dlss_g) was loaded, from wherever the game or the driver's OTA store
+// put it. Its own frame-count clamp is neutralised once the snippet unlock has landed, so a wrapper
+// that cached 1 cannot lower the ceiling again. Ordinary threads and the load hook; never scans.
+void OnStreamlinePluginLoaded(HMODULE plugin);
 } // namespace MfgUnlock

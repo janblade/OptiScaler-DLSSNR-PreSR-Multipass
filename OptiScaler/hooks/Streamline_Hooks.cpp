@@ -2151,6 +2151,9 @@ void StreamlineHooks::hookDlssg(HMODULE slDlssg)
         return;
     }
 
+    // The game's copy or the driver's OTA one; both come through here.
+    MfgUnlock::OnStreamlinePluginLoaded(slDlssg);
+
     if (o_dlssg_slGetPluginFunction)
         unhookDlssg();
 

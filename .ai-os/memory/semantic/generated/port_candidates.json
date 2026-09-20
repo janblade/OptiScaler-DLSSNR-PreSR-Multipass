@@ -1175,7 +1175,7 @@
         "portable": true,
         "note": "mfgunlock/ files carry SPDX MIT and Licenses/MFGUnlock_LICENSE.txt (Copyright 2026 ImDreamt); dashdogy's RTX40MFG-Unlock is MIT (Copyright 2026 Michael Robles, verified in our pinned submodule). MIT into GPL-3.0 is compatible with the notice kept."
       },
-      "status": "approved",
+      "status": "in-progress",
       "study": ".ai-os/memory/plans/2026-09-20-port-klebermotta-mfg-unlock.md",
       "plan": ".ai-os/memory/plans/2026-09-20-port-klebermotta-mfg-unlock.md",
       "decision": {
@@ -1185,6 +1185,7 @@
       },
       "decision_note": "Selective port: gate patches, forced multiplier, GetState raise, RestoreAll, ForceOTAPlugins, raiseCeiling and the [MfgUnlock] config section are not taken. The temporal fix is added as a selectable method, ours stays the default.",
       "created": "2026-09-20",
+      "executed_in": "branch feat/mfg-kleber-port, not pushed or merged: 2cde10be plan, cd826dc1 provider discovery, 0a5f5079 plugin ceiling, 18f22dd8 telemetry, 3f860964 AdaTemporalFix, 6c06fbb3 marker fix, 4cdf1371 software frame pacing, 809c5fc0 credits and docs. Untested in a game and on RTX 40 hardware; finders checked read-only against real nvngx_dlssg 310.8/310.9 and sl.dlss_g 2.13.0.0. Awaiting the user's confirmation before PORT_CLOSE.",
       "skipped_refs": [
         "[MfgUnlock] config section",
         "RestoreAll",

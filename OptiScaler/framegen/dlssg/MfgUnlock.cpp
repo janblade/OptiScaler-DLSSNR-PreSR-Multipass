@@ -9,6 +9,7 @@
 #include <scanner/scanner.h>
 #include <misc/IdentifyGpu.h>
 
+#include <tlhelp32.h>
 
 namespace
 {
@@ -98,6 +99,70 @@ std::string ModuleVersion(HMODULE module)
         return {};
 
     return std::format("{}.{}.{}", file.major, file.minor, file.patch);
+}
+
+// The DLSS-G provider, if it is mapped. The file name finds the game's own copy. The driver's OTA copy
+// (models\dlssg\versions\<n>\files\<hash>.bin) and a renamed snippet are found by walking the loaded
+// modules, which is only safe from an ordinary thread: a snapshot taken under the loader lock
+// deadlocks. The load hook hands TryApply its module directly and never comes here.
+//
+// TryApply runs on every Streamline call until the snippet is found, so the walk is rate limited. A
+// provider that has not appeared after these few walks is not going to appear through this route.
+HMODULE FindProvider()
+{
+    if (auto module = GetModuleHandleW(L"nvngx_dlssg.dll"))
+        return module;
+
+    static uint64_t nextWalk = 0;
+    static unsigned walks = 0;
+    constexpr unsigned kMaxWalks = 8;
+    constexpr uint64_t kWalkIntervalMs = 2000;
+
+    const uint64_t now = GetTickCount64();
+
+    if (walks >= kMaxWalks || now < nextWalk)
+        return nullptr;
+
+    nextWalk = now + kWalkIntervalMs;
+    ++walks;
+
+    // The marker string is a literal in this DLL, so it has to be excluded from the walk.
+    HMODULE self = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&FindProvider), &self);
+
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+
+    if (snapshot == INVALID_HANDLE_VALUE)
+        return nullptr;
+
+    HMODULE found = nullptr;
+    MODULEENTRY32W entry {};
+    entry.dwSize = sizeof(entry);
+
+    for (bool more = Module32FirstW(snapshot, &entry); more && found == nullptr; more = Module32NextW(snapshot, &entry))
+    {
+        if (entry.hModule == self)
+            continue;
+
+        if (MfgUnlock::Provider::IsProviderPath(entry.szExePath))
+        {
+            found = entry.hModule;
+            continue;
+        }
+
+        // A renamed or relocated snippet: only look inside modules that expose an NGX entry point.
+        if (GetProcAddress(entry.hModule, "NVSDK_NGX_D3D12_PopulateDeviceParameters_Impl") == nullptr &&
+            GetProcAddress(entry.hModule, "NVSDK_NGX_VULKAN_PopulateDeviceParameters_Impl") == nullptr)
+            continue;
+
+        if (MfgUnlock::Provider::ImageContains(entry.hModule, MfgUnlock::Provider::kMarker))
+            found = entry.hModule;
+    }
+
+    CloseHandle(snapshot);
+
+    return found;
 }
 
 bool WriteBytes(uintptr_t address, const uint8_t* bytes, size_t count)
@@ -353,11 +418,15 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
 
     if (!snippetDone)
     {
-        if (auto module = requestedModule ? requestedModule : GetModuleHandleW(L"nvngx_dlssg.dll"); module != nullptr)
+        if (auto module = requestedModule ? requestedModule : FindProvider(); module != nullptr)
         {
             snippetDone = true;
             g_status.ModuleFound = true;
             g_status.SnippetVersion = ModuleVersion(module);
+
+            wchar_t modulePath[MAX_PATH] {};
+            GetModuleFileNameW(module, modulePath, MAX_PATH);
+            LOG_INFO("MFG unlock: DLSS-G provider {} at {}", g_status.SnippetVersion, wstring_to_string(modulePath));
 
             // Validate both gates before touching either. Ambiguous/unknown versions remain unmodified.
             const bool knownGates =

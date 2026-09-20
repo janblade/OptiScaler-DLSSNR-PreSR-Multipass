@@ -791,6 +791,9 @@
     <ClInclude Include="framegen\dlssg\MfgUnlock.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="framegen\dlssg\MfgUnlockProvider.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="framegen\dlssg\AmpereMfgLoader.h">
       <Filter>Header Files</Filter>
     </ClInclude>

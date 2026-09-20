@@ -1,6 +1,8 @@
 // Adapted from y4my4my4m/OptiScaler_DLSSNR_Multipass_MFG, tag v4 (7b7220bb), GPL-3.0.
 #pragma once
 
+#include "MfgUnlockProvider.h"
+
 #include <SysUtils.h>
 
 #include <string>

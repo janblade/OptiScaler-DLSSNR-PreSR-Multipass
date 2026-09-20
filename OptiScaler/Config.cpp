@@ -71,6 +71,18 @@ bool Config::Reload(std::filesystem::path iniPath)
             ExternalFrameGeneration.set_from_config(readBool("FrameGen", "External"));
             FGDLSSGAdaMfgUnlock.set_from_config(readBool("DLSSG", "AdaMfgUnlock"));
             FGDLSSGAdaBlackwellKernels.set_from_config(readBool("DLSSG", "AdaBlackwellKernels"));
+
+            if (auto adaFix = readString("DLSSG", "AdaTemporalFix"); adaFix.has_value())
+            {
+                if (lstrcmpiA(adaFix.value().c_str(), "retarget") == 0)
+                    FGDLSSGAdaTemporalFix.set_from_config("Retarget");
+                else if (lstrcmpiA(adaFix.value().c_str(), "ptx") == 0)
+                    FGDLSSGAdaTemporalFix.set_from_config("Ptx");
+                else
+                    FGDLSSGAdaTemporalFix.set_from_config("Auto");
+            }
+
+            FGDLSSGAdaFlipMeteringPatch.set_from_config(readBool("DLSSG", "AdaFlipMeteringPatch"));
             FGDLSSGAmpereMfgUnlock.set_from_config(readBool("DLSSG", "AmpereMfgUnlock"));
             FGDLSSGAmpereMfgMaxFrames.set_from_config(readInt("DLSSG", "AmpereMfgMaxFrames"));
             if (FGDLSSGAmpereMfgMaxFrames.has_value() &&
@@ -1015,6 +1027,8 @@ bool Config::SaveIni()
         ini.SetValue("FrameGen", "External", GetBoolValue(Instance()->ExternalFrameGeneration.value_for_config_or(false) || ampereUnlock).c_str());
         ini.SetValue("DLSSG", "AdaMfgUnlock", GetBoolValue(adaUnlock).c_str());
         ini.SetValue("DLSSG", "AdaBlackwellKernels", GetBoolValue(Instance()->FGDLSSGAdaBlackwellKernels.value_for_config()).c_str());
+        ini.SetValue("DLSSG", "AdaTemporalFix", Instance()->FGDLSSGAdaTemporalFix.value_for_config_or("auto").c_str());
+        ini.SetValue("DLSSG", "AdaFlipMeteringPatch", GetBoolValue(Instance()->FGDLSSGAdaFlipMeteringPatch.value_for_config()).c_str());
         ini.SetValue("DLSSG", "AmpereMfgUnlock", GetBoolValue(ampereUnlock).c_str());
         ini.SetValue("DLSSG", "AmpereMfgMaxFrames", GetIntValue(Instance()->FGDLSSGAmpereMfgMaxFrames.value_for_config()).c_str());
         ini.SetValue("DLSSG", "AmpereMfgKernelImage", Instance()->FGDLSSGAmpereMfgKernelImage.value_for_config_or("auto").c_str());

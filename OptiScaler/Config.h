@@ -852,6 +852,8 @@ class Config
     CustomOptional<bool> ExternalFrameGeneration { false };
     CustomOptional<bool> FGDLSSGAdaMfgUnlock { false };
     CustomOptional<bool, NoDefault> FGDLSSGAdaBlackwellKernels;
+    CustomOptional<std::string, NoDefault> FGDLSSGAdaTemporalFix; // Auto / Retarget / Ptx
+    CustomOptional<bool> FGDLSSGAdaFlipMeteringPatch { false };  // pin sl.dlss_g to software frame pacing
     // Ampere/Turing (SM86/SM75) MFG unlocker — sideloads the dlssg_for_sm86 proxy
     CustomOptional<bool> FGDLSSGAmpereMfgUnlock { false };
     CustomOptional<int>  FGDLSSGAmpereMfgMaxFrames { 3 };       // 0-3: 0=runtime default (3X), 1=2X, 2=3X, 3=4X

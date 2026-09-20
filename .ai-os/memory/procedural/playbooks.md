@@ -139,3 +139,20 @@ The agent identifies a way to improve its own skills, commands, or workflows.
 ---
 
 *These playbooks are living documents. The agent refines them based on project-specific experience.*
+
+---
+
+## Playbook: Live hang in a game (frozen process)
+
+**Project-only**
+
+### When to Use
+The game freezes with OptiScaler loaded and the log simply stops (no crash record, no dump).
+
+### Steps
+1. **Keep it frozen.** Ask the user not to kill or relaunch the game (the log is overwritten on launch); copy `OptiScaler.log` first.
+2. **Classify.** `Get-Process` thread `WaitReason`, and per-thread CPU over a few seconds: one thread pinned at 100% is a spin, several threads in `Wait` is a deadlock. In the log, compare begun/finished counts of the last present hooks.
+3. **Stacks.** Suspend, `StackWalk64` (dbghelp) and resume each thread once, and print only threads with frames in the OptiScaler DLL (it is `dxgi.dll` in the game folder), the FSR/NGX/Streamline modules. Small C++ tool built with `cl ... dbghelp.lib`; keep it in the scratchpad. Print raw RVAs: names like `dxgi!CompatString+0x...` are only the nearest export, and the system `dxgi.dll` is loaded too (small RVAs are usually the system one).
+4. **Symbols.** Release builds have no PDB. Rebuild the same commit into a separate `OutDir`/`IntDir` with `/p:ForceImportAfterCppTargets=<props>` that sets `GenerateMapFile`. Compare `.text` section hashes with the DLL that hung (the map build differs only in `.rdata` and `.rsrc`), then resolve RVAs from the map and `undname` them.
+5. **Read the code** at each resolved frame, then find who holds which lock. Confirm on the main-line equivalent before blaming the base.
+6. **Fix small, separately, and test before proposing.** Build it, have the user run the same settings, check begun == finished in the log, then open the PR.

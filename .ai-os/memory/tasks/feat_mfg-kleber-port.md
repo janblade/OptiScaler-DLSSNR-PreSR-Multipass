@@ -17,3 +17,7 @@ Pending: execution. Branch cut, step 1 in progress.
 Branch `feat/mfg-kleber-port`, eight commits after `main` (`2cde10be` .. `809c5fc0`), not pushed. All five stories done: provider discovery (OTA path, module walk), Streamline plugin ceiling patch, overlay telemetry, selectable temporal fix (`AdaTemporalFix`, PTX rewrite added), opt-in software frame pacing (`AdaFlipMeteringPatch`). UI placement followed `core.ux-review.sk`. Release x64 built; five smoke tests pass; the finders were also run read-only against real `nvngx_dlssg.dll` 310.8/310.9 and `sl.dlss_g.dll` 2.13.0.0 that the user pointed at (all found their targets). Details, deviations (marker changed to `DLSSG.MultiFrameCountMax`; no `off` item; ceiling patch applied whenever the unlock lands) and the review are in the plan's execution log.
 
 Pending: the user's confirmation to close (`PORT_CLOSE`); push and PR when they say; any RTX 40 test. Nothing has been run in a game.
+
+## 2026-09-20 — unofficial test release published
+
+Pre-release `v0.1.10-rtx40-mfg-test1` (tag on `4051cf70`, not Latest). Branch `feat/mfg-kleber-port` pushed. Awaiting RTX 40 tester reports: whether presented counts follow the ratio, whether `AdaTemporalFix=ptx` differs from `retarget`, `sl::Result` 38 gone in STALKER-2-like games, and whether `AdaFlipMeteringPatch` ends a 3X+ freeze. Details in the plan's execution log.

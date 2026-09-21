@@ -22,6 +22,19 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# The update notice compares the newest GitHub release against the version baked into the DLL (resource.h).
+# A release whose tag does not match it makes every copy of that release announce an update to itself.
+if ($PSBoundParameters.ContainsKey('Version') -and $Version -match '(\d+\.\d+\.\d+)') {
+    $tagged = $Matches[1]
+    $header = Get-Content -LiteralPath "$PSScriptRoot\OptiScaler\resource.h" -Raw
+    $baked = foreach ($part in 'MAJOR', 'MINOR', 'HOTFIX') {
+        if ($header -match "#define NR_RELEASE_${part}_VERSION\s+(\d+)") { $Matches[1] } else { throw "NR_RELEASE_${part}_VERSION not found in OptiScaler\resource.h" }
+    }
+    if (($baked -join '.') -ne $tagged) {
+        throw "Version $Version does not match NR_RELEASE_*_VERSION in OptiScaler\resource.h ($($baked -join '.')). Bump resource.h first, or the release will tell its own users to update."
+    }
+}
+
 # Derived rather than hardcoded, so this packages whichever checkout it is sitting in. There is more
 # than one now -- the experiment runs in a git worktree beside the main tree, and a hardcoded root
 # silently packages the other one's build output while reporting success.

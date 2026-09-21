@@ -237,6 +237,7 @@ static void ApplyPassPreset(Config* config, unsigned int passes)
 {
     config->DlssNrEnabled = true;
     config->DlssNrPrecision = 0u; // NVIDIA (FP8)
+    config->DlssNrVitEvery = 1u;
     config->DlssNrApplyModel = true;
     config->DlssNrUnlockPasses = false;
     config->DlssNrPasses = passes;
@@ -679,6 +680,14 @@ void RenderMenu(Config* config, float menuResScale)
         if (ImGui::Combo("Model precision", &precisionChoice, precisions, IM_ARRAYSIZE(precisions)))
             config->DlssNrPrecision = precisionChoice == 1 ? 4u : 0u;
         HelpMarker("NVIDIA: original FP8 model (default), with some sensitive operations kept at higher precision.\nExperimental: this fork's FP8+NVFP4 hybrid for RTX 50 GPUs; output may differ slightly.");
+        bool vitReuse = config->DlssNrVitEvery.value_or_default() > 1;
+        if (ImGui::Checkbox("Reuse bottleneck every other frame", &vitReuse))
+            config->DlssNrVitEvery = vitReuse ? 2u : 1u;
+        HelpMarker("Recomputes the model's coarsest stage (its 32x18 bottleneck) only every other frame and reuses the last result in between, "
+                   "which saves roughly a tenth of the model's GPU time.\nThat stage changes slowly, so the picture usually barely differs, "
+                   "but fast camera motion can look slightly softer. Scene cuts always recompute. Applies immediately, NVIDIA's own model only.");
+        if (vitReuse)
+            ImGui::TextUnformatted(("Bottleneck reuse: " + DlssNrNative::VitStatus()).c_str());
         if (precisionChoice > 0)
         {
             ImGui::TextUnformatted(enabled && DlssNrNative::IsActive() ? "Hybrid: active" : "Hybrid: inactive");

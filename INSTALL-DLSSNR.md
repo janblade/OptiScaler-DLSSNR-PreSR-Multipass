@@ -126,7 +126,8 @@ Use `auto` for the default behavior. Styles retain `Pass2Style` / `Pass3Style`.
 
 These controls apply to D3D12 multipass and its bridges, both before/after SR and after native RR.
 Native Vulkan and the driver-proxy backend remain single-pass. Preset hints are still transmitted
-at model creation, but a changed hint is not proof of a changed model. They are preserved under
+at model creation, but the runtime version 310.8 contains a single built-in preset and falls back to
+it for any hint, so changing a hint is not expected to change the picture. They are preserved under
 **Advanced preset hints (effect unverified)** and in the INI for compatibility.
 
 ## What the model sees

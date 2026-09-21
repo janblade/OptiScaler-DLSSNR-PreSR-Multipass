@@ -668,6 +668,62 @@ float3 CubeScaleResidual(float3 P, float3 T)
     return P + saturate(alpha) * d;
 }
 
+// OkLab matched residual, for a model that ran below the frame's size.
+//
+// It works in OkLab on the two low-resolution pictures the model saw -- the proxy and the model's
+// answer -- and carries three numbers per texel up to the frame:
+//
+//   * a log-luminance ratio ln(max(L_model, 0.1) / max(L_proxy, 0.1)), clamped to [-2, 2] and faded
+//     out below L = 0.1 by saturate(10 * L_proxy), so a shadow cannot turn a tiny edit into a big ratio;
+//   * the chroma difference in a and in b, added as is.
+//
+// The three are interpolated bilinearly between the four nearest texels of the model's own grid (edges
+// clamped) and applied to the frame's full-resolution proxy: L' = saturate(max(L, 0.1) * exp(ratio)),
+// a' = a + da, b' = b + db, back to RGB and saturated. Luminance is multiplicative and chroma additive,
+// which is the opposite split from CubeScaleResidual's single additive RGB edit that is scaled to fit
+// the cube. Both are fed to the same composition below, so this only changes how the reduced-size edit
+// is enlarged.
+float3 NvOkLab(float3 rgb)
+{
+    const float3x3 rgb_to_lms = { 0.4122214708, 0.5363325363, 0.0514459929,
+                                  0.2119034982, 0.6806995451, 0.1073969566,
+                                  0.0883024619, 0.2817188376, 0.6299787005 };
+    const float3x3 lms_to_lab = { 0.2104542553, 0.7936177850, -0.0040720468,
+                                  1.9779984951, -2.4285922050, 0.4505937099,
+                                  0.0259040371, 0.7827717662, -0.8086757660 };
+    return mul(lms_to_lab, pow(max(mul(rgb_to_lms, saturate(rgb)), 1e-4), 1.0 / 3.0));
+}
+
+float3 NvidiaResidualModel(float3 fullProxy, float2 uv)
+{
+    uint gridW, gridH;
+    gModel.GetDimensions(gridW, gridH);
+
+    const float2 grid = float2(gridW, gridH);
+    const float2 p = uv * grid - 0.5;
+    const int2 i0 = (int2) floor(p);
+    const float2 f = p - (float2) i0;
+    float3 residual = float3(0.0, 0.0, 0.0);
+
+    [unroll] for (int k = 0; k < 4; ++k)
+    {
+        const int2 tap = int2(k & 1, k >> 1);
+        const int2 texel = clamp(i0 + tap, int2(0, 0), int2(gridW - 1, gridH - 1));
+        const float2 tapUv = ((float2) texel + 0.5) / grid;
+        const float4 a4 = gSource.SampleLevel(gLinear, tapUv, 0);
+        const float4 b4 = gModel.SampleLevel(gLinear, tapUv, 0);
+        const float3 la = NvOkLab(gPassthrough != 0 ? a4.rgb : SrgbToLinear(a4.rgb));
+        const float3 lb = NvOkLab(gPassthrough != 0 ? b4.rgb : SrgbToLinear(b4.rgb));
+        const float ratio = clamp(log(max(lb.x, 0.1)) - log(max(la.x, 0.1)), -2.0, 2.0) * saturate(10.0 * la.x);
+        const float weight = (tap.x != 0 ? f.x : 1.0 - f.x) * (tap.y != 0 ? f.y : 1.0 - f.y);
+        residual += weight * float3(ratio, lb.y - la.y, lb.z - la.z);
+    }
+
+    const float3 lab = NvOkLab(fullProxy);
+    const float L = saturate(exp(log(max(lab.x, 0.1)) + residual.x));
+    return saturate(FromOkLab(float3(L, lab.y + residual.y, lab.z + residual.z)));
+}
+
 // Replace's highlight/shadow guard: bounds how far a Replace pixel's luminance may sit from the
 // native frame's, the same invariant Composed's own `boundedRatio` already holds everywhere.
 // Multiplicative rescale alone cannot pull an exact zero vector back up -- `v *= anything` stays
@@ -1286,7 +1342,7 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
     // a few hundred lines down): once an enlarge pass has already run, the bound proxy reads native
     // regardless of what resolution the model actually evaluated at, so a size check silently answers
     // the wrong question the moment SGSR1 enlarges the proxy.
-    if (gTransfer == 1 && gModelWorkScale < 0.999)
+    if (gTransfer >= 1 && gModelWorkScale < 0.999)
     {
         // Saturated, because that is what the encode does and this has to reproduce it exactly.
         //
@@ -1318,7 +1374,8 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
 
         // At the same rate there is no residual to carry: the model's own picture is already at the
         // frame's resolution, and P + (m - p) collapses to m exactly.
-        model = CubeScaleResidual(fullProxy, fullProxy + edit);
+        // 1 is the cube-scaled additive edit, 2 is the OkLab residual (see NvidiaResidualModel).
+        model = gTransfer == 2 ? NvidiaResidualModel(fullProxy, cmpUv) : CubeScaleResidual(fullProxy, fullProxy + edit);
     }
 
     // The composition. The model's answer is not treated as a difference to add onto the frame -- it

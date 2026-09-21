@@ -822,8 +822,8 @@ void RenderMenu(Config* config, float menuResScale)
             if (!reduced)
                 ImGui::BeginDisabled();
 
-            static const char* enlargeNames[] = { "Classic", "Matched residual" };
-            int enlarge = config->DlssNrTransfer.value_or_default() == 1 ? 1 : 0;
+            static const char* enlargeNames[] = { "Classic", "Matched residual", "NVIDIA residual" };
+            int enlarge = (int) std::min(config->DlssNrTransfer.value_or_default(), 2u);
 
             if (ImGui::Combo("Upscale Mode", &enlarge, enlargeNames, IM_ARRAYSIZE(enlargeNames)))
                 config->DlssNrTransfer = (uint32_t) enlarge;
@@ -831,7 +831,7 @@ void RenderMenu(Config* config, float menuResScale)
             if (!reduced)
                 ImGui::EndDisabled();
 
-            HelpMarker("Below 100% model resolution: Classic enlarges the model output; Matched residual enlarges only its changes.\nMatched residual can reduce blur and colour shifts. No effect at 100% or above.");
+            HelpMarker("Below 100% model resolution: Classic enlarges the model output; Matched residual enlarges only its changes.\nMatched residual can reduce blur and colour shifts. NVIDIA residual enlarges the changes in OkLab (luminance as a ratio, chroma as a difference).\nNo effect at 100% or above.");
 
             if (!reduced)
                 ImGui::BeginDisabled();

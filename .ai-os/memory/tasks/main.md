@@ -6,6 +6,8 @@ Protected-branch working notes. Drained by `MEMORY_CONSOLIDATE`, not `TASK_CLOSE
 memory/plans/2026-09-17-dlssnr-sgsr1-input-only.md moved to that branch's own task file
 (memory/tasks/feat_dlssnr-sgsr1-input-only.md) for the duration of the work.
 
+Active plan: none. Restore Sharpness port to wilsjo2 v0.8.4 is done (memory/plans/2026-09-20-port-restore-sharpness-v084.md), PR wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass#81 open; worktree ..OptiScaler-NR-v084 kept until it settles.
+
 ## 2026-09-14 — retiring ResidualAcrossRR, forcing post-RR placement — drained via TASK_CLOSE
 
 Full working notes promoted to semantic memory (`TASK_CLOSE`, 2026-09-16, run against this

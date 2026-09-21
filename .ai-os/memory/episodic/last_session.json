@@ -1,7 +1,0 @@
-{
-    "session_id":  null,
-    "started":  "2026-09-20",
-    "ended":  "2026-09-20",
-    "summary":  "Continued after the port was recorded. On the user request added a test-only key [DLSSG] MfgUnlockBlackwellTest (local branch test/kleber-blackwell-mfg, 96b7fcb1, off feat/mfg-kleber-port, not pushed) so the unlock, kernel rewrite included, also runs on their RTX 5070 Ti; built it and deployed dxgi.dll to the Cyberpunk folder with backups. A first log showed the gates and both sl.dlss_g clamps patched for 5 generated frames but no game MFG menu, because OptiFG (FSR FG output) was generating frames and Streamline logged kFeatureDLSS_G is missing. Explained that a Blackwell run does not validate the Ada path, and corrected an earlier claim that the retarget would break Blackwell (it probably does not). A build stalled once from orphaned compilers left by a backgrounded command; killed and rerun. Closed the port on the user request. Session and clock times were not recorded, so started/ended are date only.",
-    "next_up":  "Set FGInput and FGOutput to NoFG in the game ini to see the game own MFG menu, then run the deployed build and read the log (the ini edit was offered, not made). RTX 40 hardware testers are still needed for the unlock itself: v0.1.10-rtx40-mfg-test1 on the main line. Wilsjo review of PR #79 and #80 pending; #79 lacks the #80 fix. Undecided: merge feat/mfg-kleber-port into our main. Local leftovers: x64\\builds, x64\\mapbuild, test/kleber-blackwell-mfg, backups next to the game dxgi.dll and ini."
-}

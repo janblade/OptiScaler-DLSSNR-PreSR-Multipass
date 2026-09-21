@@ -190,9 +190,11 @@ if ($targetProcess.Line -ne 'TargetProcessName=auto') {
 }
 Write-Host "process filter: portable (TargetProcessName=auto)"
 
-# Belt and braces: nothing that is a build artifact, and nothing from the abandoned warp work, may
-# survive into the zip regardless of how it got into the staging folder.
-Get-ChildItem $stage -Recurse -Include *.exp, *.lib, *.pdb, *.ilk, *latewarp* | Remove-Item -Force
+# Belt and braces: nothing that is a build artifact, nothing from the abandoned warp work, no ASI plugin
+# of any kind (the package ships OptiScaler.dll only, and plugin loading is off by default), and no research
+# tracer or its captures (nrtrace*: hooks the CUDA driver and dumps modules next to itself) may survive into
+# the zip regardless of how it got into the staging folder.
+Get-ChildItem $stage -Recurse -Include *.exp, *.lib, *.pdb, *.ilk, *latewarp*, *.asi, *nrtrace* | Remove-Item -Recurse -Force
 
 # No feature may ship switched on by accident.
 #

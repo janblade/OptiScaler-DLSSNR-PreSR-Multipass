@@ -129,6 +129,22 @@ Native Vulkan and the driver-proxy backend remain single-pass. Preset hints are 
 at model creation, but a changed hint is not proof of a changed model. They are preserved under
 **Advanced preset hints (effect unverified)** and in the INI for compatibility.
 
+## What the model sees
+
+The model averages the picture it is given 2x2 before its main network runs, then brings the result
+back to full size at the end. So the main network always works at **half** of the size NR hands it,
+and that halved size is what its cost and its finest added detail follow. **Model resolution** is
+applied on top of that: at 50% the main network sees a quarter of the frame's width and height. The
+menu shows both numbers under the slider and `OptiScaler.log` prints them when NR starts.
+
+A reduced model size is rounded to a multiple of 16 so it holds still under dynamic resolution
+instead of rebuilding the model for a pixel of difference. A pass at the native size is never rounded.
+
+It is also worth knowing what the model does not take: it has no jitter input and no camera
+matrices (colour, its own previous output, motion vectors and optional depth/UI/mask only), and its
+output is limited to the 0..1 range, which is why NR works on a tone-mapped copy of the frame
+rather than replacing HDR values.
+
 ## Padded DLSS input sizes
 
 With a build containing the padded pre-SR fix and `RunBeforeSR=true`, an origin-zero 2558x1439 image

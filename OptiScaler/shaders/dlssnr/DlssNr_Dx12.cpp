@@ -1525,6 +1525,34 @@ ID3D12Resource* GetResource(NVSDK_NGX_Parameter* params, const char* a, const ch
 // frame, and each one would otherwise mean a new model.
 constexpr unsigned long long kSettleFrames = 30;
 
+// The network pools its input 2x2 and runs its 8x8 attention windows on the result, so its grid is 16
+// input pixels per window. A size that is not a multiple of 16 leaves a ragged last window that is
+// zero-padded (the model copes, it is just wasted work at the border), and, more usefully here, every
+// distinct size is a different feature: Auto's continuous render:output ratio moved the size by a pixel
+// or two under dynamic resolution and each move rebuilt the model. Rounding to 16 lets the size hold.
+//
+// Only a size we are already resampling to is rounded. A native-size pass (WorkingScale 1.0, or a scale
+// that rounds back to native) is left alone: rounding 1080 to 1088 would turn a 1:1 pass into a
+// resample of the frame, which is worse than a ragged border window.
+unsigned int AlignWorkSize(unsigned int size, unsigned int native)
+{
+    constexpr unsigned int kGrid = 16;
+
+    if (size == native)
+        return size;
+
+    unsigned int aligned = (size + kGrid / 2) / kGrid * kGrid;
+
+    if (aligned < kGrid)
+        aligned = kGrid;
+
+    // Shrinking never rounds up past the native size (that would enlarge what was meant to be reduced).
+    if (size < native && aligned > native)
+        aligned = native;
+
+    return aligned;
+}
+
 // The extras the official integration sets: global tone (read at create) and the interface inputs.
 // Written before every create and evaluate, nulls included, so nothing stale ever sits in the block.
 void SetExtras(const Config& cfg, ID3D12Resource* ui, ID3D12Resource* backbuffer, unsigned int uiWidth,
@@ -1999,8 +2027,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         workScale = 1.0f;
     workScale = workScale < 0.25f ? 0.25f : (workScale > 2.0f ? 2.0f : workScale);
     g_nr.appliedWorkScale = workScale;
-    const auto workWidth = (unsigned int) (width * workScale + 0.5f);
-    const auto workHeight = (unsigned int) (height * workScale + 0.5f);
+    const auto workWidth = AlignWorkSize((unsigned int) (width * workScale + 0.5f), width);
+    const auto workHeight = AlignWorkSize((unsigned int) (height * workScale + 0.5f), height);
     const bool reduced = workWidth != width || workHeight != height;
     const unsigned int configuredPasses =
         std::clamp(cfg.DlssNrPasses.value_or_default(),
@@ -2252,11 +2280,11 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         g_nr.featureCreateEpoch = frame.SubmissionEpoch;
         RecordBuiltPrimaryTuning(cfg);
         LOG_INFO("DLSS-NR model feature created from {}", snippet->string());
-        LOG_INFO("DLSS-NR running {}: target {}x{}, model {}x{}, guides {}x{} "
+        LOG_INFO("DLSS-NR running {}: target {}x{}, model input {}x{} (main network {}x{}), guides {}x{} "
                  "(preset {}, intensity {}, style {}, build epoch {})",
                  frame.RayReconstruction ? (frame.BeforeUpscale ? "before RR+SR" : "after RR+SR") :
                      (frame.BeforeUpscale ? "before SR" : "after SR"),
-                 width, height, workWidth, workHeight,
+                 width, height, workWidth, workHeight, (workWidth + 1) / 2, (workHeight + 1) / 2,
                  guideWidth, guideHeight, g_nr.builtPreset[0], g_nr.builtIntensity, g_nr.builtStyle[0],
                  frame.SubmissionEpoch);
 
@@ -4024,6 +4052,12 @@ ExposureStatus AutoExposureStatus()
 }
 
 int CurrentModelResolutionPercent() { return (int) lroundf(g_nr.appliedWorkScale * 100.0f); }
+
+void CurrentModelSize(unsigned int& width, unsigned int& height)
+{
+    width = g_nr.workWidth;
+    height = g_nr.workHeight;
+}
 
 std::optional<double> LastGpuTime() { return g_lastGpuTime; }
 

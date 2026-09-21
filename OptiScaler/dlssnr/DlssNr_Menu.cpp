@@ -795,7 +795,17 @@ void RenderMenu(Config* config, float menuResScale)
             pendingScale = -1;
         }
 
-        HelpMarker("NR resolution relative to the image it processes. 50% halves width and height; 100% uses the full size.\nLower values reduce cost and fine detail. Above 100% increases cost. Game output resolution is unchanged.");
+        HelpMarker("NR resolution relative to the image it processes. 50% halves width and height; 100% uses the full size.\nLower values reduce cost and fine detail. Above 100% increases cost. Game output resolution is unchanged.\nThe model averages its input 2x2 before its main network runs, so that network always works at half of this size: cost follows the halved size, and so does the finest detail it can add.");
+
+        {
+            unsigned int modelWidth = 0;
+            unsigned int modelHeight = 0;
+            DlssNr::CurrentModelSize(modelWidth, modelHeight);
+
+            if (modelWidth != 0 && modelHeight != 0)
+                ImGui::TextDisabled("Model input %ux%u; its main network runs at %ux%u.", modelWidth, modelHeight,
+                                    (modelWidth + 1) / 2, (modelHeight + 1) / 2);
+        }
 
         if (ImGui::Checkbox("Auto (post-SR only)", &resolutionAuto))
             config->DlssNrModelResolutionAuto = resolutionAuto;

@@ -137,6 +137,11 @@ ExposureStatus AutoExposureStatus();
 // live value instead of the stale manual one while Auto is overriding it.
 int CurrentModelResolutionPercent();
 
+// The size NR hands the model, in pixels, or 0x0 before the first frame. The network pools that 2x2 before
+// its body runs, so the body sees half of it (rounded up); the menu and log show both so tuning is not
+// done against the wrong number.
+void CurrentModelSize(unsigned int& width, unsigned int& height);
+
 // The white point the exposure meter has settled on, or 0 if it has not taken a reading yet. For the
 // overlay, so the number in use is visible rather than inferred.
 

@@ -241,9 +241,8 @@ static void ApplyPassPreset(Config* config, unsigned int passes)
     config->DlssNrUnlockPasses = false;
     config->DlssNrPasses = passes;
 
-    // Upscale Method and Final Image Composition are deliberately not set here: the Pre-SR/Post-SR
-    // High tier sets them, and writing them from a pass preset would clear that tier's highlight.
-    config->DlssNrTransfer = 1u;                // Upscale Mode: Matched residual
+    // Upscale Method, Upscale Mode and Final Image Composition are deliberately not set here: the Pre-SR/Post-SR
+    // tiers set them, and writing them from a pass preset would clear that tier's highlight.
     config->DlssNrTransferStrength = 1.0f;      // Detail strength
     config->DlssNrColourStrength = 1.0f;
     config->DlssNrStyle = PresetPass1.style;
@@ -381,7 +380,7 @@ static void ApplyResolutionTier(Config* config, int& pendingScale, const Resolut
     config->DlssNrRunBeforeSr = beforeSuperResolution;
     config->DlssNrDeferredDlss = false;
 
-    config->DlssNrTransfer = 1u; // Upscale Mode: Matched residual
+    config->DlssNrTransfer = 2u; // Upscale Mode: NVIDIA residual
     config->DlssNrReducedUpscaleMethod = tier.upscaleMethod;
     config->DlssNrModelResolutionAuto = false;
     config->DlssNrWorkingScale = tier.workingScale;
@@ -407,7 +406,7 @@ static bool ResolutionTierActive(Config* config, const ResolutionTier& tier, boo
 {
     return !config->DlssNrFinishedPicture.value_or_default() &&
            config->DlssNrRunBeforeSr.value_or_default() == beforeSuperResolution &&
-           config->DlssNrTransfer.value_or_default() == 1u &&
+           config->DlssNrTransfer.value_or_default() == 2u &&
            config->DlssNrReducedUpscaleMethod.value_or_default() == tier.upscaleMethod &&
            !config->DlssNrModelResolutionAuto.value_or_default() &&
            std::fabs(config->DlssNrWorkingScale.value_or_default() - tier.workingScale) < 0.005f &&
@@ -523,8 +522,8 @@ void RenderMenu(Config* config, float menuResScale)
         if (PresetButton("3 Pass", PassPresetActive(config, 3u)))
             ApplyPassPreset(config, 3u);
         HelpMarker("Set this fork's recommended starting point for the chosen pass count: FP8 "
-                   "precision, Matched residual upscale mode, and game-exposure white point. "
-                   "Upscale Method and Final Image Composition are left alone; use the Pre-SR or "
+                   "precision and game-exposure white point. "
+                   "Upscale Method, Upscale Mode and Final Image Composition are left alone; use the Pre-SR or "
                    "Post-SR presets for those. 2 Pass also sets Pass "
                    "2's overrides; 3 Pass sets Pass 2 and Pass 3's overrides. Overwrites the settings "
                    "below; anything not listed here, including NR Pass at:, is left as you have it.\n"

@@ -511,6 +511,9 @@ void RenderMenu(Config* config, float menuResScale)
                 ImGui::SetTooltip("Time between the start and end of NR on the GPU, including delays while other work runs.\nCompare FPS to check the effect on game performance.");
             if (finishedPicture)
                 ImGui::TextDisabled("Includes time shared with other GPU work.");
+
+            if (!vulkan && DlssNr::BackendName()[0] != 0)
+                ImGui::TextDisabled("Model backend: %s", DlssNr::BackendName());
         }
 
         ImGui::SeparatorText("Multipass Presets");

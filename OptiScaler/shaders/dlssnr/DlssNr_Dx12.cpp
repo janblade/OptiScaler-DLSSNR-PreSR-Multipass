@@ -3996,6 +3996,8 @@ bool IsRunning() { return g_nr.feature != nullptr && !g_nr.failed; }
 
 const char* FailureReason() { return g_nr.failed ? g_nr.reason : ""; }
 
+const char* BackendName() { return g_nr.forwarder == nullptr ? "" : g_nr.isPort ? "vendor-neutral port" : "NVIDIA NGX"; }
+
 // What the game offers by way of exposure, and what has been read from it. For the menu, so a user
 // can see whether this game supplies one at all without having to read a log.
 ExposureStatus GameExposureStatus()

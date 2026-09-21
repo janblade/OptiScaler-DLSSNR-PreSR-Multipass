@@ -113,6 +113,9 @@ std::string DeferredDlssStatus();
 // Why it is not, if it is not. Empty while it is running or has not been tried yet.
 const char* FailureReason();
 
+// Which model backend the loaded nvngx.dll_dlssnr.dll is: "NVIDIA NGX" or "vendor-neutral port". Empty until it has been loaded.
+const char* BackendName();
+
 // What the game offers by way of exposure. Observed every frame whether or not the setting is on, so
 // the menu can say whether turning it on would do anything here.
 struct ExposureStatus

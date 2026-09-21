@@ -359,6 +359,9 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrResidualFg.set_from_config(readBool("DlssNr", "ResidualFG"));
             DlssNrPrecision.set_from_config(readUInt("DlssNr", "Precision"));
             if (DlssNrPrecision.value_or_default() != 4) DlssNrPrecision = 0u;
+            DlssNrVitEvery.set_from_config(readUInt("DlssNr", "VitEvery"));
+            if (DlssNrVitEvery.value_or_default() < 1u || DlssNrVitEvery.value_or_default() > 2u)
+                DlssNrVitEvery = std::clamp<uint32_t>(DlssNrVitEvery.value_or_default(), 1u, 2u);
             DlssNrResidualFgApproxCamera.set_from_config(readBool("DlssNr", "ResidualFGApproxCamera"));
             DlssNrToggleKey.set_from_config(readInt("DlssNr", "ToggleKey"));
             DlssNrTransferStrength.set_from_config(readFloat("DlssNr", "TransferStrength"));
@@ -1305,6 +1308,7 @@ bool Config::SaveIni()
                  GetBoolValue(Instance()->DlssNrDeferredDlss.value_for_config()).c_str());
     ini.SetValue("DlssNr", "ResidualFG", GetBoolValue(Instance()->DlssNrResidualFg.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Precision", GetIntValue(Instance()->DlssNrPrecision.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "VitEvery", GetIntValue(Instance()->DlssNrVitEvery.value_for_config()).c_str());
     ini.SetValue("DlssNr", "ResidualFGApproxCamera", GetBoolValue(Instance()->DlssNrResidualFgApproxCamera.value_for_config()).c_str());
     {
         auto toggle = Instance()->DlssNrToggleKey.value_for_config();

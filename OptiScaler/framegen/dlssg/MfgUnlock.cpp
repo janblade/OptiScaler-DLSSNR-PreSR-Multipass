@@ -706,7 +706,14 @@ bool MfgUnlock::Pending()
     return gpu.vendorId == VendorId::Nvidia && gpu.nvidiaArchInfo.architecture_id == NV_GPU_ARCHITECTURE_AD100;
 }
 
-const MfgUnlock::Status& MfgUnlock::LastStatus() { return g_status; }
+MfgUnlock::Status MfgUnlock::LastStatus()
+{
+    // TemporalDetail/SnippetVersion are std::string, mutated under g_pluginLock elsewhere in this
+    // file; returning a reference here let a caller (the menu/overlay thread) read a std::string
+    // mid-write from another thread with no synchronization at all. Lock and copy instead.
+    std::lock_guard lock(g_pluginLock);
+    return g_status;
+}
 
 MfgUnlock::TemporalMethod MfgUnlock::ConfiguredTemporalMethod()
 {

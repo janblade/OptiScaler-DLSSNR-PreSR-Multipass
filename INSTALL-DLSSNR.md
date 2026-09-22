@@ -25,13 +25,15 @@ NVIDIA driver's NGX core. On AMD and Intel GPUs that core cannot start, so Neura
 off.
 
 A separate, vendor-neutral build of `nvngx.dll_dlssnr.dll` runs the same model directly in D3D12
-compute and DirectML instead of going through NGX, so it needs no NVIDIA driver support. This fork
-does not build or ship it. If you have access to a build, drop it in as a same-named replacement
-for the forwarder:
+compute and DirectML instead of going through NGX, so it needs no NVIDIA driver support. This
+fork's own source does not include it — it is built by a separate toolchain outside this
+repository — but some release zips include a prebuilt copy under `Optional\` for convenience; check
+whether yours does before looking elsewhere. Either way, drop it in as a same-named replacement for
+the forwarder:
 
 | File | Purpose |
 |---|---|
-| `nvngx.dll_dlssnr.dll` | Replace with the vendor-neutral port build instead of this project's NGX forwarder |
+| `nvngx.dll_dlssnr.dll` | Replace with the vendor-neutral port build (from `Optional\` if your release includes it) instead of this project's NGX forwarder |
 | `nvngx_dlssnr.dll` | Unchanged — still required. The port reads its weights from this same file, so the correct runtime for the GPU generation is still needed from the table below. |
 
 Everything else in this guide (install steps, INI keys, game notes) is unchanged. To confirm the

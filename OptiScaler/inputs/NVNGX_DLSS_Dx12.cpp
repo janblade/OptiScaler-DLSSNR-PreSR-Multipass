@@ -24,6 +24,7 @@
 
 #include <dxgi1_4.h>
 #include <shared_mutex>
+#include <atomic>
 #include "detours/detours.h"
 #include <ankerl/unordered_dense.h>
 #include <misc/IdentifyGpu.h>
@@ -33,7 +34,9 @@ static NgxFeatureRegistry HandleToFeature;
 
 static ID3D12Device* D3D12Device = nullptr;
 static int evalCounter = 0;
-static bool shutdown = false;
+// Read from ShutdownDx12's reentrancy guard, which can now be reached from another DLL's own
+// detach callback calling back in here -- same cross-thread-read reasoning as isShuttingDown.
+static std::atomic_bool shutdown { false };
 static bool _skipInit = false;
 static wchar_t const** paths;
 
@@ -410,7 +413,7 @@ static NVSDK_NGX_Result ShutdownDx12(ID3D12Device* requestedDevice)
         const auto stop = NVNGXProxy::D3D12_Shutdown();
         const auto stopDevice = NVNGXProxy::D3D12_Shutdown1();
 
-        if (!State::Instance().isShuttingDown && (stop || stopDevice))
+        if (stop || stopDevice)
         {
             if (requestedDevice && stopDevice)
                 stopDevice(requestedDevice);
@@ -430,11 +433,14 @@ static NVSDK_NGX_Result ShutdownDx12(ID3D12Device* requestedDevice)
     // Disabled to prevent crash
     if (State::Instance().currentFG != nullptr && State::Instance().activeFgInput == FGInput::Upscaler)
     {
-        if (State::Instance().isShuttingDown)
-            State::Instance().currentFG->Shutdown();
-        else
-            State::Instance().currentFG->DestroyFGContext();
-
+        // isShuttingDown is always false here (the top-of-function guard already returned for
+        // that case), so this used to be a dead branch that could never take the Shutdown()
+        // side. Left as DestroyFGContext() only, not unified on Deactivate() the way the source
+        // commit does it: DLSSG_Dx12::Deactivate() calls StreamlineProxy::DLSSGSetOptions(),
+        // already flagged in this fork with "Potential crash point on exit" -- calling that from
+        // the one path meant to be safe during a post-detach reentrant call would reintroduce
+        // exactly the risk this guard exists to remove.
+        State::Instance().currentFG->DestroyFGContext();
         State::Instance().clearCapturedHudlesses = true;
     }
 

@@ -17,6 +17,12 @@ Process-exit hardening (a heap-leaked state singleton, an atomic shutdown flag, 
 
 The built-in RTX 40 multi frame generation unlock is adapted from [y4my4my4m's fork](https://github.com/y4my4my4m/OptiScaler_DLSSNR_Multipass_MFG) (GPL-3.0). The provider discovery, the Streamline plugin frame-ceiling patch, the software frame pacing option and the PTX temporal fix are adapted from [KleberMotta's fork](https://github.com/KleberMotta/OptiScaler-DLSS5-MFG-RTX40) (MIT), a port of the MFG Unlock ReShade addon by [Dreamt](https://github.com/ImDreamt/MFGAdaUnlock-RenoDx) and [mavismmg](https://github.com/mavismmg/MFGAdaUnlock-RenoDx). The technique originates from [dashdogy's RTX40MFG-Unlock](https://github.com/dashdogy/RTX40MFG-Unlock), which is also the optional external unlocker (see [RTX40-MFG.md](RTX40-MFG.md)). See the [licences](../Licenses/MFGUnlock_LICENSE.txt).
 
+The fix for an unsynchronized read/write race in `MfgUnlock::LastStatus()` follows the same lock-and-return-by-value approach as [wilsjo2's fork](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass), commit [`bf91eebd`](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/commit/bf91eebd00da40d079b8d987dbf44aca0be598e0) ("Extend optional Ada MFG support with shared patch and status locking"); the write side of the race (`MfgUnlock::TryApply`) was found and fixed independently during review.
+
+## KCD2 HDR compatibility
+
+The binary quirk patch that keeps Kingdom Come: Deliverance II's native HDR10 output working with frame generation active is adapted from [wilsjo2's fork](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass), commit [`34dfe6d9`](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/commit/34dfe6d9757837d79a8931b04af0e3955cbe29a7) ("Keep KCD2 HDR output compatible with native DLSSG").
+
 ## OptiScaler contributors
 
 These credits are retained from the original OptiScaler README:

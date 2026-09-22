@@ -1057,8 +1057,8 @@ void RenderMenu(Config* config, float menuResScale)
         // Each option also says whether it can actually do anything in THIS game, in colour, so the
         // choice is made on what is available rather than on what sounds best.
         {
-            const auto ex = DlssNr::GameExposureStatus();
             const bool vk = DlssNr::IsRunningVk();
+            const auto ex = vk ? DlssNr::GameExposureStatusVk() : DlssNr::GameExposureStatus();
             const bool haveExposure = HaveGameExposure();
 
             const float anchorNow = DlssNr::ExposureScan::BestValue();
@@ -1092,9 +1092,6 @@ void RenderMenu(Config* config, float menuResScale)
                 else if (!haveExposure)
                     ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
                                        "No game exposure available. Using manual paper white.");
-                else if (vk)
-                    ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
-                                       "Using game exposure.");
                 else if (ex.exposure > 1e-6f)
                 {
                     const float baseWhitePoint = ex.preExposure / ex.exposure;

@@ -328,7 +328,15 @@ IFeature_Dx12::IFeature_Dx12(unsigned int InHandleId, NVSDK_NGX_Parameter* InPar
 IFeature_Dx12::~IFeature_Dx12()
 {
     if (State::Instance().isShuttingDown)
+    {
+        // Returning alone still runs unique_ptr destructors under the loader lock.
+        OutputScaler.release();
+        RCAS.release();
+        Bias.release();
+        Magnifier.release();
+        UpscalerTime.release();
         return;
+    }
 
     Imgui.reset();
     OutputScaler.reset();

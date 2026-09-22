@@ -66,7 +66,7 @@ struct Status
     bool FlipRequested = false; // [DLSSG] AdaFlipMeteringPatch at load, for the restart line
 };
 
-const Status& LastStatus();
+Status LastStatus();
 
 // The method the configuration selects right now, on this GPU. [DLSSG] AdaTemporalFix wins when it names
 // one; otherwise the older AdaBlackwellKernels on/off applies (false leaves the unlock unapplied);

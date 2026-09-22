@@ -555,70 +555,88 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
         if (auto module = requestedModule ? requestedModule : FindProvider(); module != nullptr)
         {
             snippetDone = true;
-            g_status.ModuleFound = true;
-            g_status.SnippetVersion = ModuleVersion(module);
 
-            wchar_t modulePath[MAX_PATH] {};
-            GetModuleFileNameW(module, modulePath, MAX_PATH);
-            LOG_INFO("MFG unlock: DLSS-G provider {} at {}", g_status.SnippetVersion, wstring_to_string(modulePath));
-
-            // Validate both gates before touching either. Ambiguous/unknown versions remain unmodified.
-            const bool knownGates =
-                (UniqueAddress(module, kAdvertisePattern309) && UniqueAddress(module, kValidatePattern309)) ||
-                (UniqueAddress(module, kAdvertisePattern) && UniqueAddress(module, kValidatePattern));
-            if (!knownGates)
+            // TemporalDetail/SnippetVersion are std::string and read back (by copy) through
+            // LastStatus()'s own g_pluginLock. Hold the same lock for every write here so a
+            // reader on another thread never observes a torn string; release it before calling
+            // PatchPluginCeilings() below, which takes g_pluginLock itself.
+            bool kernelsMissing = false;
             {
-                LOG_WARN("MFG unlock: unsupported or ambiguous DLSSG {} signatures; left unchanged",
-                         g_status.SnippetVersion);
-                return;
-            }
+                std::lock_guard lock(g_pluginLock);
 
-            // Default on where it applies: below Blackwell the unlock alone produces frames that do
-            // not advance the picture, so the two belong together. One method per session, since both
-            // edit the same fatbin.
-            const auto method = ConfiguredTemporalMethod();
-            g_status.TemporalAttempted = method;
+                g_status.ModuleFound = true;
+                g_status.SnippetVersion = ModuleVersion(module);
 
-            if (method == TemporalMethod::Retarget)
-            {
-                g_status.KernelsRewritten = RewriteBlackwellKernels(module);
+                wchar_t modulePath[MAX_PATH] {};
+                GetModuleFileNameW(module, modulePath, MAX_PATH);
+                LOG_INFO("MFG unlock: DLSS-G provider {} at {}", g_status.SnippetVersion,
+                         wstring_to_string(modulePath));
 
-                g_status.TemporalDetail = g_status.KernelsRewritten > 0
-                                              ? "reused the Blackwell interpolation kernel"
-                                              : "no compatible Blackwell interpolation kernel image";
-            }
-            else if (method == TemporalMethod::Ptx)
-            {
-                Ptx::Result ptx;
+                // Validate both gates before touching either. Ambiguous/unknown versions remain unmodified.
+                const bool knownGates =
+                    (UniqueAddress(module, kAdvertisePattern309) && UniqueAddress(module, kValidatePattern309)) ||
+                    (UniqueAddress(module, kAdvertisePattern) && UniqueAddress(module, kValidatePattern));
+                if (!knownGates)
+                {
+                    LOG_WARN("MFG unlock: unsupported or ambiguous DLSSG {} signatures; left unchanged",
+                             g_status.SnippetVersion);
+                    return;
+                }
 
-                Ptx::Apply(module, ptx);
-                g_status.KernelsRewritten = static_cast<unsigned int>(ptx.redirected);
-                g_status.TemporalDetail = ptx.detail;
+                // Default on where it applies: below Blackwell the unlock alone produces frames that do
+                // not advance the picture, so the two belong together. One method per session, since both
+                // edit the same fatbin.
+                const auto method = ConfiguredTemporalMethod();
+                g_status.TemporalAttempted = method;
 
-                if (ptx.redirected > 0)
-                    LOG_INFO("MFG unlock: PTX temporal fix: {}", ptx.detail);
+                if (method == TemporalMethod::Retarget)
+                {
+                    g_status.KernelsRewritten = RewriteBlackwellKernels(module);
+
+                    g_status.TemporalDetail = g_status.KernelsRewritten > 0
+                                                  ? "reused the Blackwell interpolation kernel"
+                                                  : "no compatible Blackwell interpolation kernel image";
+                }
+                else if (method == TemporalMethod::Ptx)
+                {
+                    Ptx::Result ptx;
+
+                    Ptx::Apply(module, ptx);
+                    g_status.KernelsRewritten = static_cast<unsigned int>(ptx.redirected);
+                    g_status.TemporalDetail = ptx.detail;
+
+                    if (ptx.redirected > 0)
+                        LOG_INFO("MFG unlock: PTX temporal fix: {}", ptx.detail);
+                    else
+                        LOG_WARN("MFG unlock: PTX temporal fix not applied: {}", ptx.detail);
+                }
                 else
-                    LOG_WARN("MFG unlock: PTX temporal fix not applied: {}", ptx.detail);
-            }
-            else
-            {
-                g_status.TemporalDetail = "off by AdaBlackwellKernels=false in the ini";
+                {
+                    g_status.TemporalDetail = "off by AdaBlackwellKernels=false in the ini";
+                }
+
+                if (g_status.KernelsRewritten == 0)
+                {
+                    LOG_WARN("MFG unlock: no compatible interpolation kernels; frame-count gates left unchanged");
+                    kernelsMissing = true;
+                }
+                else
+                {
+                    const bool advertise = PatchAdvertise(module);
+                    const bool validate = PatchValidate(module);
+                    g_status.AdvertiseMatched = advertise;
+                    g_status.ValidateMatched = validate;
+
+                    if (advertise && validate)
+                        LOG_INFO("MFG unlock: nvngx_dlssg.dll patched for {} generated frames", kMaxGeneratedFrames);
+                    else
+                        LOG_WARN("MFG unlock: nvngx_dlssg.dll incomplete, advertise {}, validate {}", advertise,
+                                 validate);
+                }
             }
 
-            if (g_status.KernelsRewritten == 0)
-            {
-                LOG_WARN("MFG unlock: no compatible interpolation kernels; frame-count gates left unchanged");
+            if (kernelsMissing)
                 return;
-            }
-            const bool advertise = PatchAdvertise(module);
-            const bool validate = PatchValidate(module);
-            g_status.AdvertiseMatched = advertise;
-            g_status.ValidateMatched = validate;
-
-            if (advertise && validate)
-                LOG_INFO("MFG unlock: nvngx_dlssg.dll patched for {} generated frames", kMaxGeneratedFrames);
-            else
-                LOG_WARN("MFG unlock: nvngx_dlssg.dll incomplete, advertise {}, validate {}", advertise, validate);
 
             // A plugin that was loaded first has been waiting for this.
             PatchPluginCeilings();
@@ -706,7 +724,14 @@ bool MfgUnlock::Pending()
     return gpu.vendorId == VendorId::Nvidia && gpu.nvidiaArchInfo.architecture_id == NV_GPU_ARCHITECTURE_AD100;
 }
 
-const MfgUnlock::Status& MfgUnlock::LastStatus() { return g_status; }
+MfgUnlock::Status MfgUnlock::LastStatus()
+{
+    // TemporalDetail/SnippetVersion are std::string, mutated under g_pluginLock elsewhere in this
+    // file; returning a reference here let a caller (the menu/overlay thread) read a std::string
+    // mid-write from another thread with no synchronization at all. Lock and copy instead.
+    std::lock_guard lock(g_pluginLock);
+    return g_status;
+}
 
 MfgUnlock::TemporalMethod MfgUnlock::ConfiguredTemporalMethod()
 {

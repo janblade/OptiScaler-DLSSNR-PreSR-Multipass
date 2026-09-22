@@ -408,6 +408,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrScanMeter.set_from_config(readBool("DlssNr", "ScanMeter"));
             DlssNrScanTrim.set_from_config(readFloat("DlssNr", "ScanTrim"));
             DlssNrPasses.set_from_config(readUInt("DlssNr", "Passes"));
+            DlssNrPassFeedback.set_from_config(readFloat("DlssNr", "PassFeedback"));
             DlssNrScanAnchorValue.set_from_config(readFloat("DlssNr", "ScanAnchorValue"));
             DlssNrScanAnchorWhitePoint.set_from_config(readFloat("DlssNr", "ScanAnchorWhitePoint"));
             DlssNrScanAnchors.set_from_config(readString("DlssNr", "ScanAnchors"));
@@ -1366,6 +1367,7 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "ScanInverted", GetBoolValue(Instance()->DlssNrScanInverted.value_for_config()).c_str());
     ini.SetValue("DlssNr", "ScanMeter", GetBoolValue(Instance()->DlssNrScanMeter.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Passes", GetIntValue(Instance()->DlssNrPasses.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "PassFeedback", GetFloatValue(Instance()->DlssNrPassFeedback.value_for_config()).c_str());
     ini.SetValue("DlssNr", "UseProxy", GetBoolValue(Instance()->DlssNrUseProxy.value_for_config()).c_str());
     ini.SetValue("DlssNr", "ProxyProbe", GetBoolValue(Instance()->DlssNrProxyProbe.value_for_config()).c_str());
     // ScanExposure is a developer override with no menu control; persist it so a set ini keeps it.

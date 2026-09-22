@@ -65,6 +65,9 @@ cbuffer Params : register(b0)
     float gExposureTrimAnchorExposure7;
     float gExposureTrimAnchorTrim7;
     float gAutoExposureShadowProtection;
+    // How much of a multipass boundary's raw answer to take, versus staying at this pass's own
+    // proxy. 1.0 = today's behaviour. See DlssNrConstants::PassFeedback for the full comment.
+    float gPassFeedback;
 };
 
 // Bringing an impossible colour back into a possible one.
@@ -993,8 +996,19 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
         // as the Replace guard and Composed boundedRatio elsewhere in this file.
         float4 raw = gSource.Load(int3(id.xy, 0));
         float4 proxy = gModel.Load(int3(id.xy, 0));
-        float3 restored = CubeScaleResidual(SanitizeFinite3(proxy.rgb, 0.5), SanitizeFinite3(raw.rgb, 0.5));
-        gTarget[id.xy] = float4(saturate(restored), raw.a);
+        float3 sanProxy = SanitizeFinite3(proxy.rgb, 0.5);
+        float3 restored = CubeScaleResidual(sanProxy, SanitizeFinite3(raw.rgb, 0.5));
+        // Under-relax the hand-off to the next pass: 1.0 (default) takes the full restored answer,
+        // exactly today's behaviour. Below 1.0, blend back toward this pass's own proxy instead --
+        // the next pass then receives something closer to what the model was actually trained on
+        // (a frame it has not already edited) rather than compounding further off-distribution with
+        // every extra pass. A convex combination of two values already in the unit cube (proxy is
+        // guaranteed valid; restored was just range-restored above) cannot itself leave the cube, so
+        // this needs no additional clamp. The >= 1.0 branch is required, not an optimisation: lerp's
+        // own rounding (proxy + 1*(restored-proxy)) is not guaranteed bit-exact to `restored`, and
+        // this path must be exact so PassFeedback=1 is provably identical to code that predates it.
+        float3 damped = gPassFeedback >= 1.0 ? restored : sanProxy + gPassFeedback * (restored - sanProxy);
+        gTarget[id.xy] = float4(saturate(damped), raw.a);
         return;
     }
     if (gMode == 8)

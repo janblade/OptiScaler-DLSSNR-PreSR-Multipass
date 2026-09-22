@@ -569,6 +569,30 @@ void RenderMenu(Config* config, float menuResScale)
             HelpMarker("Process the image repeatedly. More passes strengthen the effect and increase GPU cost.\nEach pass has its own settings and history. Start with 1.");
         }
 
+        {
+            // Disabled rather than hidden at Passes == 1: the control exists, it just has nothing to
+            // do yet (there is no boundary between passes to damp), which is a clearer statement
+            // than making it vanish and reappear as Passes changes.
+            const bool noBoundary = config->DlssNrPasses.value_or_default() <= 1;
+            ImGui::BeginDisabled(noBoundary);
+            float feedback = config->DlssNrPassFeedback.value_or_default();
+            if (ImGui::SliderFloat("Pass feedback", &feedback, 0.0f, 1.0f,
+                                   feedback >= 1.0f ? "%.2f (full, current behaviour)" : "%.2f"))
+                config->DlssNrPassFeedback = std::clamp(feedback, 0.0f, 1.0f);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset##passfeedback"))
+                config->DlssNrPassFeedback = 1.0f;
+            ImGui::EndDisabled();
+
+            HelpMarker("How much of an extra pass's raw answer the next pass actually receives.\n\n"
+                       "1.0 is what every configuration has always done: the next pass gets the full "
+                       "answer. Every pass after the first is already being shown something the model "
+                       "was never trained on -- its own previous output instead of a raw frame -- so "
+                       "lower values hold each pass closer to that training distribution instead of "
+                       "drifting further from it with every extra pass, at the cost of a smaller "
+                       "cumulative edit.\n\nNo effect at Passes = 1: there is no boundary to damp.");
+        }
+
         ImGui::PopItemWidth();
 
         // Both rows share the same button labels, so each gets its own ImGui ID scope.

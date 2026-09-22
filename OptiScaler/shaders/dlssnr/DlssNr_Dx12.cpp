@@ -3051,6 +3051,13 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             clampParams.Mode = DlssNrMode_ClampProxy;
             clampParams.Width = workWidth;
             clampParams.Height = workHeight;
+            // Clamped here, not trusted from the ini: the shader treats PassFeedback as a convex
+            // blend weight between two values it has already guaranteed are in the unit cube, and
+            // that guarantee only holds for a weight in [0,1]. A hand-edited value outside it would
+            // push the result back out of range, which is exactly what this whole boundary exists
+            // to prevent.
+            clampParams.PassFeedback =
+                std::clamp(cfg.DlssNrPassFeedback.value_or_default(), 0.0f, 1.0f);
             if (!DispatchPass(cmdList, clampParams, finalAnswer, passInput, nullptr, nullptr, nullptr,
                                 passClampTarget, nullptr))
             {
@@ -3199,6 +3206,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             unsigned int workW;
             unsigned int workH;
             unsigned int passes;
+            float passFeedback;
         };
 
         static ComposeReport loggedCompose {};
@@ -3217,7 +3225,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                                          resolveParams.Transfer,
                                          g_nr.workWidth,
                                          g_nr.workHeight,
-                                         effectivePasses };
+                                         effectivePasses,
+                                         std::clamp(cfg.DlssNrPassFeedback.value_or_default(), 0.0f, 1.0f) };
 
         if (!loggedCompose.valid || loggedCompose.whitePoint != composeNow.whitePoint ||
             loggedCompose.transfer != composeNow.transfer || loggedCompose.colour != composeNow.colour ||
@@ -3226,15 +3235,18 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             loggedCompose.debugView != composeNow.debugView ||
             loggedCompose.compareMode != composeNow.compareMode ||
             loggedCompose.residual != composeNow.residual || loggedCompose.workW != composeNow.workW ||
-            loggedCompose.workH != composeNow.workH || loggedCompose.passes != composeNow.passes)
+            loggedCompose.workH != composeNow.workH || loggedCompose.passes != composeNow.passes ||
+            loggedCompose.passFeedback != composeNow.passFeedback)
         {
             loggedCompose = composeNow;
             LOG_INFO("DLSS-NR composition: paper white {:.2f}x, detail {:.2f}, colour {:.2f}, guard "
-                     "{:.1f}x, colour transform {}, transfer {}, model {}x{}, passes {}, debug view {}, compare {}",
+                     "{:.1f}x, colour transform {}, transfer {}, model {}x{}, passes {} (feedback {:.2f}), "
+                     "debug view {}, compare {}",
                      composeNow.whitePoint, composeNow.transfer, composeNow.colour, composeNow.maxRatio,
                      composeNow.passthrough != 0 ? "off (frame already tone mapped)" : "on (linear HDR)",
                      composeNow.residual == 1 ? "matched residual" : "classic", composeNow.workW,
-                     composeNow.workH, composeNow.passes, composeNow.debugView, composeNow.compareMode);
+                     composeNow.workH, composeNow.passes, composeNow.passFeedback, composeNow.debugView,
+                     composeNow.compareMode);
         }
 
         // Supersampling down-leg. Average the Nx model answer back to native with the chosen filter, so

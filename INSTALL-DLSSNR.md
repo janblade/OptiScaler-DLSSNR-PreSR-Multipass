@@ -35,6 +35,7 @@ the forwarder:
 |---|---|
 | `nvngx.dll_dlssnr.dll` | Replace with the vendor-neutral port build (from `Optional\` if your release includes it) instead of this project's NGX forwarder |
 | `nvngx_dlssnr.dll` | Unchanged — still required. The port reads its weights from this same file, so the correct runtime for the GPU generation is still needed from the table below. |
+| `nr_port.ini` | Copy alongside the port DLL if `Optional\` includes one. Configures the port runtime itself (fp16/DirectML acceleration, how often the coarsest network stage is recomputed) and is read from the same folder the DLL sits in. The DLL still runs without it, just on slower unoptimised defaults. |
 
 Everything else in this guide (install steps, INI keys, game notes) is unchanged. To confirm the
 port is loaded, open the `Insert` overlay's Neural Rendering menu: the status line reads

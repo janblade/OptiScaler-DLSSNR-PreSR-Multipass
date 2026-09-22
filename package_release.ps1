@@ -48,7 +48,7 @@ $root = Split-Path -Parent $PSCommandPath
 $flavour = if ($IncludeDlssFrameGeneration) { '-with-dlss-fg' } else { '' }
 if ($IncludeAmpereMfg) { $flavour += '-with-sm86-mfg' }
 $stage = "$root\release\$Version$flavour"
-$zip = "$root\release\OptiScaler-DLSSNR-$Version$flavour.zip"
+$zip = "$root\release\OptiScaler-DLSSNR-F5-$Version$flavour.zip"
 if ((Test-Path -LiteralPath $stage) -or (Test-Path -LiteralPath $zip)) {
     throw 'Release output already exists. Choose a new -Version; existing packages are never deleted or overwritten.'
 }

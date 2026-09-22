@@ -18,6 +18,30 @@ The two similarly named files are different and both are required:
 | `nvngx.dll_dlssnr.dll` | Open-source forwarder supplied by this project |
 | `nvngx_dlssnr.dll` | NVIDIA-derived Neural Rendering runtime supplied separately by the user |
 
+## Run without an NVIDIA GPU
+
+The steps above assume the `nvngx.dll_dlssnr.dll` forwarder in this release, which loads the
+NVIDIA driver's NGX core. On AMD and Intel GPUs that core cannot start, so Neural Rendering stays
+off.
+
+A separate, vendor-neutral build of `nvngx.dll_dlssnr.dll` runs the same model directly in D3D12
+compute and DirectML instead of going through NGX, so it needs no NVIDIA driver support. This fork
+does not build or ship it. If you have access to a build, drop it in as a same-named replacement
+for the forwarder:
+
+| File | Purpose |
+|---|---|
+| `nvngx.dll_dlssnr.dll` | Replace with the vendor-neutral port build instead of this project's NGX forwarder |
+| `nvngx_dlssnr.dll` | Unchanged — still required. The port reads its weights from this same file, so the correct runtime for the GPU generation is still needed from the table below. |
+
+Everything else in this guide (install steps, INI keys, game notes) is unchanged. To confirm the
+port is loaded, open the `Insert` overlay's Neural Rendering menu: the status line reads
+**Model backend: vendor-neutral port** instead of **NVIDIA NGX**.
+
+This path has only been exercised on an NVIDIA GPU with the port DLL forced in, not on real AMD
+or Intel hardware. If NR does not start, or the status line still says **NVIDIA NGX**, check that
+the file actually loaded is the port build and not the forwarder.
+
 ## Choose the correct runtime
 
 | GPU | Runtime | SHA-256 |

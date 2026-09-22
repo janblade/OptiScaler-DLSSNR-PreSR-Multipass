@@ -204,6 +204,9 @@ struct NrState
     std::string modelError;
 
     NVSDK_NGX_Parameter* capabilityParams = nullptr;
+    // The loaded nvngx.dll_dlssnr.dll is the vendor-neutral port (it exports dlssnr_backend_id): it runs the
+    // model itself on any GPU and never reads the capability block, so no NVIDIA NGX core is needed.
+    bool isPort = false;
     void* feature = nullptr;
     bool featurePendingSubmission = false;
     unsigned long long featureCreateEpoch = 0;
@@ -593,6 +596,9 @@ bool EnsureForwarder()
         g_nr.forwarder, "dlssnr_query_scaling_ratio");
     g_nr.lastRatioStage = (const int*) GetProcAddress(g_nr.forwarder, "dlssnr_last_ratio_stage");
 
+    // Only the vendor-neutral port exports this; the NGX forwarder does not.
+    g_nr.isPort = GetProcAddress(g_nr.forwarder, "dlssnr_backend_id") != nullptr;
+
     g_nr.create = (PFN_NrCreate) GetProcAddress(g_nr.forwarder, "dlssnr_call_create");
     g_nr.evaluate = (PFN_NrEvaluate) GetProcAddress(g_nr.forwarder, "dlssnr_call_evaluate_v2");
     g_nr.release = (PFN_NrRelease) GetProcAddress(g_nr.forwarder, "dlssnr_call_release");
@@ -610,7 +616,8 @@ bool EnsureForwarder()
         return false;
     }
 
-    LOG_INFO("DLSS-NR forwarder loaded from {}", path.string());
+    LOG_INFO("DLSS-NR forwarder loaded from {} ({})", path.string(),
+             g_nr.isPort ? "vendor-neutral port, no NGX core needed" : "NVIDIA NGX");
     return true;
 }
 
@@ -1959,7 +1966,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     if (cfg.DlssNrProxyProbe.value_or_default())
         ProbeProxyDispatch(cmdList);
 
-    if (!EnsureForwarder() || !EnsureCapabilityParams(device))
+    // The port needs no capability block, so it also runs where the NGX core cannot start (AMD, Intel).
+    if (!EnsureForwarder() || (!g_nr.isPort && !EnsureCapabilityParams(device)))
     {
         g_nr.failed = true;
         LOG_ERROR("DLSS-NR unavailable: {}", g_nr.reason);
@@ -3061,7 +3069,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // Once, a few seconds in, so it lands after the values have been written at least once.
     static bool tuningReported = false;
 
-    if (!tuningReported && g_frames > 240)
+    if (!tuningReported && g_frames > 240 && g_nr.capabilityParams != nullptr)
     {
         tuningReported = true;
 
@@ -3987,6 +3995,8 @@ CalibrationReading Calibration()
 bool IsRunning() { return g_nr.feature != nullptr && !g_nr.failed; }
 
 const char* FailureReason() { return g_nr.failed ? g_nr.reason : ""; }
+
+const char* BackendName() { return g_nr.forwarder == nullptr ? "" : g_nr.isPort ? "vendor-neutral port" : "NVIDIA NGX"; }
 
 // What the game offers by way of exposure, and what has been read from it. For the menu, so a user
 // can see whether this game supplies one at all without having to read a log.

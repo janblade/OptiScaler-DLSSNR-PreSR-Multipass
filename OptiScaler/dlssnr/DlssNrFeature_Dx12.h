@@ -113,6 +113,9 @@ std::string DeferredDlssStatus();
 // Why it is not, if it is not. Empty while it is running or has not been tried yet.
 const char* FailureReason();
 
+// Which model backend the loaded nvngx.dll_dlssnr.dll is: "NVIDIA NGX" or "vendor-neutral port". Empty until it has been loaded.
+const char* BackendName();
+
 // What the game offers by way of exposure. Observed every frame whether or not the setting is on, so
 // the menu can say whether turning it on would do anything here.
 struct ExposureStatus
@@ -133,6 +136,11 @@ ExposureStatus AutoExposureStatus();
 // the manual slider, or (post-SR + Auto) the derived render:output ratio. So the menu can show the
 // live value instead of the stale manual one while Auto is overriding it.
 int CurrentModelResolutionPercent();
+
+// The size NR hands the model, in pixels, or 0x0 before the first frame. The network pools that 2x2 before
+// its body runs, so the body sees half of it (rounded up); the menu and log show both so tuning is not
+// done against the wrong number.
+void CurrentModelSize(unsigned int& width, unsigned int& height);
 
 // The white point the exposure meter has settled on, or 0 if it has not taken a reading yet. For the
 // overlay, so the number in use is visible rather than inferred.

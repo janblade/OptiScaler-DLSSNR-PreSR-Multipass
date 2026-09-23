@@ -18,6 +18,33 @@ The two similarly named files are different and both are required:
 | `nvngx.dll_dlssnr.dll` | Open-source forwarder supplied by this project |
 | `nvngx_dlssnr.dll` | NVIDIA-derived Neural Rendering runtime supplied separately by the user |
 
+## Run without an NVIDIA GPU
+
+The steps above assume the `nvngx.dll_dlssnr.dll` forwarder in this release, which loads the
+NVIDIA driver's NGX core. On AMD and Intel GPUs that core cannot start, so Neural Rendering stays
+off.
+
+A separate, vendor-neutral build of `nvngx.dll_dlssnr.dll` runs the same model directly in D3D12
+compute and DirectML instead of going through NGX, so it needs no NVIDIA driver support. This
+fork's own source does not include it — it is built by a separate toolchain outside this
+repository — but some release zips include a prebuilt copy under `Optional\` for convenience; check
+whether yours does before looking elsewhere. Either way, drop it in as a same-named replacement for
+the forwarder:
+
+| File | Purpose |
+|---|---|
+| `nvngx.dll_dlssnr.dll` | Replace with the vendor-neutral port build (from `Optional\` if your release includes it) instead of this project's NGX forwarder |
+| `nvngx_dlssnr.dll` | Unchanged — still required. The port reads its weights from this same file, so the correct runtime for the GPU generation is still needed from the table below. |
+| `nr_port.ini` | Copy alongside the port DLL if `Optional\` includes one. Configures the port runtime itself (fp16/DirectML acceleration, how often the coarsest network stage is recomputed) and is read from the same folder the DLL sits in. The DLL still runs without it, just on slower unoptimised defaults. |
+
+Everything else in this guide (install steps, INI keys, game notes) is unchanged. To confirm the
+port is loaded, open the `Insert` overlay's Neural Rendering menu: the status line reads
+**Model backend: vendor-neutral port** instead of **NVIDIA NGX**.
+
+This path has only been exercised on an NVIDIA GPU with the port DLL forced in, not on real AMD
+or Intel hardware. If NR does not start, or the status line still says **NVIDIA NGX**, check that
+the file actually loaded is the port build and not the forwarder.
+
 ## Choose the correct runtime
 
 | GPU | Runtime | SHA-256 |
@@ -99,8 +126,25 @@ Use `auto` for the default behavior. Styles retain `Pass2Style` / `Pass3Style`.
 
 These controls apply to D3D12 multipass and its bridges, both before/after SR and after native RR.
 Native Vulkan and the driver-proxy backend remain single-pass. Preset hints are still transmitted
-at model creation, but a changed hint is not proof of a changed model. They are preserved under
+at model creation, but the runtime version 310.8 contains a single built-in preset and falls back to
+it for any hint, so changing a hint is not expected to change the picture. They are preserved under
 **Advanced preset hints (effect unverified)** and in the INI for compatibility.
+
+## What the model sees
+
+The model averages the picture it is given 2x2 before its main network runs, then brings the result
+back to full size at the end. So the main network always works at **half** of the size NR hands it,
+and that halved size is what its cost and its finest added detail follow. **Model resolution** is
+applied on top of that: at 50% the main network sees a quarter of the frame's width and height. The
+menu shows both numbers under the slider and `OptiScaler.log` prints them when NR starts.
+
+A reduced model size is rounded to a multiple of 16 so it holds still under dynamic resolution
+instead of rebuilding the model for a pixel of difference. A pass at the native size is never rounded.
+
+It is also worth knowing what the model does not take: it has no jitter input and no camera
+matrices (colour, its own previous output, motion vectors and optional depth/UI/mask only), and its
+output is limited to the 0..1 range, which is why NR works on a tone-mapped copy of the frame
+rather than replacing HDR values.
 
 ## Padded DLSS input sizes
 

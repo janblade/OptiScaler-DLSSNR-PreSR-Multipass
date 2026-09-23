@@ -1317,6 +1317,9 @@ static void printQuirks(flag_set<GameQuirk>& quirks)
     if (quirks & GameQuirk::CreateSLOnThe2ndDevice)
         stringQuirks.push_back("Create SL on the 2nd device");
 
+    if (quirks & GameQuirk::Kcd2DlssgHdr10)
+        stringQuirks.push_back("KCD2 native HDR10 for DLSSG");
+
     state->detectedQuirks.append_range(stringQuirks);
     for (auto& stringQuirk : stringQuirks)
         spdlog::info("Quirk: {}", stringQuirk);
@@ -2191,6 +2194,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
     case DLL_PROCESS_DETACH:
         State::Instance().isShuttingDown = true;
+
+        // ExitProcess has already stopped other threads. No DLL unloading, logging,
+        // thread joins or GPU cleanup is safe here; the OS reclaims process resources.
+        if (lpReserved != nullptr)
+            break;
 
         // Unhooking and cleaning stuff causing issues during shutdown.
         // Disabled for now to check if it cause any issues

@@ -24,6 +24,7 @@
 
 #include <dxgi1_4.h>
 #include <shared_mutex>
+#include <atomic>
 #include "detours/detours.h"
 #include <ankerl/unordered_dense.h>
 #include <misc/IdentifyGpu.h>
@@ -33,7 +34,9 @@ static NgxFeatureRegistry HandleToFeature;
 
 static ID3D12Device* D3D12Device = nullptr;
 static int evalCounter = 0;
-static bool shutdown = false;
+// Read from ShutdownDx12's reentrancy guard, which can now be reached from another DLL's own
+// detach callback calling back in here -- same cross-thread-read reasoning as isShuttingDown.
+static std::atomic_bool shutdown { false };
 static bool _skipInit = false;
 static wchar_t const** paths;
 
@@ -371,8 +374,20 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Init_with_ProjectID(
 
 #pragma region DLSS Shutdown Calls
 
-NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Shutdown(void)
+// Shared by both entry points below so the reentrancy guard is checked exactly once per
+// top-level call. Shutdown1 used to set `shutdown`/`nvngxDx12Inited` itself before delegating to
+// Shutdown() at its tail -- adding the guard to each function separately meant Shutdown1's own
+// call into Shutdown() would immediately no-op on its own flag, skipping Shutdown()'s real
+// cleanup body on every normal (non-exit) Shutdown1 call. Consolidating avoids that.
+static NVSDK_NGX_Result ShutdownDx12(ID3D12Device* requestedDevice)
 {
+    // A DLL still detaching after ours (or the driver, reentrantly) calling back in here once
+    // DllMain has already begun teardown is not safe to act on; that decision was already made.
+    if (State::Instance().isShuttingDown || shutdown)
+        return NVSDK_NGX_Result_Success;
+    if (!State::Instance().nvngxDx12Inited && !NVNGXProxy::IsDx12Inited() && Dx12Contexts.empty())
+        return NVSDK_NGX_Result_Success;
+
     shutdown = true;
     State::Instance().nvngxDx12Inited = false;
 
@@ -380,17 +395,35 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Shutdown(void)
 
     State::Instance().currentFeature = nullptr;
 
+    if (requestedDevice && State::Instance().activeFgNvngx != FGNvngxReplacement::None)
+    {
+        Nvngx_FG::D3D12_Shutdown1(requestedDevice);
+    }
+
     // Unhooking and cleaning stuff causing issues during shutdown.
     // Disabled for now to check if it cause any issues
     // UnhookAll();
     DLSSFeatureDx12::Shutdown(D3D12Device);
 
     // Added `&& !State::Instance().isShuttingDown` hack for crash on exit
-    if (Config::Instance()->DLSSEnabled.value_or_default() && NVNGXProxy::IsDx12Inited() &&
-        NVNGXProxy::D3D12_Shutdown() != nullptr && !State::Instance().isShuttingDown)
+    if (Config::Instance()->DLSSEnabled.value_or_default() && NVNGXProxy::IsDx12Inited())
     {
-        auto result = NVNGXProxy::D3D12_Shutdown()();
-        NVNGXProxy::SetDx12Inited(false);
+        // Prefer the device-specific entry point when the caller gave us a device and the
+        // runtime exposes it; otherwise fall back to whichever variant is actually available.
+        const auto stop = NVNGXProxy::D3D12_Shutdown();
+        const auto stopDevice = NVNGXProxy::D3D12_Shutdown1();
+
+        if (stop || stopDevice)
+        {
+            if (requestedDevice && stopDevice)
+                stopDevice(requestedDevice);
+            else if (stop)
+                stop();
+            else
+                stopDevice(requestedDevice);
+
+            NVNGXProxy::SetDx12Inited(false);
+        }
     }
 
     // Unhooking and cleaning stuff causing issues during shutdown.
@@ -400,16 +433,24 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Shutdown(void)
     // Disabled to prevent crash
     if (State::Instance().currentFG != nullptr && State::Instance().activeFgInput == FGInput::Upscaler)
     {
-        if (State::Instance().isShuttingDown)
-            State::Instance().currentFG->Shutdown();
-        else
-            State::Instance().currentFG->DestroyFGContext();
-
+        // isShuttingDown is always false here (the top-of-function guard already returned for
+        // that case), so this used to be a dead branch that could never take the Shutdown()
+        // side. Left as DestroyFGContext() only, not unified on Deactivate() the way the source
+        // commit does it: DLSSG_Dx12::Deactivate() calls StreamlineProxy::DLSSGSetOptions(),
+        // already flagged in this fork with "Potential crash point on exit" -- calling that from
+        // the one path meant to be safe during a post-detach reentrant call would reintroduce
+        // exactly the risk this guard exists to remove.
+        State::Instance().currentFG->DestroyFGContext();
         State::Instance().clearCapturedHudlesses = true;
     }
 
     shutdown = false;
 
+    // Kept unconditional, matching the pre-existing behaviour exactly: the original
+    // NVSDK_NGX_D3D12_Shutdown1 called Nvngx_FG::D3D12_Shutdown1(InDevice) itself, then
+    // delegated to NVSDK_NGX_D3D12_Shutdown, whose body called Nvngx_FG::D3D12_Shutdown() too --
+    // both ran for a Shutdown1 call. Not narrowing that here; it predates this change and
+    // whether it's intentional redundancy or a latent bug is a separate question.
     if (State::Instance().activeFgNvngx != FGNvngxReplacement::None)
     {
         Nvngx_FG::D3D12_Shutdown();
@@ -420,26 +461,9 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Shutdown(void)
     return NVSDK_NGX_Result_Success;
 }
 
-NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Shutdown1(ID3D12Device* InDevice)
-{
-    shutdown = true;
-    State::Instance().nvngxDx12Inited = false;
+NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Shutdown(void) { return ShutdownDx12(nullptr); }
 
-    if (State::Instance().activeFgNvngx != FGNvngxReplacement::None)
-    {
-        Nvngx_FG::D3D12_Shutdown1(InDevice);
-    }
-
-    // Added `&& !State::Instance().isShuttingDown` hack for crash on exit
-    if (Config::Instance()->DLSSEnabled.value_or_default() && NVNGXProxy::IsDx12Inited() &&
-        NVNGXProxy::D3D12_Shutdown1() != nullptr && !State::Instance().isShuttingDown)
-    {
-        auto result = NVNGXProxy::D3D12_Shutdown1()(InDevice);
-        NVNGXProxy::SetDx12Inited(false);
-    }
-
-    return NVSDK_NGX_D3D12_Shutdown();
-}
+NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Shutdown1(ID3D12Device* InDevice) { return ShutdownDx12(InDevice); }
 
 #pragma endregion
 
@@ -814,6 +838,9 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
 
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* InHandle)
 {
+    if (State::Instance().isShuttingDown)
+        return NVSDK_NGX_Result_Success;
+
     LOG_FUNC();
 
     if (!InHandle)

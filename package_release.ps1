@@ -7,6 +7,11 @@
 #
 # What is deliberately NOT here: nvngx_dlssnr.dll. That is NVIDIA's, it is not ours to redistribute,
 # and the user supplies their own copy per game folder. Only the ~108 KB forwarder ships.
+#
+# -PortBackendDll is the one exception to "only the forwarder ships": a vendor-neutral build of the
+# same nvngx.dll_dlssnr.dll interface that runs the model itself (no NVIDIA NGX core needed, so it
+# works on AMD/Intel). This script does not build it. Supplying the path is what opts it in; it never
+# replaces the default forwarder at the package root, only adds it under Optional\.
 
 param(
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]*$')]
@@ -17,7 +22,9 @@ param(
     [switch]$IncludeAmpereMfg,
     [switch]$AcceptAmpereMfgLicenses,
     [string]$HybridAssetsDirectory,
-    [string]$StreamlineArchive
+    [string]$StreamlineArchive,
+    [string]$PortBackendDll,
+    [string]$PortBackendIni
 )
 
 $ErrorActionPreference = "Stop"
@@ -42,7 +49,7 @@ $root = Split-Path -Parent $PSCommandPath
 $flavour = if ($IncludeDlssFrameGeneration) { '-with-dlss-fg' } else { '' }
 if ($IncludeAmpereMfg) { $flavour += '-with-sm86-mfg' }
 $stage = "$root\release\$Version$flavour"
-$zip = "$root\release\OptiScaler-DLSSNR-$Version$flavour.zip"
+$zip = "$root\release\OptiScaler-DLSSNR-F5-$Version$flavour.zip"
 if ((Test-Path -LiteralPath $stage) -or (Test-Path -LiteralPath $zip)) {
     throw 'Release output already exists. Choose a new -Version; existing packages are never deleted or overwritten.'
 }
@@ -190,9 +197,11 @@ if ($targetProcess.Line -ne 'TargetProcessName=auto') {
 }
 Write-Host "process filter: portable (TargetProcessName=auto)"
 
-# Belt and braces: nothing that is a build artifact, and nothing from the abandoned warp work, may
-# survive into the zip regardless of how it got into the staging folder.
-Get-ChildItem $stage -Recurse -Include *.exp, *.lib, *.pdb, *.ilk, *latewarp* | Remove-Item -Force
+# Belt and braces: nothing that is a build artifact, nothing from the abandoned warp work, no ASI plugin
+# of any kind (the package ships OptiScaler.dll only, and plugin loading is off by default), and no research
+# tracer or its captures (nrtrace*: hooks the CUDA driver and dumps modules next to itself) may survive into
+# the zip regardless of how it got into the staging folder.
+Get-ChildItem $stage -Recurse -Include *.exp, *.lib, *.pdb, *.ilk, *latewarp*, *.asi, *nrtrace* | Remove-Item -Recurse -Force
 
 # No feature may ship switched on by accident.
 #
@@ -268,6 +277,78 @@ if ($IncludeAmpereMfg) {
         Copy-Item -LiteralPath $notices -Destination "$sm86DestDir\THIRD_PARTY_NOTICES.txt"
     }
     Write-Host "RTX 20/30 (SM75/SM86) MFG: dlssg_sm86.dll, dlssg_sm86.ini, and notices staged"
+}
+
+if ($PortBackendDll) {
+    if (-not (Test-Path -LiteralPath $PortBackendDll -PathType Leaf)) {
+        throw "PortBackendDll not found: $PortBackendDll"
+    }
+
+    $portBytes = [System.IO.File]::ReadAllBytes($PortBackendDll)
+    $portText = [System.Text.Encoding]::ASCII.GetString($portBytes)
+
+    # Same export contract as the forwarder, so a stale or unrelated file is caught before it ships.
+    $portExports = @("dlssnr_call_create", "dlssnr_call_evaluate_v2", "dlssnr_backend_id")
+    $portMissing = @($portExports | Where-Object { $portText.IndexOf($_) -lt 0 })
+    if ($portMissing.Count -gt 0) {
+        throw "PortBackendDll is missing required exports: $($portMissing -join ', ')"
+    }
+
+    # A local dev-machine path or PDB reference baked into the binary would name a private build
+    # environment in a public release. Match path context, not a bare substring -- the CRT's own
+    # locale tables contain plain month names like "January", which a bare username check like
+    # "Jan" would otherwise flag.
+    $leakPatterns = @('.pdb', ('\Users\' + [Environment]::UserName + '\'), $root)
+    $leaks = @($leakPatterns | Where-Object { $portText.IndexOf($_, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
+    if ($leaks.Count -gt 0) {
+        throw "REFUSING: PortBackendDll appears to contain a local path or identifying string ($($leaks -join ', ')). Rebuild without embedding one, or strip it, before packaging."
+    }
+
+    # Own subfolder, never the package root: the default forwarder is what a normal user needs, and
+    # this is an opt-in swap for GPUs it cannot run on.
+    $optionalDir = "$stage\Optional"
+    New-Item -ItemType Directory -Force -Path $optionalDir | Out-Null
+    Copy-Item -LiteralPath $PortBackendDll -Destination "$optionalDir\nvngx.dll_dlssnr.dll" -Force
+
+    # nr_port.ini configures the port runtime itself (fp16/dml/attn16/vit_every/mv_flip) and is read
+    # from the same folder the DLL sits in. Optional because a bare DLL still runs -- on its slower,
+    # unoptimised defaults -- but every build this project has actually shipped for testing has carried
+    # a tuned one alongside it, so a release without it silently regresses whoever uses the port.
+    $portIniShipped = $false
+    if ($PortBackendIni) {
+        if (-not (Test-Path -LiteralPath $PortBackendIni -PathType Leaf)) {
+            throw "PortBackendIni not found: $PortBackendIni"
+        }
+
+        $iniText = Get-Content -LiteralPath $PortBackendIni -Raw
+        $iniLeaks = @($leakPatterns | Where-Object { $iniText.IndexOf($_, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
+        if ($iniLeaks.Count -gt 0) {
+            throw "REFUSING: PortBackendIni appears to contain a local path or identifying string ($($iniLeaks -join ', ')). Strip it before packaging."
+        }
+
+        Copy-Item -LiteralPath $PortBackendIni -Destination "$optionalDir\nr_port.ini" -Force
+        $portIniShipped = $true
+        Write-Host "vendor-neutral port backend: nr_port.ini staged alongside it"
+    } else {
+        Write-Warning "PortBackendDll supplied without -PortBackendIni: shipping the DLL on its unoptimised defaults."
+    }
+
+    $portReadme = @"
+This is an alternate nvngx.dll_dlssnr.dll build. Unlike the one at the package root, it runs the
+Neural Rendering model itself (D3D12 compute + DirectML) instead of going through the NVIDIA NGX
+core, so it also works on AMD and Intel GPUs.
+
+To use it: copy this file$(if ($portIniShipped) { " and nr_port.ini" }) over the nvngx.dll_dlssnr.dll in the game folder$(if ($portIniShipped) { "" }), replacing
+the default one. nvngx_dlssnr.dll (the separate runtime file) is still required either way; see
+INSTALL-DLSSNR.md.
+$(if ($portIniShipped) { "`nnr_port.ini next to it carries the tuned settings this build was tested with (fp16/dml/attn16`nacceleration, vit_every=2). Without it the DLL still runs, just on slower unoptimised defaults.`n" } else { "" })
+To confirm it loaded, open the Insert overlay's Neural Rendering menu: the status line reads
+"Model backend: vendor-neutral port" instead of "Model backend: NVIDIA NGX".
+
+Not validated on real AMD or Intel hardware.
+"@
+    Set-Content -LiteralPath "$optionalDir\README.txt" -Value $portReadme -Encoding utf8 -NoNewline
+    Write-Host "vendor-neutral port backend: staged under Optional\ (not the default)"
 }
 
 # Hash every shipped file after the staging tree is final. Use forward slashes so the list is easy

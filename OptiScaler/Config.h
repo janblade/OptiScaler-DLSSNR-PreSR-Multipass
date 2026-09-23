@@ -342,8 +342,10 @@ class Config
     CustomOptional<bool> DlssNrHoldFrame { false };
 
 
-    // The most the pass may multiply or divide a pixel by. A detail pass has no business restyling a
-    // light source, whatever the model returns.
+    // The most the pass may brighten a pixel, in Composed mode -- a detail pass has no business
+    // restyling a light source, whatever the model returns. Darkening in Composed is intentionally
+    // uncapped. Replace mode reads the same number but still bounds both directions (a different
+    // guard, for a different reason -- see ApplyReplaceGuard's own comment in dlssnr.hlsl).
     CustomOptional<float> DlssNrMaxRatio { 2.0f };
 
     // How a model that worked below the frame's size is brought back. 0 classic, 1 matched
@@ -566,6 +568,16 @@ class Config
     // again -- so 3 costs three times, near enough. There is no shortcut and no amortisation: the
     // passes are sequential and each one needs the last one's output.
     CustomOptional<uint32_t> DlssNrPasses { 1 };
+
+    // How much of an interpass boundary's raw answer the next pass actually receives.
+    // next_input = proxy + PassFeedback * (restored - proxy). 1.0 (default) is exactly today's
+    // behaviour: the next pass gets the full restored answer, same as before this control existed.
+    //
+    // Every pass below this one has already stepped once further off the training distribution
+    // than the model was built for (see DlssNrPasses above) -- this is the dial on how far. Lower
+    // values keep each pass's input closer to a plausible "frame the model hasn't already touched",
+    // at the cost of a smaller cumulative edit. Has no effect at Passes == 1 (no boundary exists).
+    CustomOptional<float> DlssNrPassFeedback { 1.0f };
 
     // Which depth convention the model is told the guide uses.
     //

@@ -511,6 +511,9 @@ void RenderMenu(Config* config, float menuResScale)
                 ImGui::SetTooltip("Time between the start and end of NR on the GPU, including delays while other work runs.\nCompare FPS to check the effect on game performance.");
             if (finishedPicture)
                 ImGui::TextDisabled("Includes time shared with other GPU work.");
+
+            if (!vulkan && DlssNr::BackendName()[0] != 0)
+                ImGui::TextDisabled("Model backend: %s", DlssNr::BackendName());
         }
 
         ImGui::SeparatorText("Multipass Presets");
@@ -564,6 +567,30 @@ void RenderMenu(Config* config, float menuResScale)
                 config->DlssNrPasses = 1u;
 
             HelpMarker("Process the image repeatedly. More passes strengthen the effect and increase GPU cost.\nEach pass has its own settings and history. Start with 1.");
+        }
+
+        {
+            // Disabled rather than hidden at Passes == 1: the control exists, it just has nothing to
+            // do yet (there is no boundary between passes to damp), which is a clearer statement
+            // than making it vanish and reappear as Passes changes.
+            const bool noBoundary = config->DlssNrPasses.value_or_default() <= 1;
+            ImGui::BeginDisabled(noBoundary);
+            float feedback = config->DlssNrPassFeedback.value_or_default();
+            if (ImGui::SliderFloat("Pass feedback", &feedback, 0.0f, 1.0f,
+                                   feedback >= 1.0f ? "%.2f (full, current behaviour)" : "%.2f"))
+                config->DlssNrPassFeedback = std::clamp(feedback, 0.0f, 1.0f);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset##passfeedback"))
+                config->DlssNrPassFeedback = 1.0f;
+            ImGui::EndDisabled();
+
+            HelpMarker("How much of an extra pass's raw answer the next pass actually receives.\n\n"
+                       "1.0 is what every configuration has always done: the next pass gets the full "
+                       "answer. Every pass after the first is already being shown something the model "
+                       "was never trained on -- its own previous output instead of a raw frame -- so "
+                       "lower values hold each pass closer to that training distribution instead of "
+                       "drifting further from it with every extra pass, at the cost of a smaller "
+                       "cumulative edit.\n\nNo effect at Passes = 1: there is no boundary to damp.");
         }
 
         ImGui::PopItemWidth();
@@ -792,7 +819,17 @@ void RenderMenu(Config* config, float menuResScale)
             pendingScale = -1;
         }
 
-        HelpMarker("NR resolution relative to the image it processes. 50% halves width and height; 100% uses the full size.\nLower values reduce cost and fine detail. Above 100% increases cost. Game output resolution is unchanged.");
+        HelpMarker("NR resolution relative to the image it processes. 50% halves width and height; 100% uses the full size.\nLower values reduce cost and fine detail. Above 100% increases cost. Game output resolution is unchanged.\nThe model averages its input 2x2 before its main network runs, so that network always works at half of this size: cost follows the halved size, and so does the finest detail it can add.");
+
+        {
+            unsigned int modelWidth = 0;
+            unsigned int modelHeight = 0;
+            DlssNr::CurrentModelSize(modelWidth, modelHeight);
+
+            if (modelWidth != 0 && modelHeight != 0)
+                ImGui::TextDisabled("Model input %ux%u; its main network runs at %ux%u.", modelWidth, modelHeight,
+                                    (modelWidth + 1) / 2, (modelHeight + 1) / 2);
+        }
 
         if (ImGui::Checkbox("Auto (post-SR only)", &resolutionAuto))
             config->DlssNrModelResolutionAuto = resolutionAuto;
@@ -869,7 +906,7 @@ void RenderMenu(Config* config, float menuResScale)
                          IM_ARRAYSIZE(reversibleNames)))
             config->DlssNrReversibleMode = (uint32_t) reversible;
 
-        HelpMarker("Choose how HDR brightness is mapped for NR.\nSoft knee compresses highlights. Reversible curve uses a reversible mapping. Balanced preserves midtones and compresses highlights.\nComposed uses the strength control and the Highlight guard below. Replace bypasses the strength control (the model's answer applies directly, uncomposited) but the Highlight guard still bounds it -- lower it if Replace flickers or shows banding near bright highlights.");
+        HelpMarker("Choose how HDR brightness is mapped for NR.\nSoft knee compresses highlights. Reversible curve uses a reversible mapping. Balanced preserves midtones and compresses highlights.\nComposed uses the strength control and the Highlight guard below (brightening only; darkening is not capped in Composed). Replace bypasses the strength control (the model's answer applies directly, uncomposited) but the same Highlight guard number still bounds it in both directions -- lower it if Replace flickers or shows banding near bright highlights.");
 
         if (reversible == 2 || reversible == 4)
         {
@@ -1054,8 +1091,8 @@ void RenderMenu(Config* config, float menuResScale)
         // Each option also says whether it can actually do anything in THIS game, in colour, so the
         // choice is made on what is available rather than on what sounds best.
         {
-            const auto ex = DlssNr::GameExposureStatus();
             const bool vk = DlssNr::IsRunningVk();
+            const auto ex = vk ? DlssNr::GameExposureStatusVk() : DlssNr::GameExposureStatus();
             const bool haveExposure = HaveGameExposure();
 
             const float anchorNow = DlssNr::ExposureScan::BestValue();
@@ -1089,9 +1126,6 @@ void RenderMenu(Config* config, float menuResScale)
                 else if (!haveExposure)
                     ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
                                        "No game exposure available. Using manual paper white.");
-                else if (vk)
-                    ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
-                                       "Using game exposure.");
                 else if (ex.exposure > 1e-6f)
                 {
                     const float baseWhitePoint = ex.preExposure / ex.exposure;
@@ -1382,7 +1416,7 @@ void RenderMenu(Config* config, float menuResScale)
         if (ImGui::SmallButton("Reset##guard"))
             config->DlssNrMaxRatio = 2.0f;
 
-        HelpMarker("Limit how much NR can brighten or darken a pixel. Lower values restrict highlight changes; higher values allow more.");
+        HelpMarker("Limit how much NR can brighten a pixel; darkening is not capped. Lower values restrict highlight changes; higher values allow more.\nReplace mode still bounds darkening too -- a different guard, for a different reason.");
 
         // Directly under the white point, because that is the number it moves and the number the
         // anchor captures. It used to sit under Inspect, a whole section away from the slider it

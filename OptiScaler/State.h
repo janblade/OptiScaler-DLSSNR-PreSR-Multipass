@@ -10,6 +10,7 @@
 #include <set>
 #include <deque>
 #include <mutex>
+#include <atomic>
 #include <sl_dlss_g.h>
 #include <vulkan/vulkan.h>
 #include <ankerl/unordered_dense.h>
@@ -98,8 +99,9 @@ class State
   public:
     static State& Instance()
     {
-        static State instance;
-        return instance;
+        // Hooks still read the shutdown flag during other DLLs' detach callbacks.
+        static auto* instance = new State;
+        return *instance;
     }
 
     std::string gameExe;
@@ -310,7 +312,7 @@ class State
     std::optional<ApiUpscalerInput> setInputApiName;
     ApiUpscalerInput currentInputApiName;
 
-    bool isShuttingDown = false;
+    std::atomic_bool isShuttingDown { false };
     std::set<PVOID> modulesToFree;
 
     // menu warnings

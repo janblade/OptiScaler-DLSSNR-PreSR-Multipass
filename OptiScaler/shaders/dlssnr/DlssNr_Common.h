@@ -287,6 +287,15 @@ struct alignas(256) DlssNrConstants
     float ExposureTrimAnchorExposure7;
     float ExposureTrimAnchorTrim7;
     float AutoExposureShadowProtection; // percent, 0..100
+
+    // How much of a multipass boundary's raw answer to take, versus staying at this pass's own
+    // proxy: next_input = proxy + PassFeedback * (restored - proxy). 1.0 (default) is exactly
+    // today's behaviour -- the boundary hands the next pass the full restored answer. Lower values
+    // keep every pass closer to what the model was actually trained to receive (a frame that has
+    // not already been through this same model), rather than compounding further off-distribution
+    // with each pass. Only read at DlssNrMode_ClampProxy; a single-pass configuration never reaches
+    // this branch. Trailing scalar, mirrored in the shader cbuffer.
+    float PassFeedback;
 };
 static_assert(sizeof(DlssNrConstants) == 256);
 

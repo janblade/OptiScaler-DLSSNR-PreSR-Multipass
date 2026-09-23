@@ -204,6 +204,9 @@ struct NrState
     std::string modelError;
 
     NVSDK_NGX_Parameter* capabilityParams = nullptr;
+    // The loaded nvngx.dll_dlssnr.dll is the vendor-neutral port (it exports dlssnr_backend_id): it runs the
+    // model itself on any GPU and never reads the capability block, so no NVIDIA NGX core is needed.
+    bool isPort = false;
     void* feature = nullptr;
     bool featurePendingSubmission = false;
     unsigned long long featureCreateEpoch = 0;
@@ -593,6 +596,9 @@ bool EnsureForwarder()
         g_nr.forwarder, "dlssnr_query_scaling_ratio");
     g_nr.lastRatioStage = (const int*) GetProcAddress(g_nr.forwarder, "dlssnr_last_ratio_stage");
 
+    // Only the vendor-neutral port exports this; the NGX forwarder does not.
+    g_nr.isPort = GetProcAddress(g_nr.forwarder, "dlssnr_backend_id") != nullptr;
+
     g_nr.create = (PFN_NrCreate) GetProcAddress(g_nr.forwarder, "dlssnr_call_create");
     g_nr.evaluate = (PFN_NrEvaluate) GetProcAddress(g_nr.forwarder, "dlssnr_call_evaluate_v2");
     g_nr.release = (PFN_NrRelease) GetProcAddress(g_nr.forwarder, "dlssnr_call_release");
@@ -610,7 +616,8 @@ bool EnsureForwarder()
         return false;
     }
 
-    LOG_INFO("DLSS-NR forwarder loaded from {}", path.string());
+    LOG_INFO("DLSS-NR forwarder loaded from {} ({})", path.string(),
+             g_nr.isPort ? "vendor-neutral port, no NGX core needed" : "NVIDIA NGX");
     return true;
 }
 
@@ -1518,6 +1525,34 @@ ID3D12Resource* GetResource(NVSDK_NGX_Parameter* params, const char* a, const ch
 // frame, and each one would otherwise mean a new model.
 constexpr unsigned long long kSettleFrames = 30;
 
+// The network pools its input 2x2 and runs its 8x8 attention windows on the result, so its grid is 16
+// input pixels per window. A size that is not a multiple of 16 leaves a ragged last window that is
+// zero-padded (the model copes, it is just wasted work at the border), and, more usefully here, every
+// distinct size is a different feature: Auto's continuous render:output ratio moved the size by a pixel
+// or two under dynamic resolution and each move rebuilt the model. Rounding to 16 lets the size hold.
+//
+// Only a size we are already resampling to is rounded. A native-size pass (WorkingScale 1.0, or a scale
+// that rounds back to native) is left alone: rounding 1080 to 1088 would turn a 1:1 pass into a
+// resample of the frame, which is worse than a ragged border window.
+unsigned int AlignWorkSize(unsigned int size, unsigned int native)
+{
+    constexpr unsigned int kGrid = 16;
+
+    if (size == native)
+        return size;
+
+    unsigned int aligned = (size + kGrid / 2) / kGrid * kGrid;
+
+    if (aligned < kGrid)
+        aligned = kGrid;
+
+    // Shrinking never rounds up past the native size (that would enlarge what was meant to be reduced).
+    if (size < native && aligned > native)
+        aligned = native;
+
+    return aligned;
+}
+
 // The extras the official integration sets: global tone (read at create) and the interface inputs.
 // Written before every create and evaluate, nulls included, so nothing stale ever sits in the block.
 void SetExtras(const Config& cfg, ID3D12Resource* ui, ID3D12Resource* backbuffer, unsigned int uiWidth,
@@ -1959,7 +1994,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     if (cfg.DlssNrProxyProbe.value_or_default())
         ProbeProxyDispatch(cmdList);
 
-    if (!EnsureForwarder() || !EnsureCapabilityParams(device))
+    // The port needs no capability block, so it also runs where the NGX core cannot start (AMD, Intel).
+    if (!EnsureForwarder() || (!g_nr.isPort && !EnsureCapabilityParams(device)))
     {
         g_nr.failed = true;
         LOG_ERROR("DLSS-NR unavailable: {}", g_nr.reason);
@@ -1991,8 +2027,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         workScale = 1.0f;
     workScale = workScale < 0.25f ? 0.25f : (workScale > 2.0f ? 2.0f : workScale);
     g_nr.appliedWorkScale = workScale;
-    const auto workWidth = (unsigned int) (width * workScale + 0.5f);
-    const auto workHeight = (unsigned int) (height * workScale + 0.5f);
+    const auto workWidth = AlignWorkSize((unsigned int) (width * workScale + 0.5f), width);
+    const auto workHeight = AlignWorkSize((unsigned int) (height * workScale + 0.5f), height);
     const bool reduced = workWidth != width || workHeight != height;
     const unsigned int configuredPasses =
         std::clamp(cfg.DlssNrPasses.value_or_default(),
@@ -2244,11 +2280,11 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         g_nr.featureCreateEpoch = frame.SubmissionEpoch;
         RecordBuiltPrimaryTuning(cfg);
         LOG_INFO("DLSS-NR model feature created from {}", snippet->string());
-        LOG_INFO("DLSS-NR running {}: target {}x{}, model {}x{}, guides {}x{} "
+        LOG_INFO("DLSS-NR running {}: target {}x{}, model input {}x{} (main network {}x{}), guides {}x{} "
                  "(preset {}, intensity {}, style {}, build epoch {})",
                  frame.RayReconstruction ? (frame.BeforeUpscale ? "before RR+SR" : "after RR+SR") :
                      (frame.BeforeUpscale ? "before SR" : "after SR"),
-                 width, height, workWidth, workHeight,
+                 width, height, workWidth, workHeight, (workWidth + 1) / 2, (workHeight + 1) / 2,
                  guideWidth, guideHeight, g_nr.builtPreset[0], g_nr.builtIntensity, g_nr.builtStyle[0],
                  frame.SubmissionEpoch);
 
@@ -3015,6 +3051,13 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             clampParams.Mode = DlssNrMode_ClampProxy;
             clampParams.Width = workWidth;
             clampParams.Height = workHeight;
+            // Clamped here, not trusted from the ini: the shader treats PassFeedback as a convex
+            // blend weight between two values it has already guaranteed are in the unit cube, and
+            // that guarantee only holds for a weight in [0,1]. A hand-edited value outside it would
+            // push the result back out of range, which is exactly what this whole boundary exists
+            // to prevent.
+            clampParams.PassFeedback =
+                std::clamp(cfg.DlssNrPassFeedback.value_or_default(), 0.0f, 1.0f);
             if (!DispatchPass(cmdList, clampParams, finalAnswer, passInput, nullptr, nullptr, nullptr,
                                 passClampTarget, nullptr))
             {
@@ -3061,7 +3104,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // Once, a few seconds in, so it lands after the values have been written at least once.
     static bool tuningReported = false;
 
-    if (!tuningReported && g_frames > 240)
+    if (!tuningReported && g_frames > 240 && g_nr.capabilityParams != nullptr)
     {
         tuningReported = true;
 
@@ -3163,6 +3206,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             unsigned int workW;
             unsigned int workH;
             unsigned int passes;
+            float passFeedback;
         };
 
         static ComposeReport loggedCompose {};
@@ -3181,7 +3225,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                                          resolveParams.Transfer,
                                          g_nr.workWidth,
                                          g_nr.workHeight,
-                                         effectivePasses };
+                                         effectivePasses,
+                                         std::clamp(cfg.DlssNrPassFeedback.value_or_default(), 0.0f, 1.0f) };
 
         if (!loggedCompose.valid || loggedCompose.whitePoint != composeNow.whitePoint ||
             loggedCompose.transfer != composeNow.transfer || loggedCompose.colour != composeNow.colour ||
@@ -3190,15 +3235,18 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             loggedCompose.debugView != composeNow.debugView ||
             loggedCompose.compareMode != composeNow.compareMode ||
             loggedCompose.residual != composeNow.residual || loggedCompose.workW != composeNow.workW ||
-            loggedCompose.workH != composeNow.workH || loggedCompose.passes != composeNow.passes)
+            loggedCompose.workH != composeNow.workH || loggedCompose.passes != composeNow.passes ||
+            loggedCompose.passFeedback != composeNow.passFeedback)
         {
             loggedCompose = composeNow;
             LOG_INFO("DLSS-NR composition: paper white {:.2f}x, detail {:.2f}, colour {:.2f}, guard "
-                     "{:.1f}x, colour transform {}, transfer {}, model {}x{}, passes {}, debug view {}, compare {}",
+                     "{:.1f}x, colour transform {}, transfer {}, model {}x{}, passes {} (feedback {:.2f}), "
+                     "debug view {}, compare {}",
                      composeNow.whitePoint, composeNow.transfer, composeNow.colour, composeNow.maxRatio,
                      composeNow.passthrough != 0 ? "off (frame already tone mapped)" : "on (linear HDR)",
                      composeNow.residual == 1 ? "matched residual" : "classic", composeNow.workW,
-                     composeNow.workH, composeNow.passes, composeNow.debugView, composeNow.compareMode);
+                     composeNow.workH, composeNow.passes, composeNow.passFeedback, composeNow.debugView,
+                     composeNow.compareMode);
         }
 
         // Supersampling down-leg. Average the Nx model answer back to native with the chosen filter, so
@@ -3988,6 +4036,8 @@ bool IsRunning() { return g_nr.feature != nullptr && !g_nr.failed; }
 
 const char* FailureReason() { return g_nr.failed ? g_nr.reason : ""; }
 
+const char* BackendName() { return g_nr.forwarder == nullptr ? "" : g_nr.isPort ? "vendor-neutral port" : "NVIDIA NGX"; }
+
 // What the game offers by way of exposure, and what has been read from it. For the menu, so a user
 // can see whether this game supplies one at all without having to read a log.
 ExposureStatus GameExposureStatus()
@@ -4014,6 +4064,12 @@ ExposureStatus AutoExposureStatus()
 }
 
 int CurrentModelResolutionPercent() { return (int) lroundf(g_nr.appliedWorkScale * 100.0f); }
+
+void CurrentModelSize(unsigned int& width, unsigned int& height)
+{
+    width = g_nr.workWidth;
+    height = g_nr.workHeight;
+}
 
 std::optional<double> LastGpuTime() { return g_lastGpuTime; }
 

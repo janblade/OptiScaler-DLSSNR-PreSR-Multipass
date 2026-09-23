@@ -728,7 +728,14 @@ float3 NvidiaResidualModel(float3 fullProxy, float2 uv)
 }
 
 // Replace's highlight/shadow guard: bounds how far a Replace pixel's luminance may sit from the
-// native frame's, the same invariant Composed's own `boundedRatio` already holds everywhere.
+// native frame's, on both sides -- unlike Composed's `boundedRatio` above, which bounds brightening
+// only. The two no longer share an invariant; they share a shape (one luminance-derived scalar
+// applied to the whole triple) for a different reason each. This floor exists because
+// NeutwoDecode/HybridDecode's inverse diverges as the encoded peak approaches 1 (a ~700x
+// amplification at the pole, see the guard's own call site below) -- a decode-side blowup, not the
+// per-frame luminance collapse Composed's ceiling-only bound was chosen around
+// (plans/2026-09-23-dlssnr-highlight-guard-brightening-only.md). Nothing about that decode pole
+// argues for leaving darkening uncapped here, so it stays two-sided.
 // Multiplicative rescale alone cannot pull an exact zero vector back up -- `v *= anything` stays
 // zero regardless of the multiplier -- so a genuinely degenerate decode (NeutwoDecode/
 // HybridDecode's own `m <= 1e-6` early-out, a fully collapsed near-black answer) is handled the
@@ -1477,15 +1484,25 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
     // arrived whole. That is the flicker reported in Nioh 3, and it worsened with paper white
     // because the model's answer is multiplied by it on the way out.
     //
-    // Two-sided, because the failure measured there was a collapse and not a runaway: red fell 57%
-    // while an upward-only bound sat watching it. The control's own help text said darkening was
-    // deliberately uncapped; that was decided before there was a case against it.
+    // Upper-only: caps brightening, leaves darkening entirely model-driven. That is what the
+    // control's own name and help text have always said ("Highlight guard" -- darkening was
+    // deliberately uncapped, per the same help text quoted above); a symmetric floor cannot tell a
+    // collapsed pixel from one the model legitimately meant to be dark, so it lifted real shadow
+    // detail everywhere, at every guard setting, as the price of catching that one failure. The
+    // Nioh 3 collapse this floor used to cover is now uncapped again -- see
+    // plans/2026-09-23-dlssnr-highlight-guard-brightening-only.md for why this is judged worth it
+    // and what would reopen the question.
+    //
+    // Replace keeps its own two-sided guard (`ApplyReplaceGuard` below) -- a different floor, for a
+    // different, still-live reason (a decode pole at reduced model resolution, not this collapse).
+    // One control now means two things depending on mode; both are documented where the reader will
+    // find them, here and at `ApplyReplaceGuard`'s own header.
     //
     // One scalar, taken from luminance, applied to the whole triple. A per-channel bound is a hue
     // distorter -- on a saturated pixel the smallest channel reaches the bound first, so an
     // achromatic edit lands as a colour shift.
     const float guard = max(gMaxRatio, 1.0);
-    float boundedRatio = clamp(amplified, 1.0 / guard, guard);
+    float boundedRatio = min(amplified, guard);
 
     // Exactly one while the ratio is already inside the guard, so a frame that never needed bounding
     // is untouched rather than rounded, and strength zero stays bit-identical.

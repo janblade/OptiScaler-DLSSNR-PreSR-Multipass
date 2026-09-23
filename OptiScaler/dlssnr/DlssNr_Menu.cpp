@@ -906,7 +906,7 @@ void RenderMenu(Config* config, float menuResScale)
                          IM_ARRAYSIZE(reversibleNames)))
             config->DlssNrReversibleMode = (uint32_t) reversible;
 
-        HelpMarker("Choose how HDR brightness is mapped for NR.\nSoft knee compresses highlights. Reversible curve uses a reversible mapping. Balanced preserves midtones and compresses highlights.\nComposed uses the strength control and the Highlight guard below. Replace bypasses the strength control (the model's answer applies directly, uncomposited) but the Highlight guard still bounds it -- lower it if Replace flickers or shows banding near bright highlights.");
+        HelpMarker("Choose how HDR brightness is mapped for NR.\nSoft knee compresses highlights. Reversible curve uses a reversible mapping. Balanced preserves midtones and compresses highlights.\nComposed uses the strength control and the Highlight guard below (brightening only; darkening is not capped in Composed). Replace bypasses the strength control (the model's answer applies directly, uncomposited) but the same Highlight guard number still bounds it in both directions -- lower it if Replace flickers or shows banding near bright highlights.");
 
         if (reversible == 2 || reversible == 4)
         {
@@ -1416,7 +1416,7 @@ void RenderMenu(Config* config, float menuResScale)
         if (ImGui::SmallButton("Reset##guard"))
             config->DlssNrMaxRatio = 2.0f;
 
-        HelpMarker("Limit how much NR can brighten or darken a pixel. Lower values restrict highlight changes; higher values allow more.");
+        HelpMarker("Limit how much NR can brighten a pixel; darkening is not capped. Lower values restrict highlight changes; higher values allow more.\nReplace mode still bounds darkening too -- a different guard, for a different reason.");
 
         // Directly under the white point, because that is the number it moves and the number the
         // anchor captures. It used to sit under Inspect, a whole section away from the slider it

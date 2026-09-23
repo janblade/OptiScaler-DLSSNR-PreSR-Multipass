@@ -29,6 +29,13 @@ The fix keeping the game's own Streamline plugins (Common, Reflex, PCL) separate
 private DLSS Frame Generation runtime when NVIDIA's override selection would otherwise point both
 at the same already-loaded module is adapted from [wilsjo2's fork](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass), commit [`ae9a50fa`](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/commit/ae9a50fa12b1e81600d0394108d523dad8b7fd23) ("Isolate game Streamline plugins from active DLSSG output").
 
+## Highlight guard: brightening only
+
+Bounding the Composed path's Highlight guard to brightening only, leaving darkening uncapped, is
+@mattjaas's work, from [wilsjo2's PR #94](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/pull/94),
+adapted onto this fork's code. This fork's Replace-mode guard (`ApplyReplaceGuard`) is unrelated to
+that PR and keeps its own, still-symmetric bound for a different reason.
+
 ## OptiScaler contributors
 
 These credits are retained from the original OptiScaler README:

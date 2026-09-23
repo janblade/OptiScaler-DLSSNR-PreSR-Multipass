@@ -46,22 +46,29 @@
 // #define VER_DEV_RELEASE
 // #define VER_PRE_RELEASE
 
-#define VER_FILE_VERSION VER_MAJOR_VERSION, VER_MINOR_VERSION, VER_HOTFIX_VERSION, VER_BUILD_NUMBER
-#define VER_FILE_VERSION_STR                                                                                           \
-    STRINGIZE(VER_MAJOR_VERSION) "." STRINGIZE(VER_MINOR_VERSION) "." STRINGIZE(VER_HOTFIX_VERSION) "." STRINGIZE(VER_BUILD_NUMBER)
+// OPTI_VERSION stays tied to VER_MAJOR/MINOR/HOTFIX_VERSION (the frozen upstream-sync marker,
+// see the comment above NR_RELEASE_* above) since it is what the XeSS/FSR/FfxApi wrapper paths
+// report to games as the engine version -- not user-visible, and not this fork's own release
+// number to begin with.
 #define OPTI_VERSION STRINGIZE(VER_MAJOR_VERSION) "." STRINGIZE(VER_MINOR_VERSION) "." STRINGIZE(VER_HOTFIX_VERSION)
+
+// FileVersion/ProductVersion (Explorer's Properties dialog, and VER_PRODUCT_NAME below, which is
+// the in-game overlay's window title) show this fork's own release number instead -- otherwise
+// both stay frozen at the upstream-sync marker (0.7.7) forever, since this fork stopped syncing
+// upstream, and every release since has looked identical there regardless of what actually shipped.
+#define VER_FILE_VERSION NR_RELEASE_MAJOR_VERSION, NR_RELEASE_MINOR_VERSION, NR_RELEASE_HOTFIX_VERSION, VER_BUILD_NUMBER
+#define VER_FILE_VERSION_STR                                                                                           \
+    NR_RELEASE_VERSION_STR "." STRINGIZE(VER_BUILD_NUMBER)
 
 #define VER_PRODUCT_VERSION VER_FILE_VERSION
 
 #ifdef VER_DEV_RELEASE
-#define VER_PRODUCT_VERSION_STR                                                                                        \
-    STRINGIZE(VER_MAJOR_VERSION) "." STRINGIZE(VER_MINOR_VERSION) "." STRINGIZE(VER_HOTFIX_VERSION) "-dev (" VER_BUILD_COMMIT ") (" VER_BUILD_DATE ")"
+#define VER_PRODUCT_VERSION_STR NR_RELEASE_VERSION_STR "-dev (" VER_BUILD_COMMIT ") (" VER_BUILD_DATE ")"
 #elif VER_PRE_RELEASE
 #define VER_PRODUCT_VERSION_STR                                                                                        \
-    STRINGIZE(VER_MAJOR_VERSION) "." STRINGIZE(VER_MINOR_VERSION) "." STRINGIZE(VER_HOTFIX_VERSION) "-pre" STRINGIZE(VER_BUILD_NUMBER) " (" VER_BUILD_COMMIT ") (" VER_BUILD_DATE ")"
+    NR_RELEASE_VERSION_STR "-pre" STRINGIZE(VER_BUILD_NUMBER) " (" VER_BUILD_COMMIT ") (" VER_BUILD_DATE ")"
 #else
-#define VER_PRODUCT_VERSION_STR                                                                                        \
-    STRINGIZE(VER_MAJOR_VERSION) "." STRINGIZE(VER_MINOR_VERSION) "." STRINGIZE(VER_HOTFIX_VERSION) "-final (" VER_BUILD_COMMIT ")"
+#define VER_PRODUCT_VERSION_STR NR_RELEASE_VERSION_STR "-final (" VER_BUILD_COMMIT ")"
 #endif // VER_PRE_RELEASE
 
 #define VER_PRODUCT_NAME "OptiScaler v" VER_PRODUCT_VERSION_STR

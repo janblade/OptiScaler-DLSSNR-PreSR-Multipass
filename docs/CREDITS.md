@@ -23,6 +23,12 @@ The fix for an unsynchronized read/write race in `MfgUnlock::LastStatus()` follo
 
 The binary quirk patch that keeps Kingdom Come: Deliverance II's native HDR10 output working with frame generation active is adapted from [wilsjo2's fork](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass), commit [`34dfe6d9`](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/commit/34dfe6d9757837d79a8931b04af0e3955cbe29a7) ("Keep KCD2 HDR output compatible with native DLSSG").
 
+## Streamline dual-runtime isolation
+
+The fix keeping the game's own Streamline plugins (Common, Reflex, PCL) separate from OptiScaler's
+private DLSS Frame Generation runtime when NVIDIA's override selection would otherwise point both
+at the same already-loaded module is adapted from [wilsjo2's fork](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass), commit [`ae9a50fa`](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/commit/ae9a50fa12b1e81600d0394108d523dad8b7fd23) ("Isolate game Streamline plugins from active DLSSG output").
+
 ## OptiScaler contributors
 
 These credits are retained from the original OptiScaler README:

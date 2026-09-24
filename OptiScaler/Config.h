@@ -383,6 +383,10 @@ class Config
     // readbacks per sample; off by default.
     CustomOptional<bool> DlssNrFrameStats { false };
 
+    // Diagnostic: log which NVIDIA kernels an NR evaluation launches (fp8-named or the plain fp16 ones) and how the GPU
+    // time splits between kernel groups. 3 evaluations out of every 240 are timestamped; off by default.
+    CustomOptional<bool> DlssNrKernelProfile { false };
+
     // 0 off, 1 the picture the model was shown, 2 its raw answer, 3 what it changed, amplified.
     CustomOptional<uint32_t> DlssNrDebugView { 0 };
 

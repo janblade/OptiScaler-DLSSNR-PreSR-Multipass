@@ -3222,7 +3222,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
         MakeModelWritable(passOutput);
         // ViT reuse of the NVIDIA model: tell the NvAPI wrapper which feature this is, whether it starts over, and how often to compute the bottleneck
-        DlssNrNative::BeginEvaluate(passFeature, passReset, cfg.DlssNrVitEvery.value_or_default());
+        DlssNrNative::BeginEvaluate(passFeature, passReset, cfg.DlssNrVitEvery.value_or_default(), cmdList,
+                                    cfg.DlssNrKernelProfile.value_or_default());
         result = g_nr.evaluate(
             cmdList, passFeature, g_nr.capabilityParams, passInput, depthIn, motionIn, passOutput,
             workWidth, workHeight, guideWidth, guideHeight, motionWidth, motionHeight,
@@ -3232,7 +3233,10 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             tuning.tone, tuning.skin,
             tuning.autoMask ? 1 : 0, g_nr.guideMvScaleX * mvToWorkX,
             g_nr.guideMvScaleY * mvToWorkY);
-        DlssNrNative::EndEvaluate();
+        DlssNrNative::EndEvaluate(cmdList);
+
+        for (const std::string& report : DlssNrNative::TakeProfileReports())
+            LOG_INFO("{}", report);
 
         if (result != NVSDK_NGX_Result_Success)
             break;

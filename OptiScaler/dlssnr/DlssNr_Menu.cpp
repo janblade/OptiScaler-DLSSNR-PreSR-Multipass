@@ -1568,6 +1568,12 @@ void RenderMenu(Config* config, float menuResScale)
 
         HelpMarker("Diagnostic. Every 2 seconds or so, writes a line to OptiScaler.log describing the frame NR is given: format, luminance percentiles, the game's exposure value and the white point in use.");
 
+        bool kernelProfile = config->DlssNrKernelProfile.value_or_default();
+        if (ImGui::Checkbox("Log NR kernel profile", &kernelProfile))
+            config->DlssNrKernelProfile = kernelProfile;
+
+        HelpMarker("Diagnostic. Every 4 seconds or so, writes a line to OptiScaler.log with the NVIDIA kernels one NR evaluation launched (fp8-named or plain fp16) and where its GPU time went, by kernel group. Approximate: chained kernels overlap.");
+
         static const char* compareNames[] = { "Off", "Side by side", "Wipe" };
         int compare = (int) config->DlssNrCompare.value_or_default();
         if (ImGui::Combo("Compare", &compare, compareNames, IM_ARRAYSIZE(compareNames)))

@@ -377,6 +377,19 @@ struct NrState
     unsigned int meterSlot = 0;
     unsigned long long meterFrames = 0;
 
+    // Frame statistics diagnostic (ini [DlssNr] FrameStats). One sample is queued every 120 frames and
+    // read eight frames later, so a single readback pair is enough: the grid of tile luminances, and the
+    // game's exposure texture couriered into tile 0 of the same meter. diagQueuedAt is the frame the
+    // sample was queued on, 0 when none is pending. The rest describe that frame.
+    ID3D12Resource* diagGridReadback = nullptr;
+    ID3D12Resource* diagExposureReadback = nullptr;
+    unsigned long long diagQueuedAt = 0;
+    DXGI_FORMAT diagFormat = DXGI_FORMAT_UNKNOWN;
+    unsigned int diagWidth = 0;
+    unsigned int diagHeight = 0;
+    float diagPreExposure = 1.0f;
+    bool diagExposureSupplied = false;
+
     // Whether the setting was on last frame, so the off->on edge can be caught.
     //
     // Deliberately the SETTING and not `wantExposure`: the texture itself comes and goes between
@@ -1006,6 +1019,161 @@ void CopyAutoExposureToReadback(ID3D12GraphicsCommandList* cmdList, float preExp
 
     g_nr.meterFrames++;
     g_nr.autoExposureFrames++;
+}
+
+// Copies the meter's whole grid into `buffer`, leaving the meter as it found it (a UAV). Unlike
+// CopyMeterToReadback this is not part of the exposure ring: it advances nothing and nothing reads
+// it but the frame statistics diagnostic below.
+void CopyMeterGridTo(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* buffer)
+{
+    D3D12_TEXTURE_COPY_LOCATION src {};
+    src.pResource = g_nr.meter;
+    src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    src.SubresourceIndex = 0;
+
+    D3D12_TEXTURE_COPY_LOCATION dst {};
+    dst.pResource = buffer;
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst.PlacedFootprint.Offset = 0;
+    dst.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R32_FLOAT;
+    dst.PlacedFootprint.Footprint.Width = kDlssNrMeterGrid;
+    dst.PlacedFootprint.Footprint.Height = kDlssNrMeterGrid;
+    dst.PlacedFootprint.Footprint.Depth = 1;
+    dst.PlacedFootprint.Footprint.RowPitch = kMeterRowBytes;
+
+    Barrier(cmdList, g_nr.meter, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    cmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    Barrier(cmdList, g_nr.meter, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+}
+
+const char* DiagFormatName(DXGI_FORMAT format)
+{
+    switch (format)
+    {
+        case DXGI_FORMAT_R32G32B32A32_FLOAT: return "R32G32B32A32_FLOAT";
+        case DXGI_FORMAT_R16G16B16A16_FLOAT: return "R16G16B16A16_FLOAT";
+        case DXGI_FORMAT_R11G11B10_FLOAT: return "R11G11B10_FLOAT";
+        case DXGI_FORMAT_R10G10B10A2_UNORM: return "R10G10B10A2_UNORM";
+        case DXGI_FORMAT_R8G8B8A8_UNORM: return "R8G8B8A8_UNORM";
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return "R8G8B8A8_UNORM_SRGB";
+        case DXGI_FORMAT_B8G8R8A8_UNORM: return "B8G8R8A8_UNORM";
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: return "B8G8R8A8_UNORM_SRGB";
+        case DXGI_FORMAT_R16G16B16A16_TYPELESS: return "R16G16B16A16_TYPELESS";
+        case DXGI_FORMAT_R8G8B8A8_TYPELESS: return "R8G8B8A8_TYPELESS";
+        default: return "other";
+    }
+}
+
+float DiagSrgbEncode(float linear)
+{
+    linear = std::clamp(linear, 0.0f, 1.0f);
+    return linear <= 0.0031308f ? 12.92f * linear : 1.055f * std::pow(linear, 1.0f / 2.4f) - 0.055f;
+}
+
+// Reads the sample queued by the FrameStats block in Dispatch and writes one log line.
+//
+// The grid is the meter's own: the mean luminance of each of 64x64 screen tiles of the frame NR was
+// handed, before this pass wrote anything. Divided by the pre-exposure that is scene units. A tile is
+// an average of a few hundred pixels, so a sun disc is diluted and "max" here is the brightest tile,
+// not the brightest pixel; what it does show reliably is whether the frame lives near 1 (display
+// scaled) or far above it (scene referred).
+//
+// "proxy sRGB" is the brightness the model would see at that luminance under the white point in force,
+// before the soft knee: sRGB(value / white point). Compare it with what the same part of the picture
+// looks like on screen.
+void ReportFrameStats(float whitePoint, uint32_t source)
+{
+    ID3D12Resource* gridBuffer = g_nr.diagGridReadback;
+    ID3D12Resource* exposureBuffer = g_nr.diagExposureReadback;
+    g_nr.diagQueuedAt = 0;
+
+    if (gridBuffer == nullptr || exposureBuffer == nullptr)
+        return;
+
+    void* gridMapped = nullptr;
+    void* exposureMapped = nullptr;
+    D3D12_RANGE range { 0, kMeterBytes };
+
+    if (FAILED(gridBuffer->Map(0, &range, &gridMapped)) || gridMapped == nullptr)
+        return;
+
+    if (FAILED(exposureBuffer->Map(0, &range, &exposureMapped)) || exposureMapped == nullptr)
+    {
+        D3D12_RANGE nothingWritten { 0, 0 };
+        gridBuffer->Unmap(0, &nothingWritten);
+        return;
+    }
+
+    const float preExposure = std::isfinite(g_nr.diagPreExposure) && g_nr.diagPreExposure > 1e-6f
+                                  ? g_nr.diagPreExposure
+                                  : 1.0f;
+    const float* grid = (const float*) gridMapped;
+    const float gameExposure = ((const float*) exposureMapped)[0];
+
+    std::vector<float> scene;
+    scene.reserve(kDlssNrMeterGrid * kDlssNrMeterGrid);
+
+    for (unsigned int i = 0; i < kDlssNrMeterGrid * kDlssNrMeterGrid; ++i)
+    {
+        if (std::isfinite(grid[i]) && grid[i] >= 0.0f)
+            scene.push_back(grid[i] / preExposure);
+    }
+
+    const bool haveExposure = g_nr.diagExposureSupplied && std::isfinite(gameExposure) && gameExposure > 0.0f;
+    D3D12_RANGE nothingWritten { 0, 0 };
+    gridBuffer->Unmap(0, &nothingWritten);
+    exposureBuffer->Unmap(0, &nothingWritten);
+
+    if (scene.size() < 64)
+        return;
+
+    std::sort(scene.begin(), scene.end());
+
+    const auto percentile = [&](float p) { return scene[(size_t) ((float) (scene.size() - 1) * p)]; };
+
+    double sum = 0.0;
+    double logSum = 0.0;
+    size_t above1 = 0, above10 = 0, above100 = 0;
+
+    for (float v : scene)
+    {
+        sum += v;
+        logSum += std::log(std::max(v, 1e-8f));
+        above1 += v > 1.0f;
+        above10 += v > 10.0f;
+        above100 += v > 100.0f;
+    }
+
+    const float count = (float) scene.size();
+    const float mean = (float) (sum / count);
+    const float logAverage = (float) std::exp(logSum / count);
+    const float p50 = percentile(0.50f);
+    const float p95 = percentile(0.95f);
+    const float safeWhite = std::max(whitePoint, 1e-6f);
+
+    std::string exposureText = "none supplied";
+
+    if (haveExposure)
+        exposureText = std::format("{:.5g} (white point it would give: {:.4g})", gameExposure, preExposure / gameExposure);
+
+    std::string autoText = "n/a";
+
+    if (source == 3 && g_nr.autoExposureValue > 1e-8f)
+        autoText = std::format("{:.5g} (white point it gives: {:.4g})", g_nr.autoExposureValue,
+                               g_nr.autoExposurePreExposure / g_nr.autoExposureValue);
+
+    LOG_INFO("DLSS-NR frame stats: {} ({}) {}x{}, source {}, pre-exposure {:.5g}, game exposure {}, "
+             "auto exposure {}, white point {:.4g}; tile luma in scene units: min {:.3g} p05 {:.3g} p25 {:.3g} "
+             "p50 {:.3g} p75 {:.3g} p95 {:.3g} p99 {:.3g} max {:.3g}, mean {:.3g}, log-average {:.3g}; tiles "
+             "above 1: {:.0f}%, above 10: {:.0f}%, above 100: {:.0f}%; proxy sRGB at p50 {:.2f}, at "
+             "log-average {:.2f}, at mean {:.2f}, at p95 {:.2f}",
+             DiagFormatName(g_nr.diagFormat), (int) g_nr.diagFormat, g_nr.diagWidth, g_nr.diagHeight, source,
+             preExposure, exposureText, autoText, whitePoint, scene.front(), percentile(0.05f),
+             percentile(0.25f), p50, percentile(0.75f), p95, percentile(0.99f), scene.back(), mean,
+             logAverage, 100.0f * (float) above1 / count, 100.0f * (float) above10 / count,
+             100.0f * (float) above100 / count, DiagSrgbEncode(p50 / safeWhite),
+             DiagSrgbEncode(logAverage / safeWhite), DiagSrgbEncode(mean / safeWhite),
+             DiagSrgbEncode(p95 / safeWhite));
 }
 
 // Takes the game's exposure out of tile 0 of the grid recorded three frames ago.
@@ -2208,6 +2376,15 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
             }
         }
 
+        // The frame statistics diagnostic's own pair, so it never shares a buffer with the exposure ring.
+        for (ID3D12Resource** rb : { &g_nr.diagGridReadback, &g_nr.diagExposureReadback })
+        {
+            if (FAILED(device->CreateCommittedResource(&readback, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+                                                       D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                       IID_PPV_ARGS(rb))))
+                *rb = nullptr;
+        }
+
         if (g_nr.meter != nullptr)
             LOG_INFO("DLSS-NR: white point meter up, {}x{} tiles", kDlssNrMeterGrid, kDlssNrMeterGrid);
     }
@@ -2636,9 +2813,58 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         ConsumeMeterReadback();
     }
 
+    // Frame statistics diagnostic (ini [DlssNr] FrameStats). Every 120th frame: average every tile of the
+    // frame NR was handed into the meter grid and queue it for readback, then courier the game's exposure
+    // texture (when there is one) into tile 0 and queue that too. Runs whatever the white point source,
+    // and after the blocks above have finished with the meter, so it can overwrite anything in it: the
+    // next frame's own dispatch writes it all again. The grid is copied out before the courier touches
+    // tile 0. Read eight frames later, below, once the white point in force is known.
+    if (cfg.DlssNrFrameStats.value_or_default() && g_nr.meter != nullptr && g_nr.diagGridReadback != nullptr &&
+        g_nr.diagExposureReadback != nullptr && g_nr.diagQueuedAt == 0 && (g_frames % 120) == 0)
+    {
+        const D3D12_RESOURCE_STATES priorTargetState = targetState;
+        const D3D12_RESOURCE_DESC gameDesc = gameColor->GetDesc();
+
+        DlssNrConstants gridParams {};
+        gridParams.Mode = DlssNrMode_Meter;
+        gridParams.Width = kDlssNrMeterGrid;
+        gridParams.Height = kDlssNrMeterGrid;
+        gridParams.MeterCopiesExposure = 0;
+
+        TransitionTarget(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        DispatchPass(cmdList, gridParams, target, nullptr, nullptr, nullptr, nullptr, g_nr.meter, nullptr);
+        TransitionTarget(priorTargetState);
+        CopyMeterGridTo(cmdList, g_nr.diagGridReadback);
+
+        if (frame.ExposureTexture != nullptr)
+        {
+            DlssNrConstants courierParams {};
+            courierParams.Mode = DlssNrMode_Meter;
+            courierParams.Width = 1;
+            courierParams.Height = 1;
+            courierParams.MeterCopiesExposure = 1;
+
+            TransitionTarget(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            DispatchPass(cmdList, courierParams, target, nullptr, nullptr, (ID3D12Resource*) frame.ExposureTexture,
+                         nullptr, g_nr.meter, nullptr);
+            TransitionTarget(priorTargetState);
+            CopyMeterGridTo(cmdList, g_nr.diagExposureReadback);
+        }
+
+        g_nr.diagQueuedAt = g_frames;
+        g_nr.diagFormat = gameDesc.Format;
+        g_nr.diagWidth = (unsigned int) gameDesc.Width;
+        g_nr.diagHeight = gameDesc.Height;
+        g_nr.diagPreExposure = frame.PreExposure;
+        g_nr.diagExposureSupplied = frame.ExposureTexture != nullptr;
+    }
+
     g_nr.gamePreExposure = frame.PreExposure;
 
     float whitePoint = frame.WhitePointOverride > 0.0f ? frame.WhitePointOverride : ResolveWhitePoint(cfg, isHdrBuffer);
+
+    if (g_nr.diagQueuedAt != 0 && g_frames >= g_nr.diagQueuedAt + 8)
+        ReportFrameStats(whitePoint, whitePointSource);
 
     // Zero-latency exposure (D3D12, source 1): when the game hands us a live exposure texture, the
     // white point is recomputed in-shader every frame from it (ExposurePreMul / exposure) instead of
@@ -4250,6 +4476,17 @@ void Shutdown()
             rb = nullptr;
         }
     }
+
+    for (ID3D12Resource** rb : { &g_nr.diagGridReadback, &g_nr.diagExposureReadback })
+    {
+        if (*rb != nullptr)
+        {
+            (*rb)->Release();
+            *rb = nullptr;
+        }
+    }
+
+    g_nr.diagQueuedAt = 0;
 
     // The slots these flags describe have just been released, so nothing may vouch for what the next
     // buffers happen to contain. gameExposure is deliberately NOT cleared here: a recreate is a

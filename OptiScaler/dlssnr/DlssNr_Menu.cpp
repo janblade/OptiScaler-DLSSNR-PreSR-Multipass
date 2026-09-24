@@ -1562,6 +1562,12 @@ void RenderMenu(Config* config, float menuResScale)
 
         HelpMarker("Freeze NR's input to compare its settings. The game's HUD and later effects may keep updating.\nDoes not re-run SR/RR or show changes to their settings. Turn off to resume.");
 
+        bool frameStats = config->DlssNrFrameStats.value_or_default();
+        if (ImGui::Checkbox("Log frame brightness stats", &frameStats))
+            config->DlssNrFrameStats = frameStats;
+
+        HelpMarker("Diagnostic. Every 2 seconds or so, writes a line to OptiScaler.log describing the frame NR is given: format, luminance percentiles, the game's exposure value and the white point in use.");
+
         static const char* compareNames[] = { "Off", "Side by side", "Wipe" };
         int compare = (int) config->DlssNrCompare.value_or_default();
         if (ImGui::Combo("Compare", &compare, compareNames, IM_ARRAYSIZE(compareNames)))

@@ -377,6 +377,12 @@ class Config
     // "should" is doing work in that sentence and it ships into games nobody can test first.
     CustomOptional<bool> DlssNrProbeD3D11 { false };
 
+    // Diagnostic: once every 120 frames, log what the frame handed to NR looks like (format, luminance
+    // percentiles over a 64x64 tile grid in scene units, the game's exposure texture, the white point in
+    // force and the sRGB brightness the proxy would have). Costs two tiny dispatches and two 16 KB
+    // readbacks per sample; off by default.
+    CustomOptional<bool> DlssNrFrameStats { false };
+
     // 0 off, 1 the picture the model was shown, 2 its raw answer, 3 what it changed, amplified.
     CustomOptional<uint32_t> DlssNrDebugView { 0 };
 

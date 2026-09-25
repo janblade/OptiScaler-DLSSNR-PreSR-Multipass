@@ -1055,6 +1055,10 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
     // Their value stays in the config untouched, so switching back to manual restores it.
     float whitePoint = cfg.DlssNrWhitePointScale.value_or_default();
 
+    // What the debug views are scaled by on a linear HDR frame: the base white point, before the Trim, so they sit
+    // at the frame's own brightness and the Trim still shows in them. See DebugViewScale in dlssnr.hlsl.
+    float debugWhitePoint = 0.0f;
+
     // The ring carries the game's exposure or the automatic one; a change of source starts it over.
     const uint32_t requestedWhitePointSource = cfg.DlssNrWhitePointSource.value_or_default();
 
@@ -1078,6 +1082,7 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
         const float trim = DlssNrTrim::TrimForKey(baseWhitePoint, cfg.DlssNrWhitePointTrim.value_or_default(),
                                                   anchors, cfg.DlssNrGameExposureTrimPreview.value_or_default());
         whitePoint = std::clamp(baseWhitePoint * trim, 0.01f, 4096.0f);
+        debugWhitePoint = std::clamp(baseWhitePoint, 0.01f, 4096.0f);
     }
     else if (requestedWhitePointSource == 3 && g_vk.autoExposureValue > 1e-8f)
     {
@@ -1088,6 +1093,7 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
         const float trim = DlssNrTrim::TrimForKey(baseWhitePoint, cfg.DlssNrAutoExposureTrim.value_or_default(),
                                                   anchors, cfg.DlssNrAutoExposureTrimPreview.value_or_default());
         whitePoint = std::clamp(baseWhitePoint * trim, 0.01f, 4096.0f);
+        debugWhitePoint = std::clamp(baseWhitePoint, 0.01f, 4096.0f);
     }
 
     static bool saidEncoding = false;
@@ -1121,7 +1127,11 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
     encode.ModelWorkScale = (reduced && workScale < 1.0f) ? workScale : 1.0f;
     encode.MaxRatio = std::clamp(cfg.DlssNrMaxRatio.value_or_default(), 1.0f, 8.0f);
     encode.Transfer = cfg.DlssNrTransfer.value_or_default();
-    encode.DebugScale = cfg.DlssNrWhitePointScale.value_or_default();
+    // Tone-mapped frames keep the Paper white scale; a linear HDR frame is shown at its base white point, or at the
+    // white point in force when no exposure is known yet.
+    encode.DebugScale = !linearHdr                ? cfg.DlssNrWhitePointScale.value_or_default()
+                        : debugWhitePoint > 0.0f ? debugWhitePoint
+                                                 : whitePoint;
     encode.GuideWidth = guideWidth;
     encode.GuideHeight = guideHeight;
 

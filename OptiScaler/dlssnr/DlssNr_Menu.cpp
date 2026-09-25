@@ -1627,7 +1627,7 @@ void RenderMenu(Config* config, float menuResScale)
         if (ImGui::Combo("Debug view", &debugView, debugNames, IM_ARRAYSIZE(debugNames)))
             config->DlssNrDebugView = (uint32_t) debugView;
 
-        HelpMarker("Show the model input, raw output, or a 20x amplified difference. Grey in Difference means no change.");
+        HelpMarker("Show the model input, raw output, or a 20x amplified difference. Grey in Difference means no change.\nShown at the game's own brightness, so Model input brightness makes the view brighter or darker by the amount it changes what the model is given.");
 
         ImGui::PopItemWidth();
     }

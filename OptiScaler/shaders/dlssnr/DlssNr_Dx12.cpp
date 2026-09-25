@@ -3466,7 +3466,10 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         resolveParams.DebugView = cfg.DlssNrDebugView.value_or_default();
         resolveParams.MaxRatio = std::clamp(cfg.DlssNrMaxRatio.value_or_default(), 1.0f, 8.0f);
         resolveParams.Transfer = cfg.DlssNrTransfer.value_or_default();
-        resolveParams.DebugScale = cfg.DlssNrWhitePointScale.value_or_default();
+        // The debug views' scale when the shader has no live exposure to take the base white point from: the white
+        // point in force on a linear HDR frame, the Paper white slider on a tone-mapped one. See DebugViewScale in
+        // dlssnr.hlsl, which prefers the base white point (before the Trim) whenever the exposure texture is bound.
+        resolveParams.DebugScale = isHdrBuffer ? whitePoint : cfg.DlssNrWhitePointScale.value_or_default();
         resolveParams.Passthrough = isHdrBuffer ? 0u : 1u;
         resolveParams.ReversibleMode = cfg.DlssNrReversibleMode.value_or_default();
         resolveParams.ApplyModel = cfg.DlssNrApplyModel.value_or_default() ? 1u : 0u;

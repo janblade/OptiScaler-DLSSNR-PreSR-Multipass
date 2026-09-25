@@ -25,34 +25,34 @@ static void FeedN(Detector& d, float v, unsigned n)
 
 int main()
 {
-    // Before a full window: detecting, and the display-scaled default applies.
+    // Before a full window: detecting, and the pre-exposed default applies.
     {
         Detector d;
         FeedN(d, 1300.0f, kWindow - 1);
         CHECK(d.Get() == Verdict::Detecting);
-        CHECK(d.DefaultTrim() == kDisplayScaledTrim);
+        CHECK(d.DefaultTrim() == kPreExposedTrim);
     }
-    // NBA-like readings: display-scaled, Trim 1.
+    // NBA-like readings: pre-exposed, Trim 1.
     {
         Detector d;
         FeedN(d, 0.8f, kWindow);
-        CHECK(d.Get() == Verdict::DisplayScaled);
-        CHECK(d.DefaultTrim() == kDisplayScaledTrim);
+        CHECK(d.Get() == Verdict::PreExposed);
+        CHECK(d.DefaultTrim() == kPreExposedTrim);
     }
-    // RDR2-like readings: scene-referred, Trim 0.25.
+    // RDR2-like readings: unexposed, Trim 0.25.
     {
         Detector d;
         FeedN(d, 1300.0f, kWindow);
-        CHECK(d.Get() == Verdict::SceneReferred);
-        CHECK(d.DefaultTrim() == kSceneReferredTrim);
+        CHECK(d.Get() == Verdict::Unexposed);
+        CHECK(d.DefaultTrim() == kUnexposedTrim);
     }
-    // RDR2 loading screen first (reads ~1), then gameplay: provisional display-scaled, then upgraded.
+    // RDR2 loading screen first (reads ~1), then gameplay: provisional pre-exposed, then upgraded.
     {
         Detector d;
         FeedN(d, 0.9f, kWindow * 2);
-        CHECK(d.Get() == Verdict::DisplayScaled);
+        CHECK(d.Get() == Verdict::PreExposed);
         FeedN(d, 1500.0f, kWindow);
-        CHECK(d.Get() == Verdict::SceneReferred);
+        CHECK(d.Get() == Verdict::Unexposed);
         CHECK(d.DecidedOn() > kThreshold);
     }
     // Scene-referred is final: a later menu or dark stretch does not flip it back.
@@ -60,25 +60,25 @@ int main()
         Detector d;
         FeedN(d, 1300.0f, kWindow);
         FeedN(d, 0.5f, kWindow * 3);
-        CHECK(d.Get() == Verdict::SceneReferred);
+        CHECK(d.Get() == Verdict::Unexposed);
     }
-    // A few outliers in a display-scaled game do not flip it (median of the window).
+    // A few outliers in a pre-exposed game do not flip it (median of the window).
     {
         Detector d;
         for (unsigned i = 0; i < kWindow * 2; ++i)
             d.Feed(i % 10 == 0 ? 5000.0f : 0.8f);
-        CHECK(d.Get() == Verdict::DisplayScaled);
+        CHECK(d.Get() == Verdict::PreExposed);
     }
-    // Measured display-range games stay display-range: The Witcher 3 up to 6, Cyberpunk 6.6 at start then 0.5,
+    // Measured pre-exposed games stay pre-exposed: The Witcher 3 up to 6, Cyberpunk 6.6 at start then 0.5,
     // and a reading between the old threshold (20) and the new one.
     {
         Detector d;
         FeedN(d, 6.0f, kWindow * 2);
-        CHECK(d.Get() == Verdict::DisplayScaled);
+        CHECK(d.Get() == Verdict::PreExposed);
         FeedN(d, 6.6f, kWindow);
         FeedN(d, 0.5f, kWindow);
         FeedN(d, 50.0f, kWindow);
-        CHECK(d.Get() == Verdict::DisplayScaled);
+        CHECK(d.Get() == Verdict::PreExposed);
     }
     // Garbage readings are ignored.
     {
@@ -92,7 +92,7 @@ int main()
     {
         Instance().Reset();
         FeedN(Instance(), 1300.0f, kWindow);
-        CHECK(Effective(std::nullopt) == kSceneReferredTrim);
+        CHECK(Effective(std::nullopt) == kUnexposedTrim);
         CHECK(Effective(std::optional<float>(3.0f)) == 3.0f);
         Instance().Reset();
         CHECK(Instance().Get() == Verdict::Detecting);

@@ -673,10 +673,10 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
 
                     if (DlssNrAutoTrim::Instance().Feed(g_vk.autoExposurePreExposure / g_vk.autoExposureValue))
                         LOG_INFO("DLSS-NR automatic exposure: {} frame (base white point {:.3g}) -> default Trim {} ({})",
-                                 DlssNrAutoTrim::Instance().Get() == DlssNrAutoTrim::Verdict::SceneReferred ? "scene-referred"
-                                                                                                      : "display-scaled",
+                                 DlssNrAutoTrim::Instance().Get() == DlssNrAutoTrim::Verdict::Unexposed ? "unexposed"
+                                                                                                      : "pre-exposed",
                                  DlssNrAutoTrim::Instance().DecidedOn(), DlssNrAutoTrim::Instance().DefaultTrim(),
-                                 DlssNrAutoTrim::Instance().Get() == DlssNrAutoTrim::Verdict::SceneReferred ? "+4.3 EV" : "+2.3 EV");
+                                 DlssNrAutoTrim::Instance().Get() == DlssNrAutoTrim::Verdict::Unexposed ? "+4.3 EV" : "+2.3 EV");
                 }
             }
         }

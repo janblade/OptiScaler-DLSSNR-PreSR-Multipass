@@ -1366,10 +1366,10 @@ void ConsumeMeterReadback()
 
         if (DlssNrAutoTrim::Instance().Feed(g_nr.autoExposurePreExposure / g_nr.autoExposureValue))
             LOG_INFO("DLSS-NR automatic exposure: {} frame (base white point {:.3g}) -> default Trim {} ({})",
-                     DlssNrAutoTrim::Instance().Get() == DlssNrAutoTrim::Verdict::SceneReferred ? "scene-referred"
-                                                                                          : "display-scaled",
+                     DlssNrAutoTrim::Instance().Get() == DlssNrAutoTrim::Verdict::Unexposed ? "unexposed"
+                                                                                          : "pre-exposed",
                      DlssNrAutoTrim::Instance().DecidedOn(), DlssNrAutoTrim::Instance().DefaultTrim(),
-                     DlssNrAutoTrim::Instance().Get() == DlssNrAutoTrim::Verdict::SceneReferred ? "+4.3 EV" : "+2.3 EV");
+                     DlssNrAutoTrim::Instance().Get() == DlssNrAutoTrim::Verdict::Unexposed ? "+4.3 EV" : "+2.3 EV");
     }
 
     D3D12_RANGE nothingWritten { 0, 0 };

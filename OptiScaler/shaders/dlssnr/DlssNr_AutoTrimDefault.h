@@ -2,19 +2,19 @@
 
 // The Automatic exposure Trim a game gets while the user has not set one (ini AutoExposureTrim = auto).
 //
-// Two kinds of frame reach Automatic exposure, and they want different defaults (measured 2026-09-25 with FrameStats):
-// - scene-referred (RDR2: the frame is in the game's own scene units, far above 1, and the game exposes it later; the
-//   meter's base white point sits around 1000-1700): +4.3 EV (Trim 0.25) looked best; the old 5x left the model a
-//   picture with a median of 0.29;
-// - display-scaled (NBA 2K27: the frame never goes above 1; base white point around 0.8): +4.3 EV put yellow highlights
-//   in the players' shadows, +2.3 EV (Trim 1) looked right.
-// The base white point (PreExposure / automatic exposure) tells them apart. Measured display-range games: NBA 2K27 ~0.2-0.8,
-// Cyberpunk 2077 ~0.5 (6.6 in the first seconds), The Witcher 3 up to 6.0; RDR2 ~900-1700 in gameplay. kThreshold sits at
-// ~17x above the highest display-range reading and ~9x below RDR2's gameplay (raised from 20 after The Witcher 3 reached 6).
+// Two kinds of frame reach Automatic exposure, and they want different defaults (measured 2026-09-25 with FrameStats).
+// Both are linear HDR, scene-referred in the colour sense and tone-mapped later; what differs is whether the game has
+// already applied its own exposure before handing the frame to the upscaler:
+// - unexposed (RDR2: raw scene luminance, the game's exposure of ~0.007 comes later; the meter's base white point sits
+//   around 900-1700): +4.3 EV (Trim 0.25) looked best; the old 5x left the model a picture with a median of 0.29;
+// - pre-exposed (NBA 2K27 ~0.2-0.8, Cyberpunk 2077 ~0.5 with 6.6 in the first seconds, The Witcher 3 ~2-6): +4.3 EV put
+//   yellow highlights in NBA's player shadows, +2.3 EV (Trim 1) looked right in all three.
+// The base white point (PreExposure / automatic exposure) tells them apart. kThreshold sits ~17x above the highest
+// pre-exposed reading and ~9x below RDR2's gameplay (raised from 20 after The Witcher 3 reached 6).
 //
-// The verdict only ever moves towards scene-referred. A scene-referred game shows display-range numbers on loading
-// screens and menus (RDR2 read about 1 while loading), but a display-scaled game never reads in the hundreds, so a
-// sustained high reading is conclusive and a low one is only provisional. Evidence: one game of each kind.
+// The verdict only ever moves towards unexposed. An unexposed game shows pre-exposed numbers on loading screens and
+// menus (RDR2 read about 1 while loading), but a pre-exposed game never reads in the hundreds, so a sustained high
+// reading is conclusive and a low one is only provisional. Evidence: one unexposed game, three pre-exposed.
 //
 // Header-only and free of D3D/Vulkan types so the latch can be exercised on the host (tests/nr_auto_trim_smoke.cpp).
 
@@ -26,16 +26,16 @@
 
 namespace DlssNrAutoTrim
 {
-constexpr float kSceneReferredTrim = 0.25f; // +4.3 EV on the menu's scale (neutral 5x)
-constexpr float kDisplayScaledTrim = 1.0f;  // +2.3 EV
-constexpr float kThreshold = 100.0f;        // base white point: RDR2 ~900-1700 in gameplay; display-range games up to ~6 (The Witcher 3)
+constexpr float kUnexposedTrim = 0.25f; // +4.3 EV on the menu's scale (neutral 5x)
+constexpr float kPreExposedTrim = 1.0f;  // +2.3 EV
+constexpr float kThreshold = 100.0f;        // base white point: RDR2 ~900-1700 in gameplay; pre-exposed games up to ~6 (The Witcher 3)
 constexpr unsigned kWindow = 120;           // readings per decision (about 2 s)
 
 enum class Verdict
 {
     Detecting,
-    DisplayScaled, // provisional: can still become SceneReferred
-    SceneReferred, // final for the session
+    PreExposed, // provisional: can still become Unexposed
+    Unexposed,  // final for the session
 };
 
 class Detector
@@ -46,7 +46,7 @@ class Detector
     {
         std::lock_guard<std::mutex> lock(mutex_);
 
-        if (verdict_ == Verdict::SceneReferred || !std::isfinite(baseWhitePoint) || baseWhitePoint <= 0.0f)
+        if (verdict_ == Verdict::Unexposed || !std::isfinite(baseWhitePoint) || baseWhitePoint <= 0.0f)
             return false;
 
         window_[filled_ % kWindow] = baseWhitePoint;
@@ -58,7 +58,7 @@ class Detector
         std::array<float, kWindow> sorted = window_;
         std::nth_element(sorted.begin(), sorted.begin() + kWindow / 2, sorted.end());
         const float median = sorted[kWindow / 2];
-        const Verdict next = median > kThreshold ? Verdict::SceneReferred : Verdict::DisplayScaled;
+        const Verdict next = median > kThreshold ? Verdict::Unexposed : Verdict::PreExposed;
 
         if (next == verdict_)
             return false;
@@ -81,7 +81,7 @@ class Detector
         return median_;
     }
 
-    float DefaultTrim() const { return Get() == Verdict::SceneReferred ? kSceneReferredTrim : kDisplayScaledTrim; }
+    float DefaultTrim() const { return Get() == Verdict::Unexposed ? kUnexposedTrim : kPreExposedTrim; }
 
     void Reset()
     {

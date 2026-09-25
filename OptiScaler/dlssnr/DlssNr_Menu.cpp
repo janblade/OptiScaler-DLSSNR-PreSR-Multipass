@@ -862,15 +862,16 @@ void RenderMenu(Config* config, float menuResScale)
         else if (wpSource == 3)
         {
             // The scale stays centred on a 5x Trim (0 EV), the old default from the PR this came from. The default is
-            // now chosen per game from the frame type -- +4.3 EV scene-referred, +2.3 EV otherwise -- see
+            // now chosen per game from the frame type -- +4.3 EV unexposed, +2.3 EV pre-exposed -- see
             // DlssNr_AutoTrimDefault.h for the measurements. It is independent of the Game exposure Trim.
             RenderTrimEvSlider(config->DlssNrAutoExposureTrim, 5.0f,
                                DlssNrTrim::Parse(config->DlssNrAutoExposureTrimAnchors.value_or_default()).size(),
                                "autoexposure",
                                "Brightness of the picture handed to NR. + is brighter, - is darker."
                                "\nUntil you move it, the default is chosen for the game: +4.3 EV when the game hands over"
-                               "\nits frame in scene units (e.g. RDR2), +2.3 EV when the frame is already near display range"
-                               "\n(e.g. NBA 2K27). Reset goes back to that default."
+                               "\nits frame before applying its exposure (unexposed, e.g. RDR2), +2.3 EV when the exposure"
+                               "\nis already applied (pre-exposed, e.g. NBA 2K27, Cyberpunk 2077, The Witcher 3)."
+                               "\nReset goes back to that default."
                                "\nToo bright clips highlights or tints shadows; too dark hides shadow detail."
                                "\nOptiScaler meters the linear HDR frame itself before NR runs."
                                "\nAutomatic exposure is available on D3D12 and Vulkan.",
@@ -878,8 +879,8 @@ void RenderMenu(Config* config, float menuResScale)
 
             {
                 const auto verdict = DlssNrAutoTrim::Instance().Get();
-                const char* kind = verdict == DlssNrAutoTrim::Verdict::SceneReferred   ? "+4.3 EV (scene-referred frame detected)"
-                                   : verdict == DlssNrAutoTrim::Verdict::DisplayScaled ? "+2.3 EV (display-range frame detected)"
+                const char* kind = verdict == DlssNrAutoTrim::Verdict::Unexposed   ? "+4.3 EV (unexposed frame detected)"
+                                   : verdict == DlssNrAutoTrim::Verdict::PreExposed ? "+2.3 EV (pre-exposed frame detected)"
                                                                                        : "+2.3 EV (detecting...)";
                 ImGui::TextDisabled("Default for this game: %s%s", kind,
                                     config->DlssNrAutoExposureTrim.has_value() ? "; your setting is in use" : "");

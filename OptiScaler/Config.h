@@ -513,8 +513,8 @@ class Config
     // display white-point override.
     // AutoExposureTrim is a multiplier on the white point (higher = darker model input). While unset (ini `auto`) the
     // Trim used is chosen per game from the frame type (DlssNrAutoTrim::Effective, shaders/dlssnr/DlssNr_AutoTrimDefault.h):
-    // 0.25 (+4.3 EV) scene-referred, 1.0 (+2.3 EV) otherwise; the 5.0 below is only the menu's 0 EV point. The menu shows
-    // it as "Model input brightness" in stops around 5x: EV = -log2(trim / 5), so 0 EV = 5x, + is brighter.
+    // 0.25 (+4.3 EV) on an unexposed frame, 1.0 (+2.3 EV) on a pre-exposed one; the 5.0 below is only the menu's 0 EV
+    // point. The menu shows it as "Model input brightness" in stops around 5x: EV = -log2(trim / 5), so 0 EV = 5x, + is brighter.
     // AutoExposureShadowProtection is the menu's "Ignore bright highlights" (percent).
     CustomOptional<float> DlssNrAutoExposureTrim { 5.0f };
     CustomOptional<float> DlssNrAutoExposureShadowProtection { 100.0f };

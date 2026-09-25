@@ -11,6 +11,7 @@
 
 #include <imgui/imgui.h>
 #include <shaders/dlssnr/DlssNr_TrimAnchors.h>
+#include <shaders/dlssnr/DlssNr_AutoTrimDefault.h>
 
 #include <string>
 #include <vector>
@@ -38,83 +39,55 @@ static bool HaveGameExposure()
 
 static void HelpMarker(const char* tip);
 
-// What the exposure source is producing right now, for the Trim anchor controls: the base white point
-// (PreExposure / exposure), or 0 when no exposure has been read yet.
-static float BaseWhitePointOf(const DlssNr::ExposureStatus& status)
+// Trim multiplies the white point, so a larger Trim darkens the picture NR is shown. The menu shows it in stops
+// instead, the other way round (+ = brighter) and centred on each source's own default, which reads as 0 EV.
+static float TrimToEv(float trim, float neutral)
 {
-    return status.exposure > 1e-8f ? status.preExposure / status.exposure : 0.0f;
+    // "+ 0.0f" turns the -0.0 that neutral gives into 0.0, so the slider reads "+0.0 EV", not "-0.0 EV".
+    return -std::log2(std::max(trim, DlssNrTrim::kMinTrim) / neutral) + 0.0f;
 }
 
-// Add / preview / list controls for one Trim anchor table. `stored` is the config string the table
-// lives in; `idSuffix` keeps ImGui ids apart when both sources are on screen over time.
-//
-// Anchors are keyed by the BASE white point, not the raw exposure, so a game changing its PreExposure
-// scale does not move the curve. "Preview" turns the anchors off without deleting them, so the slider
-// can be tuned against the scene on screen and then captured with Add.
-static void RenderExposureTrimAnchorControls(CustomOptional<std::string>& stored, CustomOptional<bool>& previewSetting,
-                                             float baseWhitePoint, float sliderTrim, const char* idSuffix)
+static float EvToTrim(float ev, float neutral)
 {
-    auto anchors = DlssNrTrim::Parse(stored.value_or_default());
-    const bool haveKey = DlssNrTrim::ValidKey(baseWhitePoint);
+    return DlssNrTrim::ClampTrim(neutral * std::exp2(-ev));
+}
 
-    const std::string addLabel = std::string("Add Anchor point##") + idSuffix;
-    ImGui::BeginDisabled(!haveKey);
-    if (ImGui::Button(addLabel.c_str()))
+// The one "Model input brightness" slider (and its Reset) for an exposure source's Trim. `anchorCount` is how
+// many Trim anchors the ini holds for that source: they are ini-only now and take over from the slider, so
+// with any present the slider is shown disabled and says why. `detectedDefault` is set for a source whose
+// default is decided per game (Automatic, see DlssNr_AutoTrimDefault.h): the slider then shows it while the
+// user has set nothing, and Reset goes back to it (the ini key back to auto) rather than to `neutral`.
+static void RenderTrimEvSlider(CustomOptional<float>& trim, float neutral, size_t anchorCount, const char* idSuffix,
+                               const char* tip, std::optional<float> detectedDefault = std::nullopt)
+{
+    const float minEv = TrimToEv(DlssNrTrim::kMaxTrim, neutral);
+    const float maxEv = TrimToEv(DlssNrTrim::kMinTrim, neutral);
+    const float shown = trim.has_value() ? trim.value() : detectedDefault.value_or(trim.value_or_default());
+    float ev = std::clamp(TrimToEv(shown, neutral), minEv, maxEv);
+
+    ImGui::BeginDisabled(anchorCount > 0);
+    const std::string sliderLabel = std::string("Model input brightness##") + idSuffix;
+    if (ImGui::SliderFloat(sliderLabel.c_str(), &ev, minEv, maxEv, "%+.1f EV"))
+        trim = EvToTrim(ev, neutral);
+
+    ImGui::SameLine();
+
+    // Deliberately always present rather than greyed at 0 EV: the safe value is one click away.
+    const std::string resetLabel = std::string("Reset##") + idSuffix;
+    if (ImGui::SmallButton(resetLabel.c_str()))
     {
-        if (DlssNrTrim::Upsert(anchors, baseWhitePoint, sliderTrim))
-            stored = DlssNrTrim::Serialize(anchors);
+        if (detectedDefault.has_value())
+            trim = std::nullopt;
+        else
+            trim = neutral;
     }
     ImGui::EndDisabled();
 
-    ImGui::SameLine();
-    bool preview = previewSetting.value_or_default();
-    const std::string previewLabel = std::string("Preview Trim value for actual scene##") + idSuffix;
-    if (ImGui::Checkbox(previewLabel.c_str(), &preview))
-        previewSetting = preview;
+    HelpMarker(tip);
 
-    HelpMarker("When enabled, Anchor points are temporarily ignored and the Trim slider is applied"
-               "\ndirectly. Tune the current scene, then press Add Anchor point."
-               "\nThe calibration axis is Base White Point = PreExposure / Exposure."
-               "\nThe preview switch is intentionally not saved across restarts.");
-
-    if (!haveKey)
-        ImGui::TextDisabled("Waiting for a valid base white point before an Anchor point can be added.");
-    else
-    {
-        const float effective = DlssNrTrim::TrimForKey(baseWhitePoint, sliderTrim, anchors, preview);
-        ImGui::TextDisabled("Current base white point %.5f -> effective Trim %.2fx%s", baseWhitePoint, effective,
-                            preview ? " (preview)" : "");
-    }
-
-    if (anchors.empty())
-    {
-        ImGui::TextDisabled("No Trim Anchor points: the Trim slider is used for every base white point.");
-        return;
-    }
-
-    if (anchors.size() == 1)
-        ImGui::TextDisabled("1 Trim Anchor point: its Trim is used for every base white point.");
-    else
-        ImGui::TextDisabled("%u Trim Anchor points: Trim is interpolated between base white-point values.",
-                            (unsigned int) anchors.size());
-
-    ImGui::PushID(idSuffix);
-    for (size_t i = 0; i < anchors.size(); ++i)
-    {
-        ImGui::PushID((int) i);
-        if (ImGui::SmallButton("x"))
-        {
-            anchors.erase(anchors.begin() + i);
-            stored = DlssNrTrim::Serialize(anchors);
-            ImGui::PopID();
-            --i;
-            continue;
-        }
-        ImGui::SameLine();
-        ImGui::Text("Base white point %.5f -> Trim %.2fx", anchors[i].key, anchors[i].trim);
-        ImGui::PopID();
-    }
-    ImGui::PopID();
+    if (anchorCount > 0)
+        ImGui::TextDisabled("%u brightness anchor point(s) from the ini are in use; the slider has no effect while they exist.",
+                            (unsigned int) anchorCount);
 }
 
 // The "(?)" marker every control carries, matching the rest of the menu.
@@ -252,8 +225,10 @@ static void ApplyPassPreset(Config* config, unsigned int passes)
     config->DlssNrLocalTone = PresetPass1.tone;
     config->DlssNrSkinStructure = PresetPass1.skin;
     config->DlssNrAutoMask = true;
-    config->DlssNrWhitePointSource = 1u;        // Game exposure
-    config->DlssNrWhitePointTrim = 1.0f;
+    // Automatic exposure at the default chosen for the game (DlssNr_AutoTrimDefault.h). Game exposure at 1x, which
+    // this used to set, gave NBA 2K27 a model input with a median of 0.07-0.32 (measured 2026-09-25).
+    config->DlssNrWhitePointSource = 3u;        // Automatic exposure
+    config->DlssNrAutoExposureTrim = std::nullopt;
     config->DlssNrMaxRatio = 2.0f;               // Highlight guard
 
     if (passes >= 2u)
@@ -622,6 +597,538 @@ void RenderMenu(Config* config, float menuResScale)
                    "Each sets Upscale Mode, Upscale Method, Model resolution and Final Image Composition (High also sets Detail and Colour strength to 1; Medium, Low and Potato also set Restore Sharpness), and turns Auto model resolution off so the resolution applies.\n"
                    "It also sets NR Pass at: to After Super Resolution. Anything not listed here is left as you have it.\n"
                    "The green button is the tier currently in effect; changing NR Pass at:, Upscale Mode, Upscale Method, Model resolution or Final Image Composition clears it.");
+
+        ImGui::SeparatorText("HDR Input");
+        ImGui::TextDisabled("HDR input settings. Adjust the brightness range presented to NR.");
+
+        {
+        // Logarithmic, because the useful range is not linear. A quarter to 240: the low end because
+        // a frame the game already tone mapped wants roughly 1, the high end because there is no
+        // principled ceiling -- this is a divisor on an open-ended linear buffer, and how far up a
+        // given game needs to go is a property of that game's exposure, not of anything we can bound.
+        // One tester was still improving at 100. A linear slider over that span would spend nine
+        // tenths of its travel on values nobody needs and never reach the ones they do.
+        // One dropdown, because there is one answer.
+        //
+        // This was two checkboxes that could both be on, and every attempt to stop that was a patch
+        // on a shape that should not have existed. Greying deadlocked -- each disabled the other, so
+        // once both were set the only way out was a button the notice never mentioned. Clearing
+        // worked but silently undid a setting somebody had made. Both were ways to stop an illegal
+        // state being REACHED; a single choice cannot reach it, because there is only one value to
+        // be in.
+        //
+        // Each option also says whether it can actually do anything in THIS game, in colour, so the
+        // choice is made on what is available rather than on what sounds best.
+        {
+            const bool vk = DlssNr::IsRunningVk();
+            const auto ex = vk ? DlssNr::GameExposureStatusVk() : DlssNr::GameExposureStatus();
+            const bool haveExposure = HaveGameExposure();
+
+            const float anchorNow = DlssNr::ExposureScan::BestValue();
+            const bool haveAnchor = !DlssNr::ExposureScan::Anchors().empty();
+
+            static const char* sourceNames[] = { "Manual paper white", "Game exposure",
+                                                 "Scanned exposure (experimental)",
+                                                 "Automatic exposure from HDR frame" };
+
+            int source = (int) config->DlssNrWhitePointSource.value_or_default();
+
+            if (source < 0 || source > 3)
+                source = 0;
+
+            if (ImGui::Combo("White point source", &source, sourceNames, IM_ARRAYSIZE(sourceNames)))
+            {
+                config->DlssNrWhitePointSource = (uint32_t) source;
+
+                // Nothing else to set. The scan asks the source whether it is wanted, so choosing
+                // it here is the whole of switching it on -- there is no second flag to keep in
+                // step, and so no way for the two to disagree.
+            }
+
+            HelpMarker("Manual: use Paper white. Game exposure: use exposure supplied by the game.\nScanned exposure: estimate it from game buffers; requires calibration and may select the wrong buffer.\nAutomatic exposure: OptiScaler meters the linear HDR frame itself, so it needs nothing from the game.");
+
+            // Availability, in colour, for the option currently chosen.
+            if (source == 1)
+            {
+                if (!vk && ex.seenFrames == 0)
+                    ImGui::TextDisabled("Waiting for a frame...");
+                else if (!haveExposure)
+                    ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
+                                       "No game exposure available. Using manual paper white.");
+                else if (ex.exposure > 1e-6f)
+                {
+                    const float baseWhitePoint = ex.preExposure / ex.exposure;
+                    const auto trimAnchors =
+                        DlssNrTrim::Parse(config->DlssNrGameExposureTrimAnchors.value_or_default());
+                    const float trim = DlssNrTrim::TrimForKey(
+                        baseWhitePoint, config->DlssNrWhitePointTrim.value_or_default(), trimAnchors, false);
+                    ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
+                                       "Game exposure %.4f  ->  model white at %.2f%s", ex.exposure,
+                                       baseWhitePoint * trim,
+                                       ex.offeredNow ? "" : "  (held: absent this frame)");
+                }
+                else
+                    ImGui::TextDisabled("Reading exposure...");
+            }
+            else if (source == 3)
+            {
+                const auto autoEx = vk ? DlssNr::AutoExposureStatusVk() : DlssNr::AutoExposureStatus();
+
+                if (autoEx.exposure > 1e-8f)
+                {
+                    const float baseWhitePoint = autoEx.preExposure / autoEx.exposure;
+                    const auto trimAnchors =
+                        DlssNrTrim::Parse(config->DlssNrAutoExposureTrimAnchors.value_or_default());
+                    const float trim = DlssNrTrim::TrimForKey(
+                        baseWhitePoint, DlssNrAutoTrim::Effective(config->DlssNrAutoExposureTrim), trimAnchors, false);
+                    // Middle-grey metering, mode 13 in dlssnr.hlsl: exposure = 0.18 / (0.82 * average scene brightness).
+                    ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
+                                       "Scene brightness %.3f  ->  model white at %.2f",
+                                       0.18f / (0.82f * autoEx.exposure), baseWhitePoint * trim);
+                    HelpMarker("Measured from the linear HDR frame before NR runs (raw exposure value shown below).\n"
+                               "Model white is the brightness level the picture is scaled to: anything at or above it counts as full white.");
+                    ImGui::TextDisabled("Automatic exposure %.4f", autoEx.exposure);
+                }
+                else
+                    ImGui::TextDisabled("Calculating automatic exposure...");
+            }
+            else if (source == 2)
+            {
+                // "Nothing found" and "found several, none of them moving" are different states,
+                // and this said the first for both. In GTA V the log carried eight candidates while
+                // the panel claimed there were none, which reads as the scan being broken when what
+                // it actually needs is for the light to change.
+                if (anchorNow <= 0.0f)
+                {
+                    const unsigned int watching = (unsigned int) DlssNr::ExposureScan::Report().size();
+
+                    if (watching == 0)
+                        ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
+                                           "No exposure candidates found.");
+                    else
+                        ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
+                                           "%u candidates; move between bright and dark areas to test them.",
+                                           watching);
+                }
+                else if (!haveAnchor)
+                    ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
+                                       "Exposure candidate found. Adjust Paper white, then select Anchor here.");
+                // Once anchored, the scan -> white point readout sits above the sliders below; it is
+                // not repeated up here.
+            }
+            else if (haveExposure)
+            {
+                ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
+                                   "Game exposure is available.");
+            }
+        }
+
+
+
+
+
+
+        // A measured suggestion for paper white used to sit here and has been withdrawn.
+        //
+        // It took the 90th percentile of per-tile peak luminance from the untouched frame, which is a
+        // statement about scene content rather than about the buffer's scale. In Nioh 3, where the
+        // right answer is about 240, it offered 8 -- because most tiles are shadow and the percentile
+        // sits wherever most tiles are. The guard meant to catch that compared each tile against the
+        // frame's own brightest, which is scale-free and therefore passes on a black screen: the same
+        // relative-threshold mistake the white point meter was removed for, made a second time.
+        //
+        // A wrong number offered confidently is worse than no number, so nothing is offered. What
+        // replaces it has to be a measurement of the game's own exposure rather than of its scenery:
+        // the exposure texture where a game supplies one, and otherwise the ratio between the
+        // scene-referred buffer and the finished frame, which is that exposure by definition.
+
+        // Two controls, not one control with two meanings.
+        //
+        // These are different quantities. The manual path wants an absolute divisor on an open-ended
+        // linear buffer -- Nioh 3 needs about 240 -- and the exposure path wants a multiplier on a
+        // number the game already supplied, where 1 is correct and anything far from it says the read
+        // is wrong rather than that somebody prefers it.
+        //
+        // They used to share one stored value, narrowed to 0.25..4 when the toggle was on. That kept
+        // a ruinous value unreachable but left two worse problems: moving the slider in one mode
+        // silently destroyed the number found in the other, and there was no way back to "just take
+        // the game's answer" short of knowing that the number for it was 1. Separate values fix both.
+        // Switching modes is now non-destructive in both directions.
+        // The trim belongs to both automatic sources, since both end in "the game's number times a
+        // little". Only the manual source gets the absolute slider.
+        // One slider per source, each remembering its own number.
+        //
+        // A trim on the game's exposure and a trim on a buffer the scan found are trims on different
+        // things, and a value found against one means nothing against the other. Sharing them meant
+        // changing source silently carried a number across, so a picture that had been tuned came
+        // back wrong for a reason nothing on screen explained.
+        //
+        // The scan before it is anchored is the exception, and it has to be: anchoring captures an
+        // absolute white point, so there must be an absolute slider to set. Showing a trim there
+        // asked people to "set paper white below" next to a control that was not paper white.
+        const int wpSource = (int) config->DlssNrWhitePointSource.value_or_default();
+
+        // Which anchor row the paper-white slider edits, or -1 for the live unanchored point. Menu-
+        // local and not persisted; the anchor block below sets it when a row is clicked. Declared
+        // here because both the slider (this block) and the table (below) read it in the same frame.
+        static int selectedAnchor = -1;
+        auto anchors = DlssNr::ExposureScan::Anchors();
+        if (selectedAnchor >= (int) anchors.size())
+            selectedAnchor = -1;
+
+        if (wpSource == 2)
+        {
+            const bool editingRow = selectedAnchor >= 0 && selectedAnchor < (int) anchors.size();
+
+            // The single scan -> white point readout, above the sliders it explains.
+            if (!anchors.empty())
+            {
+                const float liveScan = DlssNr::ExposureScan::BestValue();
+
+                if (liveScan > 0.0f)
+                {
+                    const float w = DlssNr::ExposureScan::AnchoredWhitePoint(
+                        liveScan, config->DlssNrScanInverted.value_or_default(),
+                        config->DlssNrScanTrim.value_or_default());
+
+                    ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
+                                       "Scan %.5f  ->  white point %.2f   (%u point%s)", liveScan, w,
+                                       (unsigned) anchors.size(), anchors.size() == 1 ? "" : "s");
+                }
+            }
+
+            // Paper white shows only when there is a point to set: before the first anchor, or when a
+            // row is selected to edit. Once points exist and none is selected, the white point is fixed
+            // by the anchors and only the trim adjusts the live picture -- so the trim takes the
+            // slider's place, the same shape as the game-exposure source.
+            const bool showPaperWhite = anchors.empty() || editingRow;
+
+            if (showPaperWhite)
+            {
+                float pw = editingRow ? anchors[selectedAnchor].white
+                                      : config->DlssNrWhitePointScale.value_or_default();
+
+                char lbl[48];
+                if (editingRow)
+                    snprintf(lbl, sizeof(lbl), "Paper white (editing point %d)", selectedAnchor + 1);
+                else
+                    snprintf(lbl, sizeof(lbl), "Paper white");
+
+                if (ImGui::SliderFloat(lbl, &pw, 0.25f, 2000.0f, "%.2fx", ImGuiSliderFlags_Logarithmic))
+                {
+                    if (editingRow)
+                    {
+                        DlssNr::ExposureScan::AnchorSetWhite(selectedAnchor, pw);
+                        config->DlssNrScanAnchors = DlssNr::ExposureScan::SerializeAnchors();
+                    }
+                    else
+                        config->DlssNrWhitePointScale = pw;
+                }
+
+                HelpMarker("Adjust the selected calibration point, or set the value for the next point.\nUse Anchor here to save the current lighting condition.");
+            }
+
+            // The trim multiplies the interpolated result, and in the steady state it is the control
+            // that stands in for paper white: adjust it until the picture looks right in the current
+            // light, then Anchor bakes that trimmed value into a new point and resets the trim to 1.
+            if (!anchors.empty())
+            {
+                float trim = config->DlssNrScanTrim.value_or_default();
+
+                if (ImGui::SliderFloat("Trim (x the scan)", &trim, 0.25f, 4.0f, "%.2fx",
+                                       ImGuiSliderFlags_Logarithmic))
+                    config->DlssNrScanTrim = std::clamp(trim, 0.25f, 4.0f);
+
+                ImGui::SameLine();
+
+                if (ImGui::SmallButton("Reset##scantrim"))
+                    config->DlssNrScanTrim = 1.0f;
+
+                HelpMarker("Multiply the calibrated white point. Anchor here saves the adjusted value and resets this multiplier to 1.");
+            }
+        }
+        else if (wpSource == 1)
+        {
+            // Up to 50x under the hood: a game's reported exposure scale can sit well below what the picture wants
+            // (Marvel's Spider-Man Remastered with XeSS swapped to DLSS is one), so 4x was too tight. Shown as
+            // stops around 1x, which is why the slider runs further towards darker than towards brighter.
+            RenderTrimEvSlider(config->DlssNrWhitePointTrim, 1.0f,
+                               DlssNrTrim::Parse(config->DlssNrGameExposureTrimAnchors.value_or_default()).size(),
+                               "gameexposure",
+                               "Brightness of the picture handed to NR, relative to the exposure the game reports."
+                               "\n+ is brighter, - is darker; 0 EV uses the game's exposure as is."
+                               "\nToo bright clips highlights; too dark hides shadow detail.");
+        }
+        else if (wpSource == 3)
+        {
+            // The scale stays centred on a 5x Trim (0 EV), the old default from the PR this came from. The default is
+            // now chosen per game from the frame type -- +4.3 EV unexposed, +2.3 EV pre-exposed -- see
+            // DlssNr_AutoTrimDefault.h for the measurements. It is independent of the Game exposure Trim.
+            RenderTrimEvSlider(config->DlssNrAutoExposureTrim, 5.0f,
+                               DlssNrTrim::Parse(config->DlssNrAutoExposureTrimAnchors.value_or_default()).size(),
+                               "autoexposure",
+                               "Brightness of the picture handed to NR. + is brighter, - is darker."
+                               "\nUntil you move it, the default is chosen for the game: +4.3 EV when the game hands over"
+                               "\nits frame before applying its exposure (unexposed, e.g. RDR2), +2.3 EV when the exposure"
+                               "\nis already applied (pre-exposed, e.g. NBA 2K27, Cyberpunk 2077, The Witcher 3)."
+                               "\nReset goes back to that default."
+                               "\nToo bright clips highlights or tints shadows; too dark hides shadow detail."
+                               "\nOptiScaler meters the linear HDR frame itself before NR runs."
+                               "\nAutomatic exposure is available on D3D12 and Vulkan.",
+                               DlssNrAutoTrim::Instance().DefaultTrim());
+
+            {
+                const auto verdict = DlssNrAutoTrim::Instance().Get();
+                const char* kind = verdict == DlssNrAutoTrim::Verdict::Unexposed   ? "+4.3 EV (unexposed frame detected)"
+                                   : verdict == DlssNrAutoTrim::Verdict::PreExposed ? "+2.3 EV (pre-exposed frame detected)"
+                                                                                       : "+2.3 EV (detecting...)";
+                ImGui::TextDisabled("Default for this game: %s%s", kind,
+                                    config->DlssNrAutoExposureTrim.has_value() ? "; your setting is in use" : "");
+            }
+
+            float protection = config->DlssNrAutoExposureShadowProtection.value_or_default();
+            if (ImGui::SliderFloat("Ignore bright highlights", &protection, 0.0f, 100.0f, "%.0f%%"))
+                config->DlssNrAutoExposureShadowProtection = std::clamp(protection, 0.0f, 100.0f);
+
+            HelpMarker("Stops the sky, lamps and reflections from darkening the rest of the picture."
+                       "\n0% averages the whole frame as it is; 100% counts bright areas the least."
+                       "\nNothing is cropped out.");
+        }
+        else
+        {
+            // Logarithmic, because the useful range is not linear. A quarter to 2000: the low end
+            // because a frame the game already tone mapped wants roughly 1, the high end because
+            // there is no principled ceiling -- this is a divisor on an open-ended linear buffer, and
+            // how far up a given game needs to go is a property of that game's exposure rather than
+            // of anything that can be bounded here. One tester was still improving at 100.
+            float wpScale = config->DlssNrWhitePointScale.value_or_default();
+
+            if (ImGui::SliderFloat("Paper white", &wpScale, 0.25f, 2000.0f, "%.2fx",
+                                   ImGuiSliderFlags_Logarithmic))
+                config->DlssNrWhitePointScale = wpScale;
+
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset##paperwhite"))
+                config->DlssNrWhitePointScale = 1.0f;
+
+        HelpMarker("Brightness reference used to prepare HDR colour for NR. Higher values darken the model input; lower values brighten it.\nAdjust if NR loses detail or produces colour shifts.");
+        }
+
+        // Highlight guard, directly under the white point / trim -- it bounds the model's edit and
+        // belongs with the exposure controls it works alongside.
+        float maxRatio = config->DlssNrMaxRatio.value_or_default();
+        if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, MaxHighlightGuard, "%.1fx"))
+            config->DlssNrMaxRatio = maxRatio;
+
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##guard"))
+            config->DlssNrMaxRatio = 2.0f;
+
+        HelpMarker("Limit how much NR can brighten a pixel; darkening is not capped. Lower values restrict highlight changes; higher values allow more.\nReplace mode still bounds darkening too -- a different guard, for a different reason.");
+
+        // Directly under the white point, because that is the number it moves and the number the
+        // anchor captures. It used to sit under Inspect, a whole section away from the slider it
+        // reads, which left "Anchor here" looking like a control for something else entirely.
+        {
+            // No checkbox here any more.
+            //
+            // The dropdown above says whether the scan is the white point's source, and that is
+            // the only reason anybody using this would want it running. A second control could
+            // only agree with the dropdown or contradict it, and both were on offer: it began as
+            // a redundant question and became a way to switch off the thing the chosen source
+            // depended on.
+            //
+            // The ini key survives as a developer override for the one case a user has no reason
+            // to want -- running the scan in a game that supplies a REAL exposure, so the log can
+            // compare the two. That is validation, and validation does not need a widget.
+            //
+            // Worth keeping written down, since the panel no longer says it: the scan matches
+            // buffers by SHAPE, and shape is a weak filter. In GTA V -- a game that supplies a
+            // real exposure, so the right answer sat visible beside it -- the best candidate was
+            // a 1x1 R32_FLOAT that climbed in a straight line for seventeen minutes while the
+            // true exposure held still. Their ratio moved 14x. That is an accumulator, not an
+            // eye adaptation.
+
+                // Only where it means something. The lamp reads the scan, so offering it beside a
+                // white point that comes from the game's own exposure is offering a control that
+                // cannot light up.
+                bool meter = config->DlssNrScanMeter.value_or_default();
+
+                if (config->DlssNrWhitePointSource.value_or_default() == 2 &&
+                    ImGui::Checkbox("Show exposure meter", &meter))
+                    config->DlssNrScanMeter = meter;
+
+                HelpMarker("Show the scanned exposure value and a colour indicator. Display only; does not change the image.");
+
+            // Shown when the scan is actually running, whichever way it got switched on.
+            if (DlssNr::ExposureScan::Scanning())
+            {
+                // Anchoring: one press, then it never needs touching again.
+                //
+                // The absolute white point cannot come out of a buffer whose units are unknown.
+                // Every value AFTER the first can: only the ratio against the anchor is used, so
+                // whatever the number means, it cancels. That is why this is a button and not a
+                // measurement -- the one thing a person can supply that no amount of cleverness
+                // can is "this looks right to me".
+                int which = 0;
+                float low = 0.0f, high = 0.0f;
+                const float live = DlssNr::ExposureScan::BestValue(&which, &low, &high);
+
+                const bool isSource = config->DlssNrWhitePointSource.value_or_default() == 2;
+
+                // Anchor captures (currentScan, currentPaperWhite) and ADDS a row -- it does not
+                // replace. One row is the old single-anchor ratio law; add a second in different
+                // light and the white point is interpolated between the points, so it holds across
+                // the whole range instead of only near one anchor. Greyed unless the scan is the
+                // chosen source and it currently has a value to capture.
+                ImGui::BeginDisabled(live <= 0.0f || !isSource);
+
+                if (ImGui::Button("Anchor here"))
+                {
+                    // What to capture. Before the first point, the paper white above (an absolute value
+                    // with the wide range a fresh game needs). After that, the EFFECTIVE white point the
+                    // picture is showing right now -- the interpolated value times the Trim the user just
+                    // dialed in -- so a second point in different light captures the trimmed look, not a
+                    // frozen paper white (which would make two equal whites and a flat, non-tracking
+                    // curve). The trim is reset afterwards: the new point, which the picture now passes
+                    // through exactly, must not be multiplied by it a second time.
+                    const float captureWhite =
+                        anchors.empty()
+                            ? std::max(0.01f, config->DlssNrWhitePointScale.value_or_default())
+                            : std::max(0.01f, DlssNr::ExposureScan::AnchoredWhitePoint(
+                                                  live, config->DlssNrScanInverted.value_or_default(),
+                                                  config->DlssNrScanTrim.value_or_default()));
+
+                    if (DlssNr::ExposureScan::AnchorAdd(live, captureWhite))
+                    {
+                        config->DlssNrScanAnchors = DlssNr::ExposureScan::SerializeAnchors();
+                        config->DlssNrScanTrim = 1.0f;
+                        selectedAnchor = -1;
+                    }
+                }
+
+                ImGui::EndDisabled();
+
+                HelpMarker("Save the current exposure and white point as a calibration point.\nAdjust Paper white for the first point, then Trim for additional lighting conditions. Up to 8 points.");
+
+                if (!isSource)
+                    ImGui::TextDisabled("Scanned exposure is not the selected white point source.");
+
+                if (!anchors.empty())
+                {
+                    // The row nearest the live scan value (in log space) is the one driving the
+                    // picture right now; mark it so the user can see which calibration is in effect.
+                    int active = 0;
+                    float bestDist = 1e30f;
+                    const float liveLog = std::log(std::max(live, 1e-6f));
+
+                    for (size_t i = 0; i < anchors.size(); ++i)
+                    {
+                        const float d =
+                            std::fabs(std::log(std::max(anchors[i].scan, 1e-6f)) - liveLog);
+                        if (d < bestDist)
+                        {
+                            bestDist = d;
+                            active = (int) i;
+                        }
+                    }
+
+                    for (size_t i = 0; i < anchors.size(); ++i)
+                    {
+                        ImGui::PushID((int) i);
+
+                        // Delete first, so its click is never swallowed by the row-wide Selectable.
+                        if (ImGui::SmallButton("x"))
+                        {
+                            DlssNr::ExposureScan::AnchorRemove((int) i);
+                            config->DlssNrScanAnchors = DlssNr::ExposureScan::SerializeAnchors();
+                            if (selectedAnchor == (int) i)
+                                selectedAnchor = -1;
+                            else if (selectedAnchor > (int) i)
+                                --selectedAnchor;
+                            ImGui::PopID();
+                            continue;
+                        }
+
+                        ImGui::SameLine();
+
+                        const bool sel = (int) i == selectedAnchor;
+                        char row[96];
+                        snprintf(row, sizeof(row), "%s scan %.4f  ->  white %.2f%s",
+                                 ((int) i == active && isSource) ? ">" : "  ", anchors[i].scan,
+                                 anchors[i].white, sel ? "   [editing]" : "");
+
+                        // Click selects the row (slider edits it); click again deselects (slider
+                        // returns to the live unanchored point).
+                        if (ImGui::Selectable(row, sel))
+                            selectedAnchor = sel ? -1 : (int) i;
+
+                        ImGui::PopID();
+                    }
+
+                    ImGui::TextDisabled("Select a row to edit it; select it again"
+                                        " to deselect. > marks the active point.");
+                }
+
+                // The direction flag only means anything with a single point; with two or more the
+                // direction the white point moves is already fixed by the data.
+                if (anchors.size() == 1)
+                {
+                    bool inverted = config->DlssNrScanInverted.value_or_default();
+                    if (ImGui::Checkbox("Invert exposure tracking", &inverted))
+                        config->DlssNrScanInverted = inverted;
+
+                    HelpMarker("Reverse how scanned exposure changes the white point. Only needed with one calibration point.");
+                }
+
+                // The scan -> white point readout is shown above the sliders now, not here.
+
+                // Everything below is read-out rather than control: what the scan is looking at and
+                // how to tell whether it found the right thing. Folded away because the two decisions
+                // that matter -- anchor, and which way the number runs -- are above it.
+                if (ImGui::TreeNode("Advanced"))
+                {
+
+                    const auto found = DlssNr::ExposureScan::Report();
+                    const char* why = DlssNr::ExposureScan::Status();
+
+                    if (found.empty())
+                    {
+                        ImGui::TextDisabled("%s", why != nullptr && why[0] != 0
+                                                      ? why
+                                                      : "No exposure candidates found.");
+                    }
+                    else
+                    {
+                        for (size_t i = 0; i < found.size(); ++i)
+                        {
+                            const auto& c = found[i];
+
+                            if (c.reads == 0)
+                            {
+                                ImGui::TextDisabled("%zu. %s -- not read yet", i + 1, c.shape.c_str());
+                                continue;
+                            }
+
+                            // Moving is the whole signal, so it is the thing that is coloured.
+                            ImGui::TextColored(c.moves ? ImVec4(0.45f, 0.8f, 0.45f, 1.0f)
+                                                       : ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+                                               "%zu. %s = %.5f  (seen %.5f..%.5f) %s", i + 1,
+                                               c.shape.c_str(), c.latest, c.lowest, c.highest,
+                                               c.moves ? "MOVES" : "flat so far");
+                        }
+
+                        ImGui::TextDisabled("Move between bright and dark areas to check exposure tracking.");
+                        ImGui::TextDisabled("A value that only increases may be a counter.");
+                    }
+
+                    ImGui::TreePop();
+                }
+            }
+        }
+
+
+        }
 
         ImGui::SeparatorText("NR Options");
 
@@ -1070,558 +1577,6 @@ void RenderMenu(Config* config, float menuResScale)
             ImGui::TreePop();
         }
 
-        ImGui::TextDisabled("HDR input settings. Adjust the brightness range presented to NR.");
-
-        {
-        // Logarithmic, because the useful range is not linear. A quarter to 240: the low end because
-        // a frame the game already tone mapped wants roughly 1, the high end because there is no
-        // principled ceiling -- this is a divisor on an open-ended linear buffer, and how far up a
-        // given game needs to go is a property of that game's exposure, not of anything we can bound.
-        // One tester was still improving at 100. A linear slider over that span would spend nine
-        // tenths of its travel on values nobody needs and never reach the ones they do.
-        // One dropdown, because there is one answer.
-        //
-        // This was two checkboxes that could both be on, and every attempt to stop that was a patch
-        // on a shape that should not have existed. Greying deadlocked -- each disabled the other, so
-        // once both were set the only way out was a button the notice never mentioned. Clearing
-        // worked but silently undid a setting somebody had made. Both were ways to stop an illegal
-        // state being REACHED; a single choice cannot reach it, because there is only one value to
-        // be in.
-        //
-        // Each option also says whether it can actually do anything in THIS game, in colour, so the
-        // choice is made on what is available rather than on what sounds best.
-        {
-            const bool vk = DlssNr::IsRunningVk();
-            const auto ex = vk ? DlssNr::GameExposureStatusVk() : DlssNr::GameExposureStatus();
-            const bool haveExposure = HaveGameExposure();
-
-            const float anchorNow = DlssNr::ExposureScan::BestValue();
-            const bool haveAnchor = !DlssNr::ExposureScan::Anchors().empty();
-
-            static const char* sourceNames[] = { "Manual paper white", "Game exposure",
-                                                 "Scanned exposure (experimental)",
-                                                 "Automatic exposure from HDR frame" };
-
-            int source = (int) config->DlssNrWhitePointSource.value_or_default();
-
-            if (source < 0 || source > 3)
-                source = 0;
-
-            if (ImGui::Combo("White point source", &source, sourceNames, IM_ARRAYSIZE(sourceNames)))
-            {
-                config->DlssNrWhitePointSource = (uint32_t) source;
-
-                // Nothing else to set. The scan asks the source whether it is wanted, so choosing
-                // it here is the whole of switching it on -- there is no second flag to keep in
-                // step, and so no way for the two to disagree.
-            }
-
-            HelpMarker("Manual: use Paper white. Game exposure: use exposure supplied by the game.\nScanned exposure: estimate it from game buffers; requires calibration and may select the wrong buffer.\nAutomatic exposure: OptiScaler meters the linear HDR frame itself, so it needs nothing from the game.");
-
-            // Availability, in colour, for the option currently chosen.
-            if (source == 1)
-            {
-                if (!vk && ex.seenFrames == 0)
-                    ImGui::TextDisabled("Waiting for a frame...");
-                else if (!haveExposure)
-                    ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
-                                       "No game exposure available. Using manual paper white.");
-                else if (ex.exposure > 1e-6f)
-                {
-                    const float baseWhitePoint = ex.preExposure / ex.exposure;
-                    const auto trimAnchors =
-                        DlssNrTrim::Parse(config->DlssNrGameExposureTrimAnchors.value_or_default());
-                    const float trim = DlssNrTrim::TrimForKey(
-                        baseWhitePoint, config->DlssNrWhitePointTrim.value_or_default(), trimAnchors,
-                        config->DlssNrGameExposureTrimPreview.value_or_default());
-                    ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
-                                       "Game exposure %.4f  ->  white point %.2f%s", ex.exposure,
-                                       baseWhitePoint * trim,
-                                       ex.offeredNow ? "" : "  (held: absent this frame)");
-                }
-                else
-                    ImGui::TextDisabled("Reading exposure...");
-            }
-            else if (source == 3)
-            {
-                const auto autoEx = vk ? DlssNr::AutoExposureStatusVk() : DlssNr::AutoExposureStatus();
-
-                if (autoEx.exposure > 1e-8f)
-                {
-                    const float baseWhitePoint = autoEx.preExposure / autoEx.exposure;
-                    const auto trimAnchors =
-                        DlssNrTrim::Parse(config->DlssNrAutoExposureTrimAnchors.value_or_default());
-                    const float trim = DlssNrTrim::TrimForKey(
-                        baseWhitePoint, config->DlssNrAutoExposureTrim.value_or_default(), trimAnchors,
-                        config->DlssNrAutoExposureTrimPreview.value_or_default());
-                    ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
-                                       "Automatic exposure %.4f  ->  white point %.2f", autoEx.exposure,
-                                       baseWhitePoint * trim);
-                    ImGui::TextDisabled("Exposure calculated automatically from a linear HDR frame");
-                }
-                else
-                    ImGui::TextDisabled("Calculating automatic exposure...");
-            }
-            else if (source == 2)
-            {
-                // "Nothing found" and "found several, none of them moving" are different states,
-                // and this said the first for both. In GTA V the log carried eight candidates while
-                // the panel claimed there were none, which reads as the scan being broken when what
-                // it actually needs is for the light to change.
-                if (anchorNow <= 0.0f)
-                {
-                    const unsigned int watching = (unsigned int) DlssNr::ExposureScan::Report().size();
-
-                    if (watching == 0)
-                        ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
-                                           "No exposure candidates found.");
-                    else
-                        ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
-                                           "%u candidates; move between bright and dark areas to test them.",
-                                           watching);
-                }
-                else if (!haveAnchor)
-                    ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
-                                       "Exposure candidate found. Adjust Paper white, then select Anchor here.");
-                // Once anchored, the scan -> white point readout sits above the sliders below; it is
-                // not repeated up here.
-            }
-            else if (haveExposure)
-            {
-                ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
-                                   "Game exposure is available.");
-            }
-        }
-
-
-
-
-
-
-        // A measured suggestion for paper white used to sit here and has been withdrawn.
-        //
-        // It took the 90th percentile of per-tile peak luminance from the untouched frame, which is a
-        // statement about scene content rather than about the buffer's scale. In Nioh 3, where the
-        // right answer is about 240, it offered 8 -- because most tiles are shadow and the percentile
-        // sits wherever most tiles are. The guard meant to catch that compared each tile against the
-        // frame's own brightest, which is scale-free and therefore passes on a black screen: the same
-        // relative-threshold mistake the white point meter was removed for, made a second time.
-        //
-        // A wrong number offered confidently is worse than no number, so nothing is offered. What
-        // replaces it has to be a measurement of the game's own exposure rather than of its scenery:
-        // the exposure texture where a game supplies one, and otherwise the ratio between the
-        // scene-referred buffer and the finished frame, which is that exposure by definition.
-
-        // Two controls, not one control with two meanings.
-        //
-        // These are different quantities. The manual path wants an absolute divisor on an open-ended
-        // linear buffer -- Nioh 3 needs about 240 -- and the exposure path wants a multiplier on a
-        // number the game already supplied, where 1 is correct and anything far from it says the read
-        // is wrong rather than that somebody prefers it.
-        //
-        // They used to share one stored value, narrowed to 0.25..4 when the toggle was on. That kept
-        // a ruinous value unreachable but left two worse problems: moving the slider in one mode
-        // silently destroyed the number found in the other, and there was no way back to "just take
-        // the game's answer" short of knowing that the number for it was 1. Separate values fix both.
-        // Switching modes is now non-destructive in both directions.
-        // The trim belongs to both automatic sources, since both end in "the game's number times a
-        // little". Only the manual source gets the absolute slider.
-        // One slider per source, each remembering its own number.
-        //
-        // A trim on the game's exposure and a trim on a buffer the scan found are trims on different
-        // things, and a value found against one means nothing against the other. Sharing them meant
-        // changing source silently carried a number across, so a picture that had been tuned came
-        // back wrong for a reason nothing on screen explained.
-        //
-        // The scan before it is anchored is the exception, and it has to be: anchoring captures an
-        // absolute white point, so there must be an absolute slider to set. Showing a trim there
-        // asked people to "set paper white below" next to a control that was not paper white.
-        const int wpSource = (int) config->DlssNrWhitePointSource.value_or_default();
-
-        // Which anchor row the paper-white slider edits, or -1 for the live unanchored point. Menu-
-        // local and not persisted; the anchor block below sets it when a row is clicked. Declared
-        // here because both the slider (this block) and the table (below) read it in the same frame.
-        static int selectedAnchor = -1;
-        auto anchors = DlssNr::ExposureScan::Anchors();
-        if (selectedAnchor >= (int) anchors.size())
-            selectedAnchor = -1;
-
-        if (wpSource == 2)
-        {
-            const bool editingRow = selectedAnchor >= 0 && selectedAnchor < (int) anchors.size();
-
-            // The single scan -> white point readout, above the sliders it explains.
-            if (!anchors.empty())
-            {
-                const float liveScan = DlssNr::ExposureScan::BestValue();
-
-                if (liveScan > 0.0f)
-                {
-                    const float w = DlssNr::ExposureScan::AnchoredWhitePoint(
-                        liveScan, config->DlssNrScanInverted.value_or_default(),
-                        config->DlssNrScanTrim.value_or_default());
-
-                    ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
-                                       "Scan %.5f  ->  white point %.2f   (%u point%s)", liveScan, w,
-                                       (unsigned) anchors.size(), anchors.size() == 1 ? "" : "s");
-                }
-            }
-
-            // Paper white shows only when there is a point to set: before the first anchor, or when a
-            // row is selected to edit. Once points exist and none is selected, the white point is fixed
-            // by the anchors and only the trim adjusts the live picture -- so the trim takes the
-            // slider's place, the same shape as the game-exposure source.
-            const bool showPaperWhite = anchors.empty() || editingRow;
-
-            if (showPaperWhite)
-            {
-                float pw = editingRow ? anchors[selectedAnchor].white
-                                      : config->DlssNrWhitePointScale.value_or_default();
-
-                char lbl[48];
-                if (editingRow)
-                    snprintf(lbl, sizeof(lbl), "Paper white (editing point %d)", selectedAnchor + 1);
-                else
-                    snprintf(lbl, sizeof(lbl), "Paper white");
-
-                if (ImGui::SliderFloat(lbl, &pw, 0.25f, 2000.0f, "%.2fx", ImGuiSliderFlags_Logarithmic))
-                {
-                    if (editingRow)
-                    {
-                        DlssNr::ExposureScan::AnchorSetWhite(selectedAnchor, pw);
-                        config->DlssNrScanAnchors = DlssNr::ExposureScan::SerializeAnchors();
-                    }
-                    else
-                        config->DlssNrWhitePointScale = pw;
-                }
-
-                HelpMarker("Adjust the selected calibration point, or set the value for the next point.\nUse Anchor here to save the current lighting condition.");
-            }
-
-            // The trim multiplies the interpolated result, and in the steady state it is the control
-            // that stands in for paper white: adjust it until the picture looks right in the current
-            // light, then Anchor bakes that trimmed value into a new point and resets the trim to 1.
-            if (!anchors.empty())
-            {
-                float trim = config->DlssNrScanTrim.value_or_default();
-
-                if (ImGui::SliderFloat("Trim (x the scan)", &trim, 0.25f, 4.0f, "%.2fx",
-                                       ImGuiSliderFlags_Logarithmic))
-                    config->DlssNrScanTrim = std::clamp(trim, 0.25f, 4.0f);
-
-                ImGui::SameLine();
-
-                if (ImGui::SmallButton("Reset##scantrim"))
-                    config->DlssNrScanTrim = 1.0f;
-
-                HelpMarker("Multiply the calibrated white point. Anchor here saves the adjusted value and resets this multiplier to 1.");
-            }
-        }
-        else if (wpSource == 1)
-        {
-            // Up to 50x: a game's reported exposure scale can sit well below what the picture wants
-            // (Marvel's Spider-Man Remastered with XeSS swapped to DLSS is one), so 4x was too tight.
-            float trim = config->DlssNrWhitePointTrim.value_or_default();
-
-            if (ImGui::SliderFloat("Trim (x the game's exposure)", &trim, DlssNrTrim::kMinTrim,
-                                   DlssNrTrim::kMaxTrim, "%.2fx", ImGuiSliderFlags_Logarithmic))
-                config->DlssNrWhitePointTrim = DlssNrTrim::ClampTrim(trim);
-
-            ImGui::SameLine();
-
-            // Deliberately always present rather than greyed at 1. The point of it is that the safe
-            // value is one click away without having to know what the safe value is.
-            if (ImGui::SmallButton("Reset##wptrim"))
-            {
-                config->DlssNrWhitePointTrim = 1.0f;
-                trim = 1.0f;
-            }
-
-            HelpMarker("Multiply the white point derived from game exposure. 1 = no adjustment.");
-
-            RenderExposureTrimAnchorControls(config->DlssNrGameExposureTrimAnchors,
-                                             config->DlssNrGameExposureTrimPreview,
-                                             BaseWhitePointOf(DlssNr::IsRunningVk() ? DlssNr::GameExposureStatusVk()
-                                                                                    : DlssNr::GameExposureStatus()),
-                                             trim, "gameExposureTrim");
-        }
-        else if (wpSource == 3)
-        {
-            // 5x by default: the PR this came from found that a useful starting point across several
-            // games. It is independent of the Game exposure Trim.
-            float autoTrim = config->DlssNrAutoExposureTrim.value_or_default();
-
-            if (ImGui::SliderFloat("Trim (x automatic exposure)", &autoTrim, DlssNrTrim::kMinTrim,
-                                   DlssNrTrim::kMaxTrim, "%.2fx", ImGuiSliderFlags_Logarithmic))
-                config->DlssNrAutoExposureTrim = DlssNrTrim::ClampTrim(autoTrim);
-
-            ImGui::SameLine();
-
-            if (ImGui::SmallButton("Reset##autoexposuretrim"))
-            {
-                config->DlssNrAutoExposureTrim = 5.0f;
-                autoTrim = 5.0f;
-            }
-
-            HelpMarker("OptiScaler calculates exposure from the ORIGINAL linear-HDR frame before Neural Rendering."
-                       "\nRange: 0.25x to 50.00x. Default: 5.00x"
-                       "\nTry to use the highest value that subjectively looks best; excessive values"
-                       "\nwill degrade image quality. Anchor points can use different Trim values for"
-                       "\ndifferent Base White Point values."
-                       "\nAutomatic exposure is available on D3D12 and Vulkan.");
-
-            float protection = config->DlssNrAutoExposureShadowProtection.value_or_default();
-            if (ImGui::SliderFloat("Shadow protection from bright highlights", &protection, 0.0f, 100.0f, "%.0f%%"))
-                config->DlssNrAutoExposureShadowProtection = std::clamp(protection, 0.0f, 100.0f);
-
-            HelpMarker("Controls how strongly very bright highlights are prevented from driving Automatic exposure."
-                       "\n0% keeps the original full-frame arithmetic average."
-                       "\n100% uses the strongest soft highlight compression. No tiles are discarded.");
-
-            ImGui::TextDisabled("Metering: highlight-compressed arithmetic average.");
-
-            RenderExposureTrimAnchorControls(config->DlssNrAutoExposureTrimAnchors,
-                                             config->DlssNrAutoExposureTrimPreview,
-                                             BaseWhitePointOf(DlssNr::IsRunningVk() ? DlssNr::AutoExposureStatusVk()
-                                                                                    : DlssNr::AutoExposureStatus()),
-                                             autoTrim, "automaticExposureTrim");
-        }
-        else
-        {
-            // Logarithmic, because the useful range is not linear. A quarter to 2000: the low end
-            // because a frame the game already tone mapped wants roughly 1, the high end because
-            // there is no principled ceiling -- this is a divisor on an open-ended linear buffer, and
-            // how far up a given game needs to go is a property of that game's exposure rather than
-            // of anything that can be bounded here. One tester was still improving at 100.
-            float wpScale = config->DlssNrWhitePointScale.value_or_default();
-
-            if (ImGui::SliderFloat("Paper white", &wpScale, 0.25f, 2000.0f, "%.2fx",
-                                   ImGuiSliderFlags_Logarithmic))
-                config->DlssNrWhitePointScale = wpScale;
-
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Reset##paperwhite"))
-                config->DlssNrWhitePointScale = 1.0f;
-
-        HelpMarker("Brightness reference used to prepare HDR colour for NR. Higher values darken the model input; lower values brighten it.\nAdjust if NR loses detail or produces colour shifts.");
-        }
-
-        // Highlight guard, directly under the white point / trim -- it bounds the model's edit and
-        // belongs with the exposure controls it works alongside.
-        float maxRatio = config->DlssNrMaxRatio.value_or_default();
-        if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, MaxHighlightGuard, "%.1fx"))
-            config->DlssNrMaxRatio = maxRatio;
-
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Reset##guard"))
-            config->DlssNrMaxRatio = 2.0f;
-
-        HelpMarker("Limit how much NR can brighten a pixel; darkening is not capped. Lower values restrict highlight changes; higher values allow more.\nReplace mode still bounds darkening too -- a different guard, for a different reason.");
-
-        // Directly under the white point, because that is the number it moves and the number the
-        // anchor captures. It used to sit under Inspect, a whole section away from the slider it
-        // reads, which left "Anchor here" looking like a control for something else entirely.
-        {
-            // No checkbox here any more.
-            //
-            // The dropdown above says whether the scan is the white point's source, and that is
-            // the only reason anybody using this would want it running. A second control could
-            // only agree with the dropdown or contradict it, and both were on offer: it began as
-            // a redundant question and became a way to switch off the thing the chosen source
-            // depended on.
-            //
-            // The ini key survives as a developer override for the one case a user has no reason
-            // to want -- running the scan in a game that supplies a REAL exposure, so the log can
-            // compare the two. That is validation, and validation does not need a widget.
-            //
-            // Worth keeping written down, since the panel no longer says it: the scan matches
-            // buffers by SHAPE, and shape is a weak filter. In GTA V -- a game that supplies a
-            // real exposure, so the right answer sat visible beside it -- the best candidate was
-            // a 1x1 R32_FLOAT that climbed in a straight line for seventeen minutes while the
-            // true exposure held still. Their ratio moved 14x. That is an accumulator, not an
-            // eye adaptation.
-
-                // Only where it means something. The lamp reads the scan, so offering it beside a
-                // white point that comes from the game's own exposure is offering a control that
-                // cannot light up.
-                bool meter = config->DlssNrScanMeter.value_or_default();
-
-                if (config->DlssNrWhitePointSource.value_or_default() == 2 &&
-                    ImGui::Checkbox("Show exposure meter", &meter))
-                    config->DlssNrScanMeter = meter;
-
-                HelpMarker("Show the scanned exposure value and a colour indicator. Display only; does not change the image.");
-
-            // Shown when the scan is actually running, whichever way it got switched on.
-            if (DlssNr::ExposureScan::Scanning())
-            {
-                // Anchoring: one press, then it never needs touching again.
-                //
-                // The absolute white point cannot come out of a buffer whose units are unknown.
-                // Every value AFTER the first can: only the ratio against the anchor is used, so
-                // whatever the number means, it cancels. That is why this is a button and not a
-                // measurement -- the one thing a person can supply that no amount of cleverness
-                // can is "this looks right to me".
-                int which = 0;
-                float low = 0.0f, high = 0.0f;
-                const float live = DlssNr::ExposureScan::BestValue(&which, &low, &high);
-
-                const bool isSource = config->DlssNrWhitePointSource.value_or_default() == 2;
-
-                // Anchor captures (currentScan, currentPaperWhite) and ADDS a row -- it does not
-                // replace. One row is the old single-anchor ratio law; add a second in different
-                // light and the white point is interpolated between the points, so it holds across
-                // the whole range instead of only near one anchor. Greyed unless the scan is the
-                // chosen source and it currently has a value to capture.
-                ImGui::BeginDisabled(live <= 0.0f || !isSource);
-
-                if (ImGui::Button("Anchor here"))
-                {
-                    // What to capture. Before the first point, the paper white above (an absolute value
-                    // with the wide range a fresh game needs). After that, the EFFECTIVE white point the
-                    // picture is showing right now -- the interpolated value times the Trim the user just
-                    // dialed in -- so a second point in different light captures the trimmed look, not a
-                    // frozen paper white (which would make two equal whites and a flat, non-tracking
-                    // curve). The trim is reset afterwards: the new point, which the picture now passes
-                    // through exactly, must not be multiplied by it a second time.
-                    const float captureWhite =
-                        anchors.empty()
-                            ? std::max(0.01f, config->DlssNrWhitePointScale.value_or_default())
-                            : std::max(0.01f, DlssNr::ExposureScan::AnchoredWhitePoint(
-                                                  live, config->DlssNrScanInverted.value_or_default(),
-                                                  config->DlssNrScanTrim.value_or_default()));
-
-                    if (DlssNr::ExposureScan::AnchorAdd(live, captureWhite))
-                    {
-                        config->DlssNrScanAnchors = DlssNr::ExposureScan::SerializeAnchors();
-                        config->DlssNrScanTrim = 1.0f;
-                        selectedAnchor = -1;
-                    }
-                }
-
-                ImGui::EndDisabled();
-
-                HelpMarker("Save the current exposure and white point as a calibration point.\nAdjust Paper white for the first point, then Trim for additional lighting conditions. Up to 8 points.");
-
-                if (!isSource)
-                    ImGui::TextDisabled("Scanned exposure is not the selected white point source.");
-
-                if (!anchors.empty())
-                {
-                    // The row nearest the live scan value (in log space) is the one driving the
-                    // picture right now; mark it so the user can see which calibration is in effect.
-                    int active = 0;
-                    float bestDist = 1e30f;
-                    const float liveLog = std::log(std::max(live, 1e-6f));
-
-                    for (size_t i = 0; i < anchors.size(); ++i)
-                    {
-                        const float d =
-                            std::fabs(std::log(std::max(anchors[i].scan, 1e-6f)) - liveLog);
-                        if (d < bestDist)
-                        {
-                            bestDist = d;
-                            active = (int) i;
-                        }
-                    }
-
-                    for (size_t i = 0; i < anchors.size(); ++i)
-                    {
-                        ImGui::PushID((int) i);
-
-                        // Delete first, so its click is never swallowed by the row-wide Selectable.
-                        if (ImGui::SmallButton("x"))
-                        {
-                            DlssNr::ExposureScan::AnchorRemove((int) i);
-                            config->DlssNrScanAnchors = DlssNr::ExposureScan::SerializeAnchors();
-                            if (selectedAnchor == (int) i)
-                                selectedAnchor = -1;
-                            else if (selectedAnchor > (int) i)
-                                --selectedAnchor;
-                            ImGui::PopID();
-                            continue;
-                        }
-
-                        ImGui::SameLine();
-
-                        const bool sel = (int) i == selectedAnchor;
-                        char row[96];
-                        snprintf(row, sizeof(row), "%s scan %.4f  ->  white %.2f%s",
-                                 ((int) i == active && isSource) ? ">" : "  ", anchors[i].scan,
-                                 anchors[i].white, sel ? "   [editing]" : "");
-
-                        // Click selects the row (slider edits it); click again deselects (slider
-                        // returns to the live unanchored point).
-                        if (ImGui::Selectable(row, sel))
-                            selectedAnchor = sel ? -1 : (int) i;
-
-                        ImGui::PopID();
-                    }
-
-                    ImGui::TextDisabled("Select a row to edit it; select it again"
-                                        " to deselect. > marks the active point.");
-                }
-
-                // The direction flag only means anything with a single point; with two or more the
-                // direction the white point moves is already fixed by the data.
-                if (anchors.size() == 1)
-                {
-                    bool inverted = config->DlssNrScanInverted.value_or_default();
-                    if (ImGui::Checkbox("Invert exposure tracking", &inverted))
-                        config->DlssNrScanInverted = inverted;
-
-                    HelpMarker("Reverse how scanned exposure changes the white point. Only needed with one calibration point.");
-                }
-
-                // The scan -> white point readout is shown above the sliders now, not here.
-
-                // Everything below is read-out rather than control: what the scan is looking at and
-                // how to tell whether it found the right thing. Folded away because the two decisions
-                // that matter -- anchor, and which way the number runs -- are above it.
-                if (ImGui::TreeNode("Advanced"))
-                {
-
-                    const auto found = DlssNr::ExposureScan::Report();
-                    const char* why = DlssNr::ExposureScan::Status();
-
-                    if (found.empty())
-                    {
-                        ImGui::TextDisabled("%s", why != nullptr && why[0] != 0
-                                                      ? why
-                                                      : "No exposure candidates found.");
-                    }
-                    else
-                    {
-                        for (size_t i = 0; i < found.size(); ++i)
-                        {
-                            const auto& c = found[i];
-
-                            if (c.reads == 0)
-                            {
-                                ImGui::TextDisabled("%zu. %s -- not read yet", i + 1, c.shape.c_str());
-                                continue;
-                            }
-
-                            // Moving is the whole signal, so it is the thing that is coloured.
-                            ImGui::TextColored(c.moves ? ImVec4(0.45f, 0.8f, 0.45f, 1.0f)
-                                                       : ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
-                                               "%zu. %s = %.5f  (seen %.5f..%.5f) %s", i + 1,
-                                               c.shape.c_str(), c.latest, c.lowest, c.highest,
-                                               c.moves ? "MOVES" : "flat so far");
-                        }
-
-                        ImGui::TextDisabled("Move between bright and dark areas to check exposure tracking.");
-                        ImGui::TextDisabled("A value that only increases may be a counter.");
-                    }
-
-                    ImGui::TreePop();
-                }
-            }
-        }
-
-
-        }
-
         ImGui::SeparatorText("Compare");
 
         // Freeze the frame the model works on, so a setting change re-renders it in place -- the only
@@ -1632,6 +1587,18 @@ void RenderMenu(Config* config, float menuResScale)
             config->DlssNrHoldFrame = held;
 
         HelpMarker("Freeze NR's input to compare its settings. The game's HUD and later effects may keep updating.\nDoes not re-run SR/RR or show changes to their settings. Turn off to resume.");
+
+        bool frameStats = config->DlssNrFrameStats.value_or_default();
+        if (ImGui::Checkbox("Log frame brightness stats", &frameStats))
+            config->DlssNrFrameStats = frameStats;
+
+        HelpMarker("Diagnostic. Every 2 seconds or so, writes a line to OptiScaler.log describing the frame NR is given: format, luminance percentiles, the game's exposure value and the white point in use.");
+
+        bool kernelProfile = config->DlssNrKernelProfile.value_or_default();
+        if (ImGui::Checkbox("Log NR kernel profile", &kernelProfile))
+            config->DlssNrKernelProfile = kernelProfile;
+
+        HelpMarker("Diagnostic. Every 4 seconds or so, writes a line to OptiScaler.log with the NVIDIA kernels one NR evaluation launched (fp8-named or plain fp16) and where its GPU time went, by kernel group. Approximate: chained kernels overlap.");
 
         static const char* compareNames[] = { "Off", "Side by side", "Wipe" };
         int compare = (int) config->DlssNrCompare.value_or_default();
@@ -1686,7 +1653,7 @@ void RenderMenu(Config* config, float menuResScale)
         if (ImGui::Combo("Debug view", &debugView, debugNames, IM_ARRAYSIZE(debugNames)))
             config->DlssNrDebugView = (uint32_t) debugView;
 
-        HelpMarker("Show the model input, raw output, or a 20x amplified difference. Grey in Difference means no change.");
+        HelpMarker("Show the model input, raw output, or a 20x amplified difference. Grey in Difference means no change.\nShown at the game's own brightness, so Model input brightness makes the view brighter or darker by the amount it changes what the model is given.");
 
         ImGui::PopItemWidth();
     }

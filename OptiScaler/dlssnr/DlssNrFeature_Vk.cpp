@@ -12,6 +12,7 @@
 #include <shaders/dlssnr/DlssNr_Vk.h>
 #include <shaders/dlssnr/DlssNr_Guides.h>
 #include <shaders/dlssnr/DlssNr_TrimAnchors.h>
+#include <shaders/dlssnr/DlssNr_AutoTrimDefault.h>
 #include <shaders/output_scaling/OS_Vk.h>
 #include <shaders/sgsr1/SGSR1_Vk.h>
 
@@ -669,6 +670,13 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
                 {
                     g_vk.autoExposureValue = measured;
                     g_vk.autoExposurePreExposure = g_vk.meterExposurePreExposure[readSlot];
+
+                    if (DlssNrAutoTrim::Instance().Feed(g_vk.autoExposurePreExposure / g_vk.autoExposureValue))
+                        LOG_INFO("DLSS-NR automatic exposure: {} frame (base white point {:.3g}) -> default Trim {} ({})",
+                                 DlssNrAutoTrim::Instance().Get() == DlssNrAutoTrim::Verdict::Unexposed ? "unexposed"
+                                                                                                      : "pre-exposed",
+                                 DlssNrAutoTrim::Instance().DecidedOn(), DlssNrAutoTrim::Instance().DefaultTrim(),
+                                 DlssNrAutoTrim::Instance().Get() == DlssNrAutoTrim::Verdict::Unexposed ? "+4.3 EV" : "+2.3 EV");
                 }
             }
         }
@@ -1055,6 +1063,10 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
     // Their value stays in the config untouched, so switching back to manual restores it.
     float whitePoint = cfg.DlssNrWhitePointScale.value_or_default();
 
+    // What the debug views are scaled by on a linear HDR frame: the base white point, before the Trim, so they sit
+    // at the frame's own brightness and the Trim still shows in them. See DebugViewScale in dlssnr.hlsl.
+    float debugWhitePoint = 0.0f;
+
     // The ring carries the game's exposure or the automatic one; a change of source starts it over.
     const uint32_t requestedWhitePointSource = cfg.DlssNrWhitePointSource.value_or_default();
 
@@ -1078,6 +1090,7 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
         const float trim = DlssNrTrim::TrimForKey(baseWhitePoint, cfg.DlssNrWhitePointTrim.value_or_default(),
                                                   anchors, cfg.DlssNrGameExposureTrimPreview.value_or_default());
         whitePoint = std::clamp(baseWhitePoint * trim, 0.01f, 4096.0f);
+        debugWhitePoint = std::clamp(baseWhitePoint, 0.01f, 4096.0f);
     }
     else if (requestedWhitePointSource == 3 && g_vk.autoExposureValue > 1e-8f)
     {
@@ -1085,9 +1098,10 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
         // recomputes this from the live 1x1 image when it is bound.
         const float baseWhitePoint = g_vk.autoExposurePreExposure / g_vk.autoExposureValue;
         const auto anchors = DlssNrTrim::Parse(cfg.DlssNrAutoExposureTrimAnchors.value_or_default());
-        const float trim = DlssNrTrim::TrimForKey(baseWhitePoint, cfg.DlssNrAutoExposureTrim.value_or_default(),
+        const float trim = DlssNrTrim::TrimForKey(baseWhitePoint, DlssNrAutoTrim::Effective(cfg.DlssNrAutoExposureTrim),
                                                   anchors, cfg.DlssNrAutoExposureTrimPreview.value_or_default());
         whitePoint = std::clamp(baseWhitePoint * trim, 0.01f, 4096.0f);
+        debugWhitePoint = std::clamp(baseWhitePoint, 0.01f, 4096.0f);
     }
 
     static bool saidEncoding = false;
@@ -1121,7 +1135,11 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
     encode.ModelWorkScale = (reduced && workScale < 1.0f) ? workScale : 1.0f;
     encode.MaxRatio = std::clamp(cfg.DlssNrMaxRatio.value_or_default(), 1.0f, 8.0f);
     encode.Transfer = cfg.DlssNrTransfer.value_or_default();
-    encode.DebugScale = cfg.DlssNrWhitePointScale.value_or_default();
+    // Tone-mapped frames keep the Paper white scale; a linear HDR frame is shown at its base white point, or at the
+    // white point in force when no exposure is known yet.
+    encode.DebugScale = !linearHdr                ? cfg.DlssNrWhitePointScale.value_or_default()
+                        : debugWhitePoint > 0.0f ? debugWhitePoint
+                                                 : whitePoint;
     encode.GuideWidth = guideWidth;
     encode.GuideHeight = guideHeight;
 
@@ -1134,7 +1152,7 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
                                                          : cfg.DlssNrGameExposureTrimAnchors.value_or_default());
         encode.PreExposure = g_vk.gamePreExposure;
         DlssNrTrim::FillConstants(encode,
-                                  automatic ? cfg.DlssNrAutoExposureTrim.value_or_default()
+                                  automatic ? DlssNrAutoTrim::Effective(cfg.DlssNrAutoExposureTrim)
                                             : cfg.DlssNrWhitePointTrim.value_or_default(),
                                   anchors,
                                   automatic ? cfg.DlssNrAutoExposureTrimPreview.value_or_default()

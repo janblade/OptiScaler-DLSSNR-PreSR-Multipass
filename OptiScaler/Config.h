@@ -377,6 +377,16 @@ class Config
     // "should" is doing work in that sentence and it ships into games nobody can test first.
     CustomOptional<bool> DlssNrProbeD3D11 { false };
 
+    // Diagnostic: once every 120 frames, log what the frame handed to NR looks like (format, luminance
+    // percentiles over a 64x64 tile grid in scene units, the game's exposure texture, the white point in
+    // force and the sRGB brightness the proxy would have). Costs two tiny dispatches and two 16 KB
+    // readbacks per sample; off by default.
+    CustomOptional<bool> DlssNrFrameStats { false };
+
+    // Diagnostic: log which NVIDIA kernels an NR evaluation launches (fp8-named or the plain fp16 ones) and how the GPU
+    // time splits between kernel groups. 3 evaluations out of every 240 are timestamped; off by default.
+    CustomOptional<bool> DlssNrKernelProfile { false };
+
     // 0 off, 1 the picture the model was shown, 2 its raw answer, 3 what it changed, amplified.
     CustomOptional<uint32_t> DlssNrDebugView { 0 };
 
@@ -501,14 +511,20 @@ class Config
     // OptiScaler-owned automatic exposure controls. When active, automatic exposure uses the
     // linear-HDR NR input. Finished-picture mode bypasses this calculation and keeps its own
     // display white-point override.
+    // AutoExposureTrim is a multiplier on the white point (higher = darker model input). While unset (ini `auto`) the
+    // Trim used is chosen per game from the frame type (DlssNrAutoTrim::Effective, shaders/dlssnr/DlssNr_AutoTrimDefault.h):
+    // 0.25 (+4.3 EV) on an unexposed frame, 1.0 (+2.3 EV) on a pre-exposed one; the 5.0 below is only the menu's 0 EV
+    // point. The menu shows it as "Model input brightness" in stops around 5x: EV = -log2(trim / 5), so 0 EV = 5x, + is brighter.
+    // AutoExposureShadowProtection is the menu's "Ignore bright highlights" (percent).
     CustomOptional<float> DlssNrAutoExposureTrim { 5.0f };
     CustomOptional<float> DlssNrAutoExposureShadowProtection { 100.0f };
 
-    // Base-white-point-dependent Trim calibration tables, serialized as baseWhitePoint:trim pairs.
+    // Base-white-point-dependent Trim calibration tables, serialized as baseWhitePoint:trim pairs. Ini-only: the
+    // menu no longer edits them, but a table already in the ini still applies (and disables the Trim slider).
     CustomOptional<std::string> DlssNrGameExposureTrimAnchors { std::string() };
     CustomOptional<std::string> DlssNrAutoExposureTrimAnchors { std::string() };
 
-    // Calibration preview only; deliberately not persisted.
+    // Calibration preview only; deliberately not persisted. Nothing in the menu sets these any more.
     CustomOptional<bool> DlssNrGameExposureTrimPreview { false };
     CustomOptional<bool> DlssNrAutoExposureTrimPreview { false };
 
@@ -546,6 +562,7 @@ class Config
     //
     // 1.0 is the identity: take the game's exposure exactly as given. That is the "safe value", and
     // it is safe by construction rather than by being written down somewhere.
+    // Game exposure Trim, shown in the menu as "Model input brightness": EV = -log2(trim), so 0 EV = 1x.
     CustomOptional<float> DlssNrWhitePointTrim { 1.0f };
 
     // The scan's trim, kept apart from the exposure texture's.

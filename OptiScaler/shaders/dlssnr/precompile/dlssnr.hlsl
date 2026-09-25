@@ -392,6 +392,27 @@ float WhitePoint()
     return max(gWhitePoint, 1e-4);
 }
 
+// What the debug views (model input, model output, edit) are multiplied by on their way into the game's buffer. The
+// game exposes and tone maps that buffer afterwards, so on a scene-referred frame the 0..1 pictures have to be put back
+// on the frame's own scale or they come out near black (RDR2: scene ~300, the view ~100x too dark while the model's real
+// input was bright). The BASE white point -- before the Trim -- is used, not the one in force, so the brightness slider
+// still shows in the view as the change it makes to what the model is given. Without a live exposure sample the host's
+// value stands: the white point in force on an HDR frame, the Paper white slider on a tone-mapped one.
+float DebugViewScale()
+{
+    if (gPassthrough == 0 && (gUseGameExposure != 0 || gUseExposureWhitePoint != 0))
+    {
+        const float e = ExposureSample();
+        if (isfinite(e) && e > 1e-8 && e < 1e8)
+        {
+            const float preExposure =
+                (isfinite(gPreExposure) && gPreExposure > 1e-6) ? gPreExposure : 1.0;
+            return clamp(preExposure / e, 0.01, 4096.0);
+        }
+    }
+    return max(gDebugScale, 1e-4);
+}
+
 
 static const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
 
@@ -1298,13 +1319,13 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
 
     if (gDebugView == 1)
     {
-        gTarget[id.xy] = float4(proxy * gDebugScale, originalSample.a);
+        gTarget[id.xy] = float4(proxy * DebugViewScale(), originalSample.a);
         return;
     }
 
     if (gDebugView == 2)
     {
-        gTarget[id.xy] = float4(model * gDebugScale, originalSample.a);
+        gTarget[id.xy] = float4(model * DebugViewScale(), originalSample.a);
         return;
     }
 
@@ -1317,7 +1338,7 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
     {
         // Amplified and centred on grey, so both directions of the edit are visible at once.
         float3 shown = saturate(0.5 + edit * 20.0);
-        gTarget[id.xy] = float4(SrgbToLinear(shown) * gDebugScale, originalSample.a);
+        gTarget[id.xy] = float4(SrgbToLinear(shown) * DebugViewScale(), originalSample.a);
         return;
     }
 

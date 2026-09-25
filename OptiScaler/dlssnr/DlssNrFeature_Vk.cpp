@@ -12,6 +12,7 @@
 #include <shaders/dlssnr/DlssNr_Vk.h>
 #include <shaders/dlssnr/DlssNr_Guides.h>
 #include <shaders/dlssnr/DlssNr_TrimAnchors.h>
+#include <shaders/dlssnr/DlssNr_AutoTrimDefault.h>
 #include <shaders/output_scaling/OS_Vk.h>
 #include <shaders/sgsr1/SGSR1_Vk.h>
 
@@ -669,6 +670,13 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
                 {
                     g_vk.autoExposureValue = measured;
                     g_vk.autoExposurePreExposure = g_vk.meterExposurePreExposure[readSlot];
+
+                    if (DlssNrAutoTrim::Instance().Feed(g_vk.autoExposurePreExposure / g_vk.autoExposureValue))
+                        LOG_INFO("DLSS-NR automatic exposure: {} frame (base white point {:.3g}) -> default Trim {} ({})",
+                                 DlssNrAutoTrim::Instance().Get() == DlssNrAutoTrim::Verdict::SceneReferred ? "scene-referred"
+                                                                                                      : "display-scaled",
+                                 DlssNrAutoTrim::Instance().DecidedOn(), DlssNrAutoTrim::Instance().DefaultTrim(),
+                                 DlssNrAutoTrim::Instance().Get() == DlssNrAutoTrim::Verdict::SceneReferred ? "+4.3 EV" : "+2.3 EV");
                 }
             }
         }
@@ -1090,7 +1098,7 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
         // recomputes this from the live 1x1 image when it is bound.
         const float baseWhitePoint = g_vk.autoExposurePreExposure / g_vk.autoExposureValue;
         const auto anchors = DlssNrTrim::Parse(cfg.DlssNrAutoExposureTrimAnchors.value_or_default());
-        const float trim = DlssNrTrim::TrimForKey(baseWhitePoint, cfg.DlssNrAutoExposureTrim.value_or_default(),
+        const float trim = DlssNrTrim::TrimForKey(baseWhitePoint, DlssNrAutoTrim::Effective(cfg.DlssNrAutoExposureTrim),
                                                   anchors, cfg.DlssNrAutoExposureTrimPreview.value_or_default());
         whitePoint = std::clamp(baseWhitePoint * trim, 0.01f, 4096.0f);
         debugWhitePoint = std::clamp(baseWhitePoint, 0.01f, 4096.0f);
@@ -1144,7 +1152,7 @@ static void EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* par
                                                          : cfg.DlssNrGameExposureTrimAnchors.value_or_default());
         encode.PreExposure = g_vk.gamePreExposure;
         DlssNrTrim::FillConstants(encode,
-                                  automatic ? cfg.DlssNrAutoExposureTrim.value_or_default()
+                                  automatic ? DlssNrAutoTrim::Effective(cfg.DlssNrAutoExposureTrim)
                                             : cfg.DlssNrWhitePointTrim.value_or_default(),
                                   anchors,
                                   automatic ? cfg.DlssNrAutoExposureTrimPreview.value_or_default()

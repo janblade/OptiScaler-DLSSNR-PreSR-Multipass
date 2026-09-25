@@ -11,6 +11,7 @@
 
 #include <imgui/imgui.h>
 #include <shaders/dlssnr/DlssNr_TrimAnchors.h>
+#include <shaders/dlssnr/DlssNr_AutoTrimDefault.h>
 
 #include <string>
 #include <vector>
@@ -53,13 +54,16 @@ static float EvToTrim(float ev, float neutral)
 
 // The one "Model input brightness" slider (and its Reset) for an exposure source's Trim. `anchorCount` is how
 // many Trim anchors the ini holds for that source: they are ini-only now and take over from the slider, so
-// with any present the slider is shown disabled and says why.
+// with any present the slider is shown disabled and says why. `detectedDefault` is set for a source whose
+// default is decided per game (Automatic, see DlssNr_AutoTrimDefault.h): the slider then shows it while the
+// user has set nothing, and Reset goes back to it (the ini key back to auto) rather than to `neutral`.
 static void RenderTrimEvSlider(CustomOptional<float>& trim, float neutral, size_t anchorCount, const char* idSuffix,
-                               const char* tip)
+                               const char* tip, std::optional<float> detectedDefault = std::nullopt)
 {
     const float minEv = TrimToEv(DlssNrTrim::kMaxTrim, neutral);
     const float maxEv = TrimToEv(DlssNrTrim::kMinTrim, neutral);
-    float ev = std::clamp(TrimToEv(trim.value_or_default(), neutral), minEv, maxEv);
+    const float shown = trim.has_value() ? trim.value() : detectedDefault.value_or(trim.value_or_default());
+    float ev = std::clamp(TrimToEv(shown, neutral), minEv, maxEv);
 
     ImGui::BeginDisabled(anchorCount > 0);
     const std::string sliderLabel = std::string("Model input brightness##") + idSuffix;
@@ -71,7 +75,12 @@ static void RenderTrimEvSlider(CustomOptional<float>& trim, float neutral, size_
     // Deliberately always present rather than greyed at 0 EV: the safe value is one click away.
     const std::string resetLabel = std::string("Reset##") + idSuffix;
     if (ImGui::SmallButton(resetLabel.c_str()))
-        trim = neutral;
+    {
+        if (detectedDefault.has_value())
+            trim = std::nullopt;
+        else
+            trim = neutral;
+    }
     ImGui::EndDisabled();
 
     HelpMarker(tip);
@@ -216,8 +225,10 @@ static void ApplyPassPreset(Config* config, unsigned int passes)
     config->DlssNrLocalTone = PresetPass1.tone;
     config->DlssNrSkinStructure = PresetPass1.skin;
     config->DlssNrAutoMask = true;
-    config->DlssNrWhitePointSource = 1u;        // Game exposure
-    config->DlssNrWhitePointTrim = 1.0f;
+    // Automatic exposure at the default chosen for the game (DlssNr_AutoTrimDefault.h). Game exposure at 1x, which
+    // this used to set, gave NBA 2K27 a model input with a median of 0.07-0.32 (measured 2026-09-25).
+    config->DlssNrWhitePointSource = 3u;        // Automatic exposure
+    config->DlssNrAutoExposureTrim = std::nullopt;
     config->DlssNrMaxRatio = 2.0f;               // Highlight guard
 
     if (passes >= 2u)
@@ -669,7 +680,7 @@ void RenderMenu(Config* config, float menuResScale)
                     const auto trimAnchors =
                         DlssNrTrim::Parse(config->DlssNrAutoExposureTrimAnchors.value_or_default());
                     const float trim = DlssNrTrim::TrimForKey(
-                        baseWhitePoint, config->DlssNrAutoExposureTrim.value_or_default(), trimAnchors, false);
+                        baseWhitePoint, DlssNrAutoTrim::Effective(config->DlssNrAutoExposureTrim), trimAnchors, false);
                     // Middle-grey metering, mode 13 in dlssnr.hlsl: exposure = 0.18 / (0.82 * average scene brightness).
                     ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
                                        "Scene brightness %.3f  ->  model white at %.2f",
@@ -850,15 +861,29 @@ void RenderMenu(Config* config, float menuResScale)
         }
         else if (wpSource == 3)
         {
-            // 0 EV is a 5x Trim: the PR this came from found that a useful starting point across several games.
-            // It is independent of the Game exposure Trim.
+            // The scale stays centred on a 5x Trim (0 EV), the old default from the PR this came from. The default is
+            // now chosen per game from the frame type -- +4.3 EV scene-referred, +2.3 EV otherwise -- see
+            // DlssNr_AutoTrimDefault.h for the measurements. It is independent of the Game exposure Trim.
             RenderTrimEvSlider(config->DlssNrAutoExposureTrim, 5.0f,
                                DlssNrTrim::Parse(config->DlssNrAutoExposureTrimAnchors.value_or_default()).size(),
                                "autoexposure",
-                               "Brightness of the picture handed to NR. + is brighter, - is darker; 0 EV is the default."
-                               "\nToo bright clips highlights; too dark hides shadow detail. Pick what looks best."
+                               "Brightness of the picture handed to NR. + is brighter, - is darker."
+                               "\nUntil you move it, the default is chosen for the game: +4.3 EV when the game hands over"
+                               "\nits frame in scene units (e.g. RDR2), +2.3 EV when the frame is already near display range"
+                               "\n(e.g. NBA 2K27). Reset goes back to that default."
+                               "\nToo bright clips highlights or tints shadows; too dark hides shadow detail."
                                "\nOptiScaler meters the linear HDR frame itself before NR runs."
-                               "\nAutomatic exposure is available on D3D12 and Vulkan.");
+                               "\nAutomatic exposure is available on D3D12 and Vulkan.",
+                               DlssNrAutoTrim::Instance().DefaultTrim());
+
+            {
+                const auto verdict = DlssNrAutoTrim::Instance().Get();
+                const char* kind = verdict == DlssNrAutoTrim::Verdict::SceneReferred   ? "+4.3 EV (scene-referred frame detected)"
+                                   : verdict == DlssNrAutoTrim::Verdict::DisplayScaled ? "+2.3 EV (display-range frame detected)"
+                                                                                       : "+2.3 EV (detecting...)";
+                ImGui::TextDisabled("Default for this game: %s%s", kind,
+                                    config->DlssNrAutoExposureTrim.has_value() ? "; your setting is in use" : "");
+            }
 
             float protection = config->DlssNrAutoExposureShadowProtection.value_or_default();
             if (ImGui::SliderFloat("Ignore bright highlights", &protection, 0.0f, 100.0f, "%.0f%%"))

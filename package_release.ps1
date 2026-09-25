@@ -310,7 +310,7 @@ if ($PortBackendDll) {
     New-Item -ItemType Directory -Force -Path $optionalDir | Out-Null
     Copy-Item -LiteralPath $PortBackendDll -Destination "$optionalDir\nvngx.dll_dlssnr.dll" -Force
 
-    # nr_port.ini configures the port runtime itself (fp16/dml/attn16/vit_every/mv_flip) and is read
+    # nr_port.ini configures the port runtime itself (fp16/dml/attn16/lin16/vit_every/mv_flip) and is read
     # from the same folder the DLL sits in. Optional because a bare DLL still runs -- on its slower,
     # unoptimised defaults -- but every build this project has actually shipped for testing has carried
     # a tuned one alongside it, so a release without it silently regresses whoever uses the port.
@@ -341,7 +341,7 @@ core, so it also works on AMD and Intel GPUs.
 To use it: copy this file$(if ($portIniShipped) { " and nr_port.ini" }) over the nvngx.dll_dlssnr.dll in the game folder$(if ($portIniShipped) { "" }), replacing
 the default one. nvngx_dlssnr.dll (the separate runtime file) is still required either way; see
 INSTALL-DLSSNR.md.
-$(if ($portIniShipped) { "`nnr_port.ini next to it carries the tuned settings this build was tested with (fp16/dml/attn16`nacceleration, vit_every=2). Without it the DLL still runs, just on slower unoptimised defaults.`n" } else { "" })
+$(if ($portIniShipped) { "`nnr_port.ini next to it carries the tuned settings this build was tested with (fp16/dml/attn16/lin16`nacceleration, vit_every=2). Without it the DLL still runs, just on slower unoptimised defaults.`n" } else { "" })
 To confirm it loaded, open the Insert overlay's Neural Rendering menu: the status line reads
 "Model backend: vendor-neutral port" instead of "Model backend: NVIDIA NGX".
 

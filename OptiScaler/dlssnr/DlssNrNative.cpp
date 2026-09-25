@@ -27,6 +27,7 @@
 #include "DlssNrHybridBuilder.h"
 #include "DlssNrHybridAssets.h"
 #include "DlssNrVitReuse.h"
+#include "DlssNrKernelProfile.h"
 #pragma comment(lib,"bcrypt.lib")
 namespace DlssNrNative {namespace {
 namespace fs=std::filesystem;using Microsoft::WRL::ComPtr;void Check(HRESULT r){if(FAILED(r))throw std::runtime_error("D3D12 status "+std::to_string((unsigned)r));}void NvCheck(NvAPI_Status r){if(r!=NVAPI_OK)throw std::runtime_error("NVAPI status "+std::to_string(r));}
@@ -63,11 +64,17 @@ struct State{std::recursive_mutex mutex;bool enabled=false,candidate=false,resta
  // Evicted-but-not-provably-idle sessions: kept alive here (never freed under recorded GPU
  // work, per the file's retain-until-exit model) so the s.sessions scans stay bounded.
  std::vector<Session>graveyard;
+ DlssNrKernelProfile::Profiler prof;std::map<NVDX_ObjectHandle,DlssNrKernelProfile::Info>fnInfo; // kernel census and per-group GPU timing (ini KernelProfile)
  DlssNrVitReuse::Filter vit;std::map<NVDX_ObjectHandle,DlssNrVitReuse::Role>vitRole; // ViT reuse: launches of the ViT run are dropped on reused frames
  decltype(&NvAPI_D3D12_CreateCuModule) createModule=nullptr;decltype(&NvAPI_D3D12_CreateCuFunction)createFunction=nullptr;decltype(&NvAPI_D3D12_LaunchCuKernelChain)launch=nullptr;
  decltype(&NvAPI_D3D12_DestroyCuModule)destroyModule=nullptr;decltype(&NvAPI_D3D12_DestroyCuFunction)destroyFunction=nullptr;};
 // Deliberately retain resources until process exit, never free under recorded GPU work.
 State&S(){static State*s=new State;return*s;}
+// Every real launch goes through here so the kernel profiler sees it; the caller holds S().mutex.
+NvAPI_Status RealLaunch(State&s,ID3D12GraphicsCommandList*c,const NVAPI_CU_KERNEL_LAUNCH_PARAMS*k,NvU32 count){
+ auto rc=s.launch(c,k,count);
+ if(rc==NVAPI_OK&&k&&count&&s.prof.Recording(c)){std::vector<DlssNrKernelProfile::Info>infos;infos.reserve(count);for(NvU32 i=0;i<count;++i){auto it=s.fnInfo.find(k[i].hFunction);infos.push_back(it!=s.fnInfo.end()?it->second:DlssNrKernelProfile::Classify(""));}s.prof.Launched(c,infos);}
+ return rc;}
 void Barrier(ID3D12GraphicsCommandList*c){D3D12_RESOURCE_BARRIER b{};b.Type=D3D12_RESOURCE_BARRIER_TYPE_UAV;c->ResourceBarrier(1,&b);}
 unsigned SyncMask(uint64_t tokens){return S().candidate?(tokens==960?7:tokens==2160?5:0):0;}
 void ScratchBarrier(ID3D12GraphicsCommandList*c,uint64_t tokens,unsigned bit,std::initializer_list<ID3D12Resource*> resources){
@@ -123,7 +130,7 @@ void AllocateSession(Session&s,Device&d,ID3D12GraphicsCommandList*c){if(s.alloca
  if(S().candidate&&s.tokens==960)s.partials=Allocate(dev,4ull*960*1024*2);s.xp=Allocate(dev,P*1024/2);s.xs=Allocate(dev,P*1024/16);s.yp=Allocate(dev,P*4096/2);s.ys=Allocate(dev,P*4096/16);s.c=Allocate(dev,P*1024*2);s.cw=Allocate(dev,d.contracts.at(s.tokens).workspaceBytes);
  s.zeroBytes=std::max<uint64_t>(s.partials.bytes,std::max<uint64_t>(P*4096/2,s.cw.bytes));s.zero=Resource(dev,s.zeroBytes,D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);void*p=nullptr;Check(s.zero->Map(0,nullptr,&p));memset(p,0,s.zeroBytes);s.zero->Unmap(0,nullptr);
  for(auto*b:{&s.xp,&s.xs,&s.yp,&s.ys,&s.c,&s.cw})CopyZero(c,*b,s.zero.Get(),b->bytes);if(s.partials.gpu)CopyZero(c,s.partials,s.zero.Get(),s.partials.bytes);uploadBatch.Finish();s.allocated=true;}
-void LaunchBlob(ID3D12GraphicsCommandList*c,NVDX_ObjectHandle f,const void*p,unsigned size,NVAPI_DIM3 grid,NVAPI_DIM3 block,unsigned shared=0){NVAPI_CU_KERNEL_LAUNCH_PARAMS k{};k.hFunction=f;k.gridDim=grid;k.blockDim=block;k.pParams=p;k.paramSize=size;k.dynSharedMemBytes=shared;NvCheck(S().launch(c,&k,1));}
+void LaunchBlob(ID3D12GraphicsCommandList*c,NVDX_ObjectHandle f,const void*p,unsigned size,NVAPI_DIM3 grid,NVAPI_DIM3 block,unsigned shared=0){NVAPI_CU_KERNEL_LAUNCH_PARAMS k{};k.hFunction=f;k.gridDim=grid;k.blockDim=block;k.pParams=p;k.paramSize=size;k.dynSharedMemBytes=shared;NvCheck(RealLaunch(S(),c,&k,1));}
 template<class T>void IO(ID3D12GraphicsCommandList*c,NVDX_ObjectHandle f,const T&p,unsigned threads){LaunchBlob(c,f,&p,sizeof(p),{(threads+255)/256,1,1},{256,1,1});Barrier(c);}
 void Vendor(ID3D12GraphicsCommandList*c,Device&d,Session&s){auto&t=d.contracts.at(s.tokens);auto w=d.w[s.block-31];auto&workspace=s.cw;CopyZero(c,workspace,s.zero.Get(),t.resetBytes);Blob p=t.params;
  std::map<std::string,std::pair<uint64_t,uint64_t>>bindings{{"A_packed",{d.weights.address()+(w.cp),2097152}},{"SF_A",{d.weights.address()+(w.cs),262144}},{"B_packed",{s.yp.address(),s.yp.bytes}},{"SF_B",{s.ys.address(),s.ys.bytes}},{"D",{s.c.address(),s.c.bytes}},{"workspace",{workspace.address(),workspace.bytes}}};
@@ -131,17 +138,17 @@ void Vendor(ID3D12GraphicsCommandList*c,Device&d,Session&s){auto&t=d.contracts.a
  LaunchBlob(c,t.fn,p.data(),(unsigned)p.size(),t.grid,t.block,t.shared);ScratchBarrier(c,s.tokens,4,{s.c.gpu.Get()});}
 bool Supported(const void*data,unsigned bytes){if(bytes!=3202680||!data)return false;const unsigned char expected[32]={0x3f,0xa6,0xf0,0x76,0xee,0xcf,0xbb,0x6e,0x19,0xc3,0x78,0xf8,0x4b,0xbb,0x70,0x25,0xcd,0x80,0x5e,0xd4,0xde,0x9a,0x2f,0x9c,0x9b,0x99,0x5e,0xb3,0x4a,0x7f,0x3d,0x76};unsigned char hash[32];return BCryptHash(BCRYPT_SHA256_ALG_HANDLE,nullptr,0,(PUCHAR)data,bytes,hash,32)==0&&!memcmp(hash,expected,32);}
 NvAPI_Status __cdecl CreateModule(ID3D12Device*d,const void*b,NvU32 n,NVDX_ObjectHandle*out){auto&s=S();std::lock_guard<std::recursive_mutex>apiGuard(s.mutex);auto rc=s.createModule(d,b,n,out);if(rc==0){std::lock_guard<std::recursive_mutex>g(s.mutex);s.modules[*out]=Supported(b,n);s.active=false;}return rc;}
-NvAPI_Status __cdecl CreateFunction(ID3D12Device*d,NVDX_ObjectHandle m,const char*n,NVDX_ObjectHandle*out){auto&s=S();std::lock_guard<std::recursive_mutex>apiGuard(s.mutex);auto rc=s.createFunction(d,m,n,out);if(rc==0&&n){{auto role=DlssNrVitReuse::RoleOf(n);if(role!=DlssNrVitReuse::Role::None){std::lock_guard<std::recursive_mutex>g(s.mutex);s.vitRole[*out]=role;}}unsigned kind=99;if(!strcmp(n,"cc_vit_1d_ffn_expand_publish_fp8"))kind=0;else if(!strcmp(n,"cc_vit_1d_ffn_expand_chained_fp8"))kind=1;else if(!strcmp(n,"cc_vit_1d_ffn_contract_chained_fp8"))kind=2;if(kind!=99){std::lock_guard<std::recursive_mutex>g(s.mutex);s.targets[*out]={d,m,kind,s.modules[m]};}}return rc;}
+NvAPI_Status __cdecl CreateFunction(ID3D12Device*d,NVDX_ObjectHandle m,const char*n,NVDX_ObjectHandle*out){auto&s=S();std::lock_guard<std::recursive_mutex>apiGuard(s.mutex);auto rc=s.createFunction(d,m,n,out);if(rc==0&&n){{std::lock_guard<std::recursive_mutex>g(s.mutex);s.fnInfo[*out]=DlssNrKernelProfile::Classify(n);}{auto role=DlssNrVitReuse::RoleOf(n);if(role!=DlssNrVitReuse::Role::None){std::lock_guard<std::recursive_mutex>g(s.mutex);s.vitRole[*out]=role;}}unsigned kind=99;if(!strcmp(n,"cc_vit_1d_ffn_expand_publish_fp8"))kind=0;else if(!strcmp(n,"cc_vit_1d_ffn_expand_chained_fp8"))kind=1;else if(!strcmp(n,"cc_vit_1d_ffn_contract_chained_fp8"))kind=2;if(kind!=99){std::lock_guard<std::recursive_mutex>g(s.mutex);s.targets[*out]={d,m,kind,s.modules[m]};}}return rc;}
 // ViT reuse: true when at least one launch of this call was dropped; `kept` then holds the others. Only launches recorded inside an NR evaluation are looked at.
 bool VitDrop(State&s,const NVAPI_CU_KERNEL_LAUNCH_PARAMS*k,NvU32 count,std::vector<NVAPI_CU_KERNEL_LAUNCH_PARAMS>&kept){
  if(!k||!count||!s.vit.Evaluating())return false;bool any=false;
  for(NvU32 i=0;i<count;++i){auto it=s.vitRole.find(k[i].hFunction);if(s.vit.Drop(it==s.vitRole.end()?DlssNrVitReuse::Role::None:it->second))any=true;else kept.push_back(k[i]);}
  return any;}
 NvAPI_Status __cdecl Launch(ID3D12GraphicsCommandList*c,const NVAPI_CU_KERNEL_LAUNCH_PARAMS*k,NvU32 count){auto&s=S();std::lock_guard<std::recursive_mutex>g(s.mutex);
- {std::vector<NVAPI_CU_KERNEL_LAUNCH_PARAMS>kept;if(VitDrop(s,k,count,kept)){if(kept.empty())return NVAPI_OK;return s.launch(c,kept.data(),(NvU32)kept.size());}}
+ {std::vector<NVAPI_CU_KERNEL_LAUNCH_PARAMS>kept;if(VitDrop(s,k,count,kept)){if(kept.empty())return NVAPI_OK;return RealLaunch(s,c,kept.data(),(NvU32)kept.size());}}
  // FP8 passthrough must stay available even after a latched hybrid failure: check `enabled`
  // first so switching Precision back to NVIDIA (FP8) fully recovers without an app restart.
- if(!s.enabled)return s.launch(c,k,count);if(s.restartRequired)return NVAPI_ERROR;if(!k||count!=1){auto pending=std::find_if(s.sessions.begin(),s.sessions.end(),[&](const auto&v){return std::get<0>(v.first)==c&&v.second.pending;});if(pending!=s.sessions.end()){s.restartRequired=true;s.status="Restart required: unsupported launch chain while hybrid pair pending; precision change unavailable";fprintf(stderr,"%s\n",s.status.c_str());return NVAPI_ERROR;}return s.launch(c,k,count);}auto target=s.targets.find(k->hFunction);if(target==s.targets.end())return s.launch(c,k,count);auto&t=target->second;
+ if(!s.enabled)return RealLaunch(s,c,k,count);if(s.restartRequired)return NVAPI_ERROR;if(!k||count!=1){auto pending=std::find_if(s.sessions.begin(),s.sessions.end(),[&](const auto&v){return std::get<0>(v.first)==c&&v.second.pending;});if(pending!=s.sessions.end()){s.restartRequired=true;s.status="Restart required: unsupported launch chain while hybrid pair pending; precision change unavailable";fprintf(stderr,"%s\n",s.status.c_str());return NVAPI_ERROR;}return RealLaunch(s,c,k,count);}auto target=s.targets.find(k->hFunction);if(target==s.targets.end())return RealLaunch(s,c,k,count);auto&t=target->second;
  try{if(k->paramSize!=72||!k->pParams)throw std::runtime_error("Original FFN ABI mismatch");uint64_t p[8];unsigned dims[2];memcpy(p,k->pParams,64);memcpy(dims,(char*)k->pParams+64,8);uint64_t tokens=(uint64_t)dims[0]*dims[1];for(auto&entry:s.sessions)if(std::get<0>(entry.first)==c&&entry.second.pending&&(std::get<1>(entry.first)!=t.device||std::get<2>(entry.first)!=tokens))throw std::runtime_error("Token count changed during pending pair");auto&cycle=s.sessions[{c,t.device,tokens,s.candidate}];cycle.tokens=tokens;cycle.lastTouch=++s.seq;
  // Bound the map so the two O(n) scans stay cheap as command-list pointers churn (resize,
  // alt-tab, device reset). Never evict a pending pair or the entry just touched; move the
@@ -150,7 +157,7 @@ NvAPI_Status __cdecl Launch(ID3D12GraphicsCommandList*c,const NVAPI_CU_KERNEL_LA
  const bool eligible=t.supported&&ContractPaths().count(tokens);
  const auto fallback=[&](){cycle.active=false;s.active=false;s.status="Original FP8 fallback: M="+std::to_string(tokens)+" dims="+std::to_string(dims[0])+"x"+std::to_string(dims[1])+(!t.supported?" unsupported original module hash":(s.devices.count({t.device,s.candidate})&&!s.devices.at({t.device,s.candidate}).failure.empty()?" initialization: "+s.devices.at({t.device,s.candidate}).failure:" no supplied contraction template"));};
  if(t.kind==0){if(cycle.pending)throw std::runtime_error("New publish before pending contraction");cycle.block=31;cycle.pairs=0;cycle.active=eligible;cycle.device=t.device;}
- if(t.kind<2){if(cycle.pending)throw std::runtime_error("Expansion while pair pending");if(!cycle.active||!eligible){fallback();return s.launch(c,k,count);}if(cycle.block>38||cycle.device!=t.device)throw std::runtime_error("FFN block/device sequence mismatch");
+ if(t.kind<2){if(cycle.pending)throw std::runtime_error("Expansion while pair pending");if(!cycle.active||!eligible){fallback();return RealLaunch(s,c,k,count);}if(cycle.block>38||cycle.device!=t.device)throw std::runtime_error("FFN block/device sequence mismatch");
  if(k->gridDim.x!=32*((tokens+127)/128)||k->gridDim.y!=1||k->gridDim.z!=1||k->blockDim.x!=32||k->blockDim.y!=4||k->blockDim.z!=1||k->dynSharedMemBytes)throw std::runtime_error("Original expansion geometry mismatch");
  auto&d=s.devices[{t.device,s.candidate}];
  const int di=d.init.load(std::memory_order_acquire);
@@ -158,7 +165,7 @@ NvAPI_Status __cdecl Launch(ID3D12GraphicsCommandList*c,const NVAPI_CU_KERNEL_LA
   if(di==0)KickDeviceInit(s,d,t.device,s.candidate);
   cycle.active=false;
   s.status=di==3?("Original FP8 fallback: hybrid init failed: "+d.failure):"Hybrid device initialising; FP8 this frame";
-  return s.launch(c,k,count);
+  return RealLaunch(s,c,k,count);
  }
  try{AllocateSession(cycle,d,c);for(unsigned preflightBlock=0;preflightBlock<8;++preflightBlock){
  auto wi=preflightBlock;auto&w=d.w[wi];auto&blob=cycle.fusedParams[wi];auto&info=cycle.fusedInfo[wi];
@@ -174,7 +181,7 @@ NvAPI_Status __cdecl Launch(ID3D12GraphicsCommandList*c,const NVAPI_CU_KERNEL_LA
  LaunchBlob(c,d.fused,blob.data(),(unsigned)blob.size(),{info.grid[0],info.grid[1],info.grid[2]},{info.block[0],info.block[1],info.block[2]},(unsigned)info.shared_bytes);ScratchBarrier(c,tokens,2,{cycle.yp.gpu.Get(),cycle.ys.gpu.Get()});
  ++s.launches;s.status=(s.candidate?"Candidate hybrid M=":"Fused hybrid M=")+std::to_string(tokens)+" dims="+std::to_string(dims[0])+"x"+std::to_string(dims[1])+" expansion block "+std::to_string(cycle.block);return NVAPI_OK;
  }
- if(!cycle.pending){if(cycle.active)throw std::runtime_error("Contraction without replaced expansion");return s.launch(c,k,count);}
+ if(!cycle.pending){if(cycle.active)throw std::runtime_error("Contraction without replaced expansion");return RealLaunch(s,c,k,count);}
  if(!t.supported||cycle.device!=t.device||tokens!=cycle.tokens||dims[0]!=cycle.width||dims[1]!=cycle.height||p[0]!=cycle.y||p[1]!=cycle.x||p[6]!=cycle.done)throw std::runtime_error("Pending contraction alias/shape mismatch; refusing partial fallback");
  if(k->gridDim.x!=8*((tokens+127)/128)||k->gridDim.y!=1||k->gridDim.z!=4||k->blockDim.x!=32||k->blockDim.y!=4||k->blockDim.z!=1||k->dynSharedMemBytes)throw std::runtime_error("Original contraction geometry mismatch");
  auto&d=s.devices[{t.device,s.candidate}];auto wi=cycle.block-31;auto w=d.w[wi];uint64_t contractionOutput=cycle.c.address();auto epilogue=d.epilogue;
@@ -184,8 +191,8 @@ NvAPI_Status __cdecl Launch(ID3D12GraphicsCommandList*c,const NVAPI_CU_KERNEL_LA
  }else Vendor(c,d,cycle);
  struct Epilogue{uint64_t gemm,skip,cosine,output;unsigned rows,pad;uint64_t done,counter,expand_done;}ep{contractionOutput,p[1],d.weights.address()+w.cos,p[2],(unsigned)tokens,0,p[7],p[4],cycle.done};IO(c,epilogue,ep,(unsigned)tokens*1024/2);
  cycle.pending=false;++cycle.block;++cycle.pairs;++s.launches;if(cycle.pairs==8)s.active=true;s.status=(s.candidate?"Candidate hybrid M=":"Fused hybrid M=")+std::to_string(tokens)+" dims="+std::to_string(dims[0])+"x"+std::to_string(dims[1])+" FFN pairs recorded "+std::to_string(cycle.pairs)+"/8 ("+std::to_string(cycle.pairs*2)+"/16 original launches); other operators FP8";return NVAPI_OK;
- }catch(const std::exception&e){s.active=false;bool pending=false;for(auto&entry:s.sessions)if(std::get<0>(entry.first)==c){pending|=entry.second.pending;if(!entry.second.pending)entry.second.active=false;}std::string shape;if(k&&k->pParams&&k->paramSize==72){unsigned dims[2];memcpy(dims,(char*)k->pParams+64,8);shape="M="+std::to_string((uint64_t)dims[0]*dims[1])+" dims="+std::to_string(dims[0])+"x"+std::to_string(dims[1])+" ";}s.restartRequired|=pending;s.status=std::string(pending?"Restart required: hybrid failed after replacement: ":"Original FP8 fallback: ")+shape+e.what();fprintf(stderr,"%s\n",s.status.c_str());return pending?NVAPI_ERROR:s.launch(c,k,count);}}
-NvAPI_Status __cdecl DestroyFunction(ID3D12Device*d,NVDX_ObjectHandle f){auto&s=S();std::lock_guard<std::recursive_mutex>g(s.mutex);s.targets.erase(f);s.vitRole.erase(f);return s.destroyFunction(d,f);}
+ }catch(const std::exception&e){s.active=false;bool pending=false;for(auto&entry:s.sessions)if(std::get<0>(entry.first)==c){pending|=entry.second.pending;if(!entry.second.pending)entry.second.active=false;}std::string shape;if(k&&k->pParams&&k->paramSize==72){unsigned dims[2];memcpy(dims,(char*)k->pParams+64,8);shape="M="+std::to_string((uint64_t)dims[0]*dims[1])+" dims="+std::to_string(dims[0])+"x"+std::to_string(dims[1])+" ";}s.restartRequired|=pending;s.status=std::string(pending?"Restart required: hybrid failed after replacement: ":"Original FP8 fallback: ")+shape+e.what();fprintf(stderr,"%s\n",s.status.c_str());return pending?NVAPI_ERROR:RealLaunch(s,c,k,count);}}
+NvAPI_Status __cdecl DestroyFunction(ID3D12Device*d,NVDX_ObjectHandle f){auto&s=S();std::lock_guard<std::recursive_mutex>g(s.mutex);s.targets.erase(f);s.vitRole.erase(f);s.fnInfo.erase(f);return s.destroyFunction(d,f);}
 NvAPI_Status __cdecl DestroyModule(ID3D12Device*d,NVDX_ObjectHandle m){auto&s=S();std::lock_guard<std::recursive_mutex>g(s.mutex);s.modules.erase(m);s.active=false;s.vit.Clear();for(auto i=s.targets.begin();i!=s.targets.end();)if(i->second.module==m)i=s.targets.erase(i);else++i;return s.destroyModule(d,m);}
 }
 void*WrapNvapi(unsigned id,void*raw){if(!raw)return raw;auto&s=S();std::lock_guard<std::recursive_mutex>apiGuard(s.mutex);switch(id){case 0xad1a677d:s.createModule=(decltype(s.createModule))raw;return(void*)&CreateModule;case 0xe2436e22:s.createFunction=(decltype(s.createFunction))raw;return(void*)&CreateFunction;case 0x24973538:s.launch=(decltype(s.launch))raw;return(void*)&Launch;case 0x41c65285:s.destroyModule=(decltype(s.destroyModule))raw;return(void*)&DestroyModule;case 0xdf295ea6:s.destroyFunction=(decltype(s.destroyFunction))raw;return(void*)&DestroyFunction;default:return raw;}}
@@ -204,8 +211,9 @@ void SetPrecision(unsigned precision){auto&s=S();std::lock_guard<std::recursive_
 }
 void SetEnabled(bool on){SetPrecision(on?4u:0u);}
 bool IsActive(){auto&s=S();std::lock_guard<std::recursive_mutex>g(s.mutex);return s.enabled&&s.active&&!s.restartRequired;}
-void BeginEvaluate(const void*feature,bool reset,unsigned every){auto&s=S();std::lock_guard<std::recursive_mutex>g(s.mutex);s.vit.Begin(feature,reset,every);}
-void EndEvaluate(){auto&s=S();std::lock_guard<std::recursive_mutex>g(s.mutex);const bool wasOff=s.vit.Disabled();if(!s.vit.End()&&!wasOff)fprintf(stderr,"DLSS-NR ViT reuse: unexpected launch order, reuse is off for this session\n");}
+void BeginEvaluate(const void*feature,bool reset,unsigned every,ID3D12GraphicsCommandList*cmd,bool profile){auto&s=S();std::lock_guard<std::recursive_mutex>g(s.mutex);s.vit.Begin(feature,reset,every);s.prof.Begin(cmd,profile);}
+void EndEvaluate(ID3D12GraphicsCommandList*cmd){auto&s=S();std::lock_guard<std::recursive_mutex>g(s.mutex);s.prof.End(cmd);const bool wasOff=s.vit.Disabled();if(!s.vit.End()&&!wasOff)fprintf(stderr,"DLSS-NR ViT reuse: unexpected launch order, reuse is off for this session\n");}
+std::vector<std::string> TakeProfileReports(){auto&s=S();std::lock_guard<std::recursive_mutex>g(s.mutex);return s.prof.TakeReports();}
 std::string VitStatus(){auto&s=S();std::lock_guard<std::recursive_mutex>g(s.mutex);return s.vit.Status();}
 std::string Status(){auto&s=S();std::lock_guard<std::recursive_mutex>g(s.mutex);return s.status+" | rewritten original launches: "+std::to_string(s.launches)+" | candidate split contractions: "+std::to_string(s.splitLaunches);}
 }

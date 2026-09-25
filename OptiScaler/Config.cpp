@@ -372,6 +372,8 @@ bool Config::Reload(std::filesystem::path iniPath)
 
             DlssNrWhitePointFromExposure.set_from_config(readBool("DlssNr", "WhitePointFromExposure"));
             DlssNrProbeD3D11.set_from_config(readBool("DlssNr", "ProbeD3D11"));
+            DlssNrFrameStats.set_from_config(readBool("DlssNr", "FrameStats"));
+            DlssNrKernelProfile.set_from_config(readBool("DlssNr", "KernelProfile"));
             DlssNrDebugView.set_from_config(readUInt("DlssNr", "DebugView"));
             DlssNrCompare.set_from_config(readUInt("DlssNr", "Compare"));
             DlssNrCompareSplit.set_from_config(readFloat("DlssNr", "CompareSplit"));
@@ -397,6 +399,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrWhitePointSource.set_from_config(readUInt("DlssNr", "WhitePointSource"));
             DlssNrAutoExposureTrim.set_from_config(readFloat("DlssNr", "AutoExposureTrim"));
             DlssNrAutoExposureShadowProtection.set_from_config(readFloat("DlssNr", "AutoExposureShadowProtection"));
+            DlssNrAutoExposureFollowGame.set_from_config(readBool("DlssNr", "AutoExposureFollowGame"));
             DlssNrGameExposureTrimAnchors.set_from_config(readString("DlssNr", "GameExposureTrimAnchors"));
             DlssNrAutoExposureTrimAnchors.set_from_config(readString("DlssNr", "AutoExposureTrimAnchors"));
 
@@ -1326,6 +1329,10 @@ bool Config::SaveIni()
 
     ini.SetValue("DlssNr", "ProbeD3D11",
                  GetBoolValue(Instance()->DlssNrProbeD3D11.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "FrameStats",
+                 GetBoolValue(Instance()->DlssNrFrameStats.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "KernelProfile",
+                 GetBoolValue(Instance()->DlssNrKernelProfile.value_for_config()).c_str());
     ini.SetValue("DlssNr", "WhitePointFromExposure",
                  GetBoolValue(Instance()->DlssNrWhitePointFromExposure.value_for_config()).c_str());
     ini.SetValue("DlssNr", "DebugView", GetIntValue(Instance()->DlssNrDebugView.value_for_config()).c_str());
@@ -1356,6 +1363,8 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "AutoExposureTrim", GetFloatValue(Instance()->DlssNrAutoExposureTrim.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AutoExposureShadowProtection",
                  GetFloatValue(Instance()->DlssNrAutoExposureShadowProtection.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "AutoExposureFollowGame",
+                 GetBoolValue(Instance()->DlssNrAutoExposureFollowGame.value_for_config()).c_str());
     ini.SetValue("DlssNr", "GameExposureTrimAnchors",
                  Instance()->DlssNrGameExposureTrimAnchors.value_for_config_or("").c_str());
     ini.SetValue("DlssNr", "AutoExposureTrimAnchors",

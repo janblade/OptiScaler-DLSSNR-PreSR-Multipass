@@ -132,6 +132,16 @@ ExposureStatus GameExposureStatus();
 // What the OptiScaler-owned automatic exposure (white point source 3) has measured from the frame.
 ExposureStatus AutoExposureStatus();
 
+// Automatic following the game's own exposure on an unexposed frame (shaders/dlssnr/DlssNr_FollowGame.h). D3D12 only;
+// the calibration itself is read from DlssNrFollowGame::Instance().
+struct FollowGameStatus
+{
+    bool gameExposureSeen = false; // the game supplied an exposure beside an Automatic reading
+    bool following = false;        // the last frame followed the game's exposure
+};
+
+FollowGameStatus FollowGameExposureStatus();
+
 // The model resolution actually applied last frame, as a percentage of the frame it processes --
 // the manual slider, or (post-SR + Auto) the derived render:output ratio. So the menu can show the
 // live value instead of the stale manual one while Auto is overriding it.

@@ -68,6 +68,9 @@ cbuffer Params : register(b0)
     // How much of a multipass boundary's raw answer to take, versus staying at this pass's own
     // proxy. 1.0 = today's behaviour. See DlssNrConstants::PassFeedback for the full comment.
     float gPassFeedback;
+    // Multiplies the base white point read from the live exposure sample. Automatic following the game's exposure binds
+    // the game's texture and puts the learned calibration here (DlssNr_FollowGame.h). 0 (unset) and 1 are the identity.
+    float gExposureBaseScale;
 };
 
 // Bringing an impossible colour back into a possible one.
@@ -359,6 +362,12 @@ float EffectiveExposureTrim(float key)
 // Where the live exposure is read from. D3D12 binds it at t4. Vulkan has no such descriptor, so it
 // travels in the motion slot: the encode and resolve have no use for motion vectors there, and the
 // meter's courier already borrows the same slot. Only ever bound when gUseExposureWhitePoint is set.
+// The live sample's base white point multiplier: the learned calibration while Automatic follows the game, else 1.
+float ExposureBaseScale()
+{
+    return (isfinite(gExposureBaseScale) && gExposureBaseScale > 0.0) ? gExposureBaseScale : 1.0;
+}
+
 float ExposureSample()
 {
 #ifdef VK_MODE
@@ -384,7 +393,7 @@ float WhitePoint()
         {
             const float preExposure =
                 (isfinite(gPreExposure) && gPreExposure > 1e-6) ? gPreExposure : 1.0;
-            const float baseWhitePoint = preExposure / e;
+            const float baseWhitePoint = preExposure / e * ExposureBaseScale();
             return clamp(baseWhitePoint * EffectiveExposureTrim(baseWhitePoint), 0.01, 4096.0);
         }
         // A missing or absurd sample falls through to the CPU value the meter path still maintains.
@@ -407,7 +416,7 @@ float DebugViewScale()
         {
             const float preExposure =
                 (isfinite(gPreExposure) && gPreExposure > 1e-6) ? gPreExposure : 1.0;
-            return clamp(preExposure / e, 0.01, 4096.0);
+            return clamp(preExposure / e * ExposureBaseScale(), 0.01, 4096.0);
         }
     }
     return max(gDebugScale, 1e-4);

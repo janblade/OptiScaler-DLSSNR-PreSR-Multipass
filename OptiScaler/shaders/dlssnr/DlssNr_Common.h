@@ -296,6 +296,11 @@ struct alignas(256) DlssNrConstants
     // with each pass. Only read at DlssNrMode_ClampProxy; a single-pass configuration never reaches
     // this branch. Trailing scalar, mirrored in the shader cbuffer.
     float PassFeedback;
+
+    // Multiplies the base white point the shader reads from a live exposure sample. While Automatic follows the game's
+    // exposure (DlssNr_FollowGame.h) the game's texture is bound and this carries the learned calibration. 0 -- what a
+    // zero-initialised struct holds -- and 1 both leave the white point as it was. Trailing scalar, mirrored in the shader.
+    float ExposureBaseScale;
 };
 static_assert(sizeof(DlssNrConstants) == 256);
 

@@ -860,8 +860,18 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
     // means come from a buffer that has the game's PreExposure baked in, so they are divided by it
     // first and the result is in scene units. Highlight protection compresses tiles more than a knee
     // above the scene's log-average before averaging: the knee runs from 3 EV (protection 0) to
-    // 1 EV (100), the slope above it from 1.0 to 0.35. No tile is discarded, and at 0 the result is
-    // the plain full-frame arithmetic average.
+    // 1 EV (100), the slope above it from 1.0 to 0.35. At 0 the result is the arithmetic average of the
+    // tiles that are not black.
+    //
+    // Black tiles are left out: letterbox and pillarbox bars, black borders, the black of a fade. A
+    // black tile's log is clamped to -24 EV, so in the log-average it weighs like a tile 24 stops down:
+    // RDR2's letterboxed cutscenes (19% of tiles exactly 0) pulled the reference ~4.6 EV down, the
+    // knee then compressed every real tile, and the picture was exposed ~3 EV too bright. "Black" is
+    // relative -- 12 stops below the plain mean of all tiles -- because the buffer's units are the
+    // game's own. Black tiles lower that mean by at most their share of the area, never by orders of
+    // magnitude, and 12 stops down is far below any shadow or night sky the picture can show. When
+    // under 5% of the area is left (a black frame) no exposure is written: 0 reads as "no reading"
+    // and the last good value is kept.
     if (gMode == 13)
     {
         const uint srcW = max(gExposureSourceWidth, 1u);
@@ -869,6 +879,35 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
         const float preExposure =
             (isfinite(gPreExposure) && gPreExposure > 1e-6) ? gPreExposure : 1.0;
         const float protection = saturate(gAutoExposureShadowProtection * 0.01);
+
+        float plainSum = 0.0;
+        float plainPixels = 0.0;
+
+        [loop] for (uint index0 = lane; index0 < 4096u; index0 += 64u)
+        {
+            const uint tx0 = index0 & 63u;
+            const uint ty0 = index0 >> 6u;
+            const float pixels0 = (float) max(((tx0 + 1u) * srcW) / 64u - (tx0 * srcW) / 64u, 1u) *
+                                  (float) max(((ty0 + 1u) * srcH) / 64u - (ty0 * srcH) / 64u, 1u);
+            plainSum += max(SanitizeFinite(gSource.Load(int3(tx0, ty0, 0)).r, 0.0), 0.0) * pixels0;
+            plainPixels += pixels0;
+        }
+
+        gExposureReduce[lane] = float4(plainSum, plainPixels, 0.0, 0.0);
+        GroupMemoryBarrierWithGroupSync();
+        [unroll] for (uint stride0 = 32u; stride0 > 0u; stride0 >>= 1u)
+        {
+            if (lane < stride0)
+                gExposureReduce[lane].xy += gExposureReduce[lane + stride0].xy;
+            GroupMemoryBarrierWithGroupSync();
+        }
+
+        const float framePixels = gExposureReduce[0].y;
+        const float plainMean = framePixels > 0.0 ? gExposureReduce[0].x / framePixels : 0.0;
+        const float blackLevel = plainMean * exp2(-12.0);
+
+        // Every lane has read the result before the next reduction reuses the array.
+        GroupMemoryBarrierWithGroupSync();
 
         float weightedBufferLuma = 0.0;
         float weightedSceneLogLuma = 0.0;
@@ -886,6 +925,9 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
             const uint tileH = max(y1 - y0, 1u);
             const float pixels = (float) tileW * (float) tileH;
             const float tileMean = max(SanitizeFinite(gSource.Load(int3(tx, ty, 0)).r, 0.0), 0.0);
+
+            if (tileMean <= blackLevel)
+                continue;
 
             weightedBufferLuma += tileMean * pixels;
             totalPixels += pixels;
@@ -933,6 +975,8 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
                 const uint tileH = max(y1 - y0, 1u);
                 const float pixels = (float) tileW * (float) tileH;
                 const float tileMean = max(SanitizeFinite(gSource.Load(int3(tx2, ty2, 0)).r, 0.0), 0.0);
+                if (tileMean <= blackLevel)
+                    continue;
                 const float sceneLuma = max(tileMean / preExposure, 1e-8);
                 const float logLuma = clamp(log2(sceneLuma), -24.0, 24.0);
                 const float deltaEv = logLuma - referenceLogLuma;
@@ -959,9 +1003,13 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
 
         if (lane == 0u)
         {
-            float exposure = meteredSceneLuma > 1e-8 ? 0.18 / (meteredSceneLuma * 0.82) : 1.0;
-            if (!isfinite(exposure) || exposure <= 0.0)
-                exposure = 1.0;
+            // 0 is "no reading": a black frame, or too little of the frame left to meter. The shader's
+            // live path and the host readback both keep the last good exposure on it. It used to be 1,
+            // which put the white point at PreExposure for the length of any fade to black.
+            const bool metered = allPixels >= 0.05 * framePixels && meteredSceneLuma > 1e-8;
+            float exposure = metered ? 0.18 / (meteredSceneLuma * 0.82) : 0.0;
+            if (!isfinite(exposure) || exposure < 0.0)
+                exposure = 0.0;
             gTarget[uint2(0, 0)] = float4(exposure, 0.0, 0.0, 1.0);
         }
         return;

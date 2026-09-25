@@ -1192,6 +1192,11 @@ void ReportFrameStats(float whitePoint, uint32_t source)
     const float count = (float) scene.size();
     const float mean = (float) (sum / count);
     const float logAverage = (float) std::exp(logSum / count);
+
+    // The Automatic meter's black-tile rule (dlssnr.hlsl, gMode 13): 12 stops below the plain mean.
+    const float blackLevel = mean * std::exp2(-12.0f);
+    const float blackShare =
+        100.0f * (float) std::count_if(scene.begin(), scene.end(), [&](float v) { return v <= blackLevel; }) / count;
     const float p50 = percentile(0.50f);
     const float p95 = percentile(0.95f);
     const float safeWhite = std::max(whitePoint, 1e-6f);
@@ -1210,13 +1215,13 @@ void ReportFrameStats(float whitePoint, uint32_t source)
     LOG_INFO("DLSS-NR frame stats: {} ({}) {}x{}, source {}, pre-exposure {:.5g}, game exposure {}, "
              "auto exposure {}, white point {:.4g}; tile luma in scene units: min {:.3g} p05 {:.3g} p25 {:.3g} "
              "p50 {:.3g} p75 {:.3g} p95 {:.3g} p99 {:.3g} max {:.3g}, mean {:.3g}, log-average {:.3g}; tiles "
-             "above 1: {:.0f}%, above 10: {:.0f}%, above 100: {:.0f}%; proxy sRGB at p50 {:.2f}, at "
+             "above 1: {:.0f}%, above 10: {:.0f}%, above 100: {:.0f}%, black (left out of Automatic): {:.0f}%; proxy sRGB at p50 {:.2f}, at "
              "log-average {:.2f}, at mean {:.2f}, at p95 {:.2f}; MEASURED PROXY (sRGB-encoded, what the model is shown{}): {}",
              DiagFormatName(g_nr.diagFormat), (int) g_nr.diagFormat, g_nr.diagWidth, g_nr.diagHeight, source,
              preExposure, exposureText, autoText, whitePoint, scene.front(), percentile(0.05f),
              percentile(0.25f), p50, percentile(0.75f), p95, percentile(0.99f), scene.back(), mean,
              logAverage, 100.0f * (float) above1 / count, 100.0f * (float) above10 / count,
-             100.0f * (float) above100 / count, DiagSrgbEncode(p50 / safeWhite),
+             100.0f * (float) above100 / count, blackShare, DiagSrgbEncode(p50 / safeWhite),
              DiagSrgbEncode(logAverage / safeWhite), DiagSrgbEncode(mean / safeWhite),
              DiagSrgbEncode(p95 / safeWhite), g_nr.diagPassthrough ? ", passthrough: frame handed over untouched" : "", proxyText);
 }

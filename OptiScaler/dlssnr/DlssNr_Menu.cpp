@@ -887,9 +887,10 @@ void RenderMenu(Config* config, float menuResScale)
                                     config->DlssNrAutoExposureTrim.has_value() ? "; your setting is in use" : "");
             }
 
-            // Following the game's own exposure on an unexposed frame (DlssNr_FollowGame.h). D3D12 only.
-            if (!DlssNr::IsRunningVk())
+            // Following the game's own exposure on an unexposed frame (DlssNr_FollowGame.h). Vulkan follows from the host
+            // value, a few frames behind the game.
             {
+                const bool followVk = DlssNr::IsRunningVk();
                 bool follow = config->DlssNrAutoExposureFollowGame.value_or_default();
 
                 if (ImGui::Checkbox("Follow the game's exposure", &follow))
@@ -899,9 +900,11 @@ void RenderMenu(Config* config, float menuResScale)
                            "\nAutomatic learns how its own metering relates to the game's exposure in the first"
                            "\nseconds of play, then follows the game's exposure, so brightness moves exactly with"
                            "\nthe game: cutscenes, menus, fades. The brightness slider keeps its meaning."
-                           "\nGames that expose their frame themselves are not affected.");
+                           "\nGames that expose their frame themselves are not affected."
+                           "\nOn Vulkan it follows a few frames behind the game.");
 
-                const auto followStatus = DlssNr::FollowGameExposureStatus();
+                const auto followStatus =
+                    followVk ? DlssNr::FollowGameExposureStatusVk() : DlssNr::FollowGameExposureStatus();
                 const auto& calibration = DlssNrFollowGame::Instance();
 
                 if (DlssNrAutoTrim::Instance().Get() != DlssNrAutoTrim::Verdict::Unexposed)

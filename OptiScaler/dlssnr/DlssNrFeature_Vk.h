@@ -75,6 +75,10 @@ struct ExposureStatus;
 ExposureStatus GameExposureStatusVk();
 ExposureStatus AutoExposureStatusVk();
 
+// Automatic following the game's own exposure on an unexposed frame; same shape as the D3D12 accessor.
+struct FollowGameStatus;
+FollowGameStatus FollowGameExposureStatusVk();
+
 void ShutdownVk(bool deviceAlive = true);
 
 } // namespace DlssNr

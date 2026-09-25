@@ -12,6 +12,7 @@
 #include <imgui/imgui.h>
 #include <shaders/dlssnr/DlssNr_TrimAnchors.h>
 #include <shaders/dlssnr/DlssNr_AutoTrimDefault.h>
+#include <shaders/dlssnr/DlssNr_FollowGame.h>
 
 #include <string>
 #include <vector>
@@ -886,13 +887,42 @@ void RenderMenu(Config* config, float menuResScale)
                                     config->DlssNrAutoExposureTrim.has_value() ? "; your setting is in use" : "");
             }
 
+            // Following the game's own exposure on an unexposed frame (DlssNr_FollowGame.h). D3D12 only.
+            if (!DlssNr::IsRunningVk())
+            {
+                bool follow = config->DlssNrAutoExposureFollowGame.value_or_default();
+
+                if (ImGui::Checkbox("Follow the game's exposure", &follow))
+                    config->DlssNrAutoExposureFollowGame = follow;
+
+                HelpMarker("For games that hand over their frame before applying their own exposure (e.g. RDR2)."
+                           "\nAutomatic learns how its own metering relates to the game's exposure in the first"
+                           "\nseconds of play, then follows the game's exposure, so brightness moves exactly with"
+                           "\nthe game: cutscenes, menus, fades. The brightness slider keeps its meaning."
+                           "\nGames that expose their frame themselves are not affected.");
+
+                const auto followStatus = DlssNr::FollowGameExposureStatus();
+                const auto& calibration = DlssNrFollowGame::Instance();
+
+                if (DlssNrAutoTrim::Instance().Get() != DlssNrAutoTrim::Verdict::Unexposed)
+                    ImGui::TextDisabled("Not used: this game exposes its frame itself");
+                else if (!followStatus.gameExposureSeen)
+                    ImGui::TextDisabled("Not available: the game supplies no exposure");
+                else if (!calibration.Locked())
+                    ImGui::TextDisabled("Learning the calibration... (%u/%u)", calibration.Readings(),
+                                        DlssNrFollowGame::kWindow);
+                else
+                    ImGui::TextDisabled("Calibration %+.2f EV against the game's exposure%s", calibration.OffsetEv(),
+                                        followStatus.following ? "; following" : "; not following");
+            }
+
             float protection = config->DlssNrAutoExposureShadowProtection.value_or_default();
             if (ImGui::SliderFloat("Ignore bright highlights", &protection, 0.0f, 100.0f, "%.0f%%"))
                 config->DlssNrAutoExposureShadowProtection = std::clamp(protection, 0.0f, 100.0f);
 
             HelpMarker("Stops the sky, lamps and reflections from darkening the rest of the picture."
                        "\n0% averages the whole frame as it is; 100% counts bright areas the least."
-                       "\nNothing is cropped out.");
+                       "\nBlack bars and black borders are always left out.");
         }
         else
         {

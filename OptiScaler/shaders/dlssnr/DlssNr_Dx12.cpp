@@ -383,6 +383,10 @@ struct NrState
     // sample was queued on, 0 when none is pending. The rest describe that frame.
     ID3D12Resource* diagGridReadback = nullptr;
     ID3D12Resource* diagExposureReadback = nullptr;
+    // The proxy itself (what the encode wrote and the model is shown), metered the same way after the encode.
+    ID3D12Resource* diagProxyReadback = nullptr;
+    bool diagProxyQueued = false;
+    bool diagPassthrough = false;
     unsigned long long diagQueuedAt = 0;
     DXGI_FORMAT diagFormat = DXGI_FORMAT_UNKNOWN;
     unsigned int diagWidth = 0;
@@ -1093,6 +1097,46 @@ void ReportFrameStats(float whitePoint, uint32_t source)
     void* gridMapped = nullptr;
     void* exposureMapped = nullptr;
     D3D12_RANGE range { 0, kMeterBytes };
+    std::string proxyText = "not measured";
+
+    if (g_nr.diagProxyQueued && g_nr.diagProxyReadback != nullptr)
+    {
+        void* proxyMapped = nullptr;
+
+        if (SUCCEEDED(g_nr.diagProxyReadback->Map(0, &range, &proxyMapped)) && proxyMapped != nullptr)
+        {
+            std::vector<float> encoded;
+            const float* p = (const float*) proxyMapped;
+
+            for (unsigned int i = 0; i < kDlssNrMeterGrid * kDlssNrMeterGrid; ++i)
+            {
+                if (std::isfinite(p[i]) && p[i] >= 0.0f)
+                    encoded.push_back(p[i]);
+            }
+
+            D3D12_RANGE none { 0, 0 };
+            g_nr.diagProxyReadback->Unmap(0, &none);
+
+            if (encoded.size() >= 64)
+            {
+                std::sort(encoded.begin(), encoded.end());
+                double total = 0.0;
+                size_t bright = 0;
+
+                for (float v : encoded)
+                {
+                    total += v;
+                    bright += v > 0.9f;
+                }
+
+                const auto at = [&](float q) { return encoded[(size_t) ((float) (encoded.size() - 1) * q)]; };
+                proxyText = std::format("tile luma p05 {:.2f} p25 {:.2f} p50 {:.2f} p75 {:.2f} p95 {:.2f} max {:.2f}, mean {:.2f}, tiles above 0.9: {:.0f}%",
+                                        at(0.05f), at(0.25f), at(0.5f), at(0.75f), at(0.95f), encoded.back(),
+                                        (float) (total / (double) encoded.size()),
+                                        100.0f * (float) bright / (float) encoded.size());
+            }
+        }
+    }
 
     if (FAILED(gridBuffer->Map(0, &range, &gridMapped)) || gridMapped == nullptr)
         return;
@@ -1166,14 +1210,14 @@ void ReportFrameStats(float whitePoint, uint32_t source)
              "auto exposure {}, white point {:.4g}; tile luma in scene units: min {:.3g} p05 {:.3g} p25 {:.3g} "
              "p50 {:.3g} p75 {:.3g} p95 {:.3g} p99 {:.3g} max {:.3g}, mean {:.3g}, log-average {:.3g}; tiles "
              "above 1: {:.0f}%, above 10: {:.0f}%, above 100: {:.0f}%; proxy sRGB at p50 {:.2f}, at "
-             "log-average {:.2f}, at mean {:.2f}, at p95 {:.2f}",
+             "log-average {:.2f}, at mean {:.2f}, at p95 {:.2f}; MEASURED PROXY (sRGB-encoded, what the model is shown{}): {}",
              DiagFormatName(g_nr.diagFormat), (int) g_nr.diagFormat, g_nr.diagWidth, g_nr.diagHeight, source,
              preExposure, exposureText, autoText, whitePoint, scene.front(), percentile(0.05f),
              percentile(0.25f), p50, percentile(0.75f), p95, percentile(0.99f), scene.back(), mean,
              logAverage, 100.0f * (float) above1 / count, 100.0f * (float) above10 / count,
              100.0f * (float) above100 / count, DiagSrgbEncode(p50 / safeWhite),
              DiagSrgbEncode(logAverage / safeWhite), DiagSrgbEncode(mean / safeWhite),
-             DiagSrgbEncode(p95 / safeWhite));
+             DiagSrgbEncode(p95 / safeWhite), g_nr.diagPassthrough ? ", passthrough: frame handed over untouched" : "", proxyText);
 }
 
 // Takes the game's exposure out of tile 0 of the grid recorded three frames ago.
@@ -2377,7 +2421,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         }
 
         // The frame statistics diagnostic's own pair, so it never shares a buffer with the exposure ring.
-        for (ID3D12Resource** rb : { &g_nr.diagGridReadback, &g_nr.diagExposureReadback })
+        for (ID3D12Resource** rb : { &g_nr.diagGridReadback, &g_nr.diagExposureReadback, &g_nr.diagProxyReadback })
         {
             if (FAILED(device->CreateCommittedResource(&readback, D3D12_HEAP_FLAG_NONE, &bufferDesc,
                                                        D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
@@ -2852,6 +2896,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         }
 
         g_nr.diagQueuedAt = g_frames;
+        g_nr.diagProxyQueued = false;
+        g_nr.diagPassthrough = !isHdrBuffer;
         g_nr.diagFormat = gameDesc.Format;
         g_nr.diagWidth = (unsigned int) gameDesc.Width;
         g_nr.diagHeight = gameDesc.Height;
@@ -2987,6 +3033,21 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
     Barrier(cmdList, g_nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+    // Frame statistics diagnostic: on the frame it queued a sample, meter the proxy the encode just wrote (an
+    // sRGB-encoded picture, so the tile means are of encoded luma) and queue that readback too. What the model
+    // is really shown, measured rather than computed from the white point.
+    if (g_nr.diagQueuedAt == g_frames && g_nr.diagProxyReadback != nullptr && g_nr.meter != nullptr)
+    {
+        DlssNrConstants proxyParams {};
+        proxyParams.Mode = DlssNrMode_Meter;
+        proxyParams.Width = kDlssNrMeterGrid;
+        proxyParams.Height = kDlssNrMeterGrid;
+        proxyParams.MeterCopiesExposure = 0;
+        DispatchPass(cmdList, proxyParams, g_nr.colorCopy, nullptr, nullptr, nullptr, nullptr, g_nr.meter, nullptr);
+        CopyMeterGridTo(cmdList, g_nr.diagProxyReadback);
+        g_nr.diagProxyQueued = true;
+    }
 
     // Below full resolution the model is shown a filtered shrink of the proxy; the edit it returns is
     // enlarged during the resolve while the frame underneath stays full size and untouched.
@@ -4481,7 +4542,7 @@ void Shutdown()
         }
     }
 
-    for (ID3D12Resource** rb : { &g_nr.diagGridReadback, &g_nr.diagExposureReadback })
+    for (ID3D12Resource** rb : { &g_nr.diagGridReadback, &g_nr.diagExposureReadback, &g_nr.diagProxyReadback })
     {
         if (*rb != nullptr)
         {

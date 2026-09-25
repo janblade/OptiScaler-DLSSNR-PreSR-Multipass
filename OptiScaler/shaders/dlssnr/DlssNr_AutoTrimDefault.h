@@ -8,7 +8,9 @@
 //   picture with a median of 0.29;
 // - display-scaled (NBA 2K27: the frame never goes above 1; base white point around 0.8): +4.3 EV put yellow highlights
 //   in the players' shadows, +2.3 EV (Trim 1) looked right.
-// The base white point (PreExposure / automatic exposure) tells them apart with a 50x margin either side of kThreshold.
+// The base white point (PreExposure / automatic exposure) tells them apart. Measured display-range games: NBA 2K27 ~0.2-0.8,
+// Cyberpunk 2077 ~0.5 (6.6 in the first seconds), The Witcher 3 up to 6.0; RDR2 ~900-1700 in gameplay. kThreshold sits at
+// ~17x above the highest display-range reading and ~9x below RDR2's gameplay (raised from 20 after The Witcher 3 reached 6).
 //
 // The verdict only ever moves towards scene-referred. A scene-referred game shows display-range numbers on loading
 // screens and menus (RDR2 read about 1 while loading), but a display-scaled game never reads in the hundreds, so a
@@ -26,7 +28,7 @@ namespace DlssNrAutoTrim
 {
 constexpr float kSceneReferredTrim = 0.25f; // +4.3 EV on the menu's scale (neutral 5x)
 constexpr float kDisplayScaledTrim = 1.0f;  // +2.3 EV
-constexpr float kThreshold = 20.0f;         // base white point: RDR2 ~1000-1700, NBA 2K27 ~0.8
+constexpr float kThreshold = 100.0f;        // base white point: RDR2 ~900-1700 in gameplay; display-range games up to ~6 (The Witcher 3)
 constexpr unsigned kWindow = 120;           // readings per decision (about 2 s)
 
 enum class Verdict

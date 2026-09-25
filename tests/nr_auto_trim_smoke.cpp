@@ -69,6 +69,17 @@ int main()
             d.Feed(i % 10 == 0 ? 5000.0f : 0.8f);
         CHECK(d.Get() == Verdict::DisplayScaled);
     }
+    // Measured display-range games stay display-range: The Witcher 3 up to 6, Cyberpunk 6.6 at start then 0.5,
+    // and a reading between the old threshold (20) and the new one.
+    {
+        Detector d;
+        FeedN(d, 6.0f, kWindow * 2);
+        CHECK(d.Get() == Verdict::DisplayScaled);
+        FeedN(d, 6.6f, kWindow);
+        FeedN(d, 0.5f, kWindow);
+        FeedN(d, 50.0f, kWindow);
+        CHECK(d.Get() == Verdict::DisplayScaled);
+    }
     // Garbage readings are ignored.
     {
         Detector d;

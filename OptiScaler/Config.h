@@ -519,7 +519,7 @@ class Config
     CustomOptional<float> DlssNrAutoExposureTrim { 5.0f };
     CustomOptional<float> DlssNrAutoExposureShadowProtection { 100.0f };
     // On a frame the game has not exposed yet (and that supplies its exposure), Automatic follows the game's own
-    // exposure times a calibration learned against Automatic's meter. D3D12 only. See shaders/dlssnr/DlssNr_FollowGame.h.
+    // exposure times a calibration learned against Automatic's meter (Vulkan: a few frames behind). See DlssNr_FollowGame.h.
     CustomOptional<bool> DlssNrAutoExposureFollowGame { true };
 
     // Base-white-point-dependent Trim calibration tables, serialized as baseWhitePoint:trim pairs. Ini-only: the

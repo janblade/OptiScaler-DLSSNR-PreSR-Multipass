@@ -15,9 +15,10 @@
 // The verdict only ever moves towards unexposed. An unexposed game shows pre-exposed numbers on loading screens and
 // menus (RDR2 read about 1 while loading), but a pre-exposed game never reads in the hundreds, so a sustained high
 // reading is conclusive and a low one is only provisional. Evidence: one unexposed game, three pre-exposed.
-// "Sustained" is kConfirmWindows windows in a row (about 6 s), so a few seconds of an unusually bright menu or
-// cutscene in a pre-exposed game cannot latch it; any low window in between starts the count again. RDR2's gameplay
-// windows (medians 900-1700) all pass, so it only reaches its default ~4 s later than with a single window.
+// "Sustained" is kConfirmWindows high one-second windows in the session, not necessarily in a row: one or two seconds
+// of an unusually bright menu cannot latch a pre-exposed game, and a dim RDR2 scene whose readings hover around the
+// threshold (medians 77-116 measured on 2026-09-26, far below its daytime 900-1700) is still recognised after a few
+// brighter seconds. Low windows in between keep the count; they only give the provisional pre-exposed verdict.
 //
 // Header-only and free of D3D/Vulkan types so the latch can be exercised on the host (tests/nr_auto_trim_smoke.cpp).
 
@@ -32,8 +33,8 @@ namespace DlssNrAutoTrim
 constexpr float kUnexposedTrim = 0.25f; // +4.3 EV on the menu's scale (neutral 5x)
 constexpr float kPreExposedTrim = 1.0f;  // +2.3 EV
 constexpr float kThreshold = 100.0f;        // base white point: RDR2 ~900-1700 in gameplay; pre-exposed games up to ~6 (The Witcher 3)
-constexpr unsigned kWindow = 120;           // readings per decision (about 2 s)
-constexpr unsigned kConfirmWindows = 3;     // high windows in a row before the verdict becomes Unexposed (about 6 s)
+constexpr unsigned kWindow = 60;            // readings per decision (about 1 s)
+constexpr unsigned kConfirmWindows = 3;     // high windows in the session before the verdict becomes Unexposed
 
 enum class Verdict
 {
@@ -66,14 +67,10 @@ class Detector
 
         if (median > kThreshold)
         {
-            if (++highStreak_ < kConfirmWindows)
+            if (++highWindows_ < kConfirmWindows)
                 return false; // not yet conclusive: keep the current verdict (Detecting or PreExposed)
 
             next = Verdict::Unexposed;
-        }
-        else
-        {
-            highStreak_ = 0;
         }
 
         if (next == verdict_)
@@ -110,7 +107,7 @@ class Detector
     {
         window_ = other.window_;
         filled_ = other.filled_;
-        highStreak_ = other.highStreak_;
+        highWindows_ = other.highWindows_;
         verdict_ = other.verdict_;
         median_ = other.median_;
         return *this;
@@ -120,7 +117,7 @@ class Detector
     mutable std::mutex mutex_;
     std::array<float, kWindow> window_ {};
     unsigned long long filled_ = 0;
-    unsigned highStreak_ = 0; // consecutive windows above kThreshold
+    unsigned highWindows_ = 0; // windows above kThreshold so far
     Verdict verdict_ = Verdict::Detecting;
     float median_ = 0.0f;
 };

@@ -39,7 +39,7 @@ int main()
         CHECK(d.Get() == Verdict::PreExposed);
         CHECK(d.DefaultTrim() == kPreExposedTrim);
     }
-    // RDR2-like readings: unexposed, Trim 0.25, but only after kConfirmWindows high windows in a row.
+    // RDR2-like readings: unexposed, Trim 0.25, but only after kConfirmWindows high windows (about 3 s).
     {
         Detector d;
         FeedN(d, 1300.0f, kWindow);
@@ -51,24 +51,33 @@ int main()
         CHECK(d.Get() == Verdict::Unexposed);
         CHECK(d.DefaultTrim() == kUnexposedTrim);
     }
-    // A low window between high ones restarts the count.
+    // The high windows need not be in a row: a low one in between is provisional pre-exposed and keeps the count.
     {
         Detector d;
         FeedN(d, 1300.0f, kWindow * (kConfirmWindows - 1));
         FeedN(d, 0.8f, kWindow);
-        CHECK(d.Get() == Verdict::PreExposed);
-        FeedN(d, 1300.0f, kWindow * (kConfirmWindows - 1));
         CHECK(d.Get() == Verdict::PreExposed);
         FeedN(d, 1300.0f, kWindow);
         CHECK(d.Get() == Verdict::Unexposed);
     }
-    // A pre-exposed game bright for two windows (about 4 s of a very bright menu) is not latched.
+    // A dim RDR2 scene hovering around the threshold (medians 77-116 measured 2026-09-26) is still recognised.
+    {
+        Detector d;
+        for (unsigned w = 0; w < 6; ++w)
+            FeedN(d, w % 2 ? 115.0f : 78.0f, kWindow);
+        CHECK(d.Get() == Verdict::Unexposed);
+    }
+    // A pre-exposed game bright for two windows (a couple of seconds of a very bright menu) is not latched ...
     {
         Detector d;
         FeedN(d, 0.8f, kWindow);
         FeedN(d, 500.0f, kWindow * 2);
-        FeedN(d, 0.8f, kWindow);
+        FeedN(d, 0.8f, kWindow * 10);
         CHECK(d.Get() == Verdict::PreExposed);
+        // ... a third bright second, however much later, is: the count is per session (the highest pre-exposed reading
+        // measured is 6.6, far below kThreshold).
+        FeedN(d, 500.0f, kWindow);
+        CHECK(d.Get() == Verdict::Unexposed);
     }
     // Reset clears a half-built streak too.
     {

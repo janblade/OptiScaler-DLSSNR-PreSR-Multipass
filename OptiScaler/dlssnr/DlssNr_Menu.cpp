@@ -924,16 +924,17 @@ void RenderMenu(Config* config, float menuResScale)
                     ImGui::TextDisabled("Calibration %+.2f EV against the game's exposure%s", calibration.OffsetEv(),
                                         followStatus.following ? "; following" : "; not following");
 
-                // The frame type and the calibration are both decided once per session; this measures them again.
-                if (ImGui::SmallButton("Re-detect##autoexposure"))
+                // The calibration is learned once per session; this learns it again. The frame type is kept: it is judged
+                // from the scene's brightness, and a dim unexposed scene reads like a pre-exposed one, so measuring it
+                // again at the wrong moment could only make it wrong (RDR2 read 77-116 in a dim scene, 2026-09-26).
+                if (ImGui::SmallButton("Re-calibrate##autoexposure"))
                 {
-                    DlssNrAutoTrim::Instance().Reset();
                     DlssNrFollowGame::Instance().Reset();
-                    LOG_INFO("DLSS-NR automatic exposure: re-detect requested (frame type and calibration reset)");
+                    LOG_INFO("DLSS-NR automatic exposure: re-calibration requested (the frame type is kept)");
                 }
 
-                HelpMarker("Measures the frame type and the calibration again, for example when the game started"
-                           "\nin a cutscene or a loading screen. Plain Automatic is used meanwhile (about 8 s).");
+                HelpMarker("Learns the calibration against the game's exposure again, for example when it was"
+                           "\nlearned during a cutscene or a loading screen. Plain Automatic is used meanwhile (about 2 s).");
             }
 
             float protection = config->DlssNrAutoExposureShadowProtection.value_or_default();

@@ -915,7 +915,9 @@ void RenderMenu(Config* config, float menuResScale)
                 }
 
                 HelpMarker("Learns the calibration against the game's exposure again, for example when it was"
-                           "\nlearned during a cutscene or a loading screen. Plain Automatic is used meanwhile (about 2 s).");
+                           "\nlearned during a cutscene or a loading screen. Plain Automatic is used meanwhile (about 2 s)."
+                           "\nRe-calibrate in an ordinary daylight scene, not snow, night or indoors: the brightness"
+                           "\nlearned there is kept for the whole game.");
             }
 
             float protection = config->DlssNrAutoExposureShadowProtection.value_or_default();

@@ -58,7 +58,11 @@ class Filter
 {
   public:
     // Start of one model evaluation of `feature`. `every` is how often the run is computed (1 = always); `reset` forces it.
-    void Begin(const void* feature, bool reset, unsigned every)
+    // `slot` (frame number + pass index; negative = none) staggers the passes of one frame: a pass computes when
+    // slot % every == 0, so with every = 2 the passes alternate instead of all computing on one frame and none on the next.
+    // The cycle is anchored to the frame, so a pass that had to start over (reset, lost cache) falls back into its own
+    // phase on the next due frame. A pass never goes longer than every - 1 reused evaluations, anchored or not.
+    void Begin(const void* feature, bool reset, unsigned every, long long slot = -1)
     {
         Ctx& c = ctx();
         c = Ctx {};
@@ -66,6 +70,7 @@ class Filter
         c.key = feature;
         c.reset = reset;
         c.every = every < 1 ? 1 : every;
+        c.slot = slot;
     }
 
     bool Evaluating() const { return ctx().active; }
@@ -92,7 +97,8 @@ class Filter
 
             std::lock_guard<std::mutex> lock(mutex_);
             Entry& e = entries_[c.key];
-            const bool skip = !disabled_ && c.every > 1 && e.valid && !c.reset && e.skips + 1 < c.every;
+            const bool due = c.slot >= 0 && c.slot % c.every == 0;
+            const bool skip = !disabled_ && c.every > 1 && e.valid && !c.reset && !due && e.skips + 1 < c.every;
 
             if (skip)
             {
@@ -201,6 +207,7 @@ class Filter
         const void* key = nullptr;
         bool reset = false;
         unsigned every = 1;
+        long long slot = -1;
         bool inRange = false;
         bool skipping = false;
         bool anomaly = false;

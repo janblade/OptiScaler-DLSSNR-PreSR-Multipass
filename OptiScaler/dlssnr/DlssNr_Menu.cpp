@@ -907,7 +907,13 @@ void RenderMenu(Config* config, float menuResScale)
                     followVk ? DlssNr::FollowGameExposureStatusVk() : DlssNr::FollowGameExposureStatus();
                 const auto& calibration = DlssNrFollowGame::Instance();
 
-                if (DlssNrAutoTrim::Instance().Get() != DlssNrAutoTrim::Verdict::Unexposed)
+                const auto verdict = DlssNrAutoTrim::Instance().Get();
+
+                if (!follow)
+                    ImGui::TextDisabled("Off");
+                else if (verdict == DlssNrAutoTrim::Verdict::Detecting)
+                    ImGui::TextDisabled("Detecting the frame type...");
+                else if (verdict != DlssNrAutoTrim::Verdict::Unexposed)
                     ImGui::TextDisabled("Not used: this game exposes its frame itself");
                 else if (!followStatus.gameExposureSeen)
                     ImGui::TextDisabled("Not available: the game supplies no exposure");
@@ -917,6 +923,17 @@ void RenderMenu(Config* config, float menuResScale)
                 else
                     ImGui::TextDisabled("Calibration %+.2f EV against the game's exposure%s", calibration.OffsetEv(),
                                         followStatus.following ? "; following" : "; not following");
+
+                // The frame type and the calibration are both decided once per session; this measures them again.
+                if (ImGui::SmallButton("Re-detect##autoexposure"))
+                {
+                    DlssNrAutoTrim::Instance().Reset();
+                    DlssNrFollowGame::Instance().Reset();
+                    LOG_INFO("DLSS-NR automatic exposure: re-detect requested (frame type and calibration reset)");
+                }
+
+                HelpMarker("Measures the frame type and the calibration again, for example when the game started"
+                           "\nin a cutscene or a loading screen. Plain Automatic is used meanwhile (about 8 s).");
             }
 
             float protection = config->DlssNrAutoExposureShadowProtection.value_or_default();

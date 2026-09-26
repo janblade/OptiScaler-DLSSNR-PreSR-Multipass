@@ -39,26 +39,58 @@ int main()
         CHECK(d.Get() == Verdict::PreExposed);
         CHECK(d.DefaultTrim() == kPreExposedTrim);
     }
-    // RDR2-like readings: unexposed, Trim 0.25.
+    // RDR2-like readings: unexposed, Trim 0.25, but only after kConfirmWindows high windows in a row.
     {
         Detector d;
         FeedN(d, 1300.0f, kWindow);
+        CHECK(d.Get() == Verdict::Detecting); // one high window is not enough
+        CHECK(d.DefaultTrim() == kPreExposedTrim);
+        FeedN(d, 1300.0f, kWindow * (kConfirmWindows - 1) - 1);
+        CHECK(d.Get() == Verdict::Detecting); // one reading short of the third window
+        FeedN(d, 1300.0f, 1);
         CHECK(d.Get() == Verdict::Unexposed);
         CHECK(d.DefaultTrim() == kUnexposedTrim);
+    }
+    // A low window between high ones restarts the count.
+    {
+        Detector d;
+        FeedN(d, 1300.0f, kWindow * (kConfirmWindows - 1));
+        FeedN(d, 0.8f, kWindow);
+        CHECK(d.Get() == Verdict::PreExposed);
+        FeedN(d, 1300.0f, kWindow * (kConfirmWindows - 1));
+        CHECK(d.Get() == Verdict::PreExposed);
+        FeedN(d, 1300.0f, kWindow);
+        CHECK(d.Get() == Verdict::Unexposed);
+    }
+    // A pre-exposed game bright for two windows (about 4 s of a very bright menu) is not latched.
+    {
+        Detector d;
+        FeedN(d, 0.8f, kWindow);
+        FeedN(d, 500.0f, kWindow * 2);
+        FeedN(d, 0.8f, kWindow);
+        CHECK(d.Get() == Verdict::PreExposed);
+    }
+    // Reset clears a half-built streak too.
+    {
+        Detector d;
+        FeedN(d, 1300.0f, kWindow * (kConfirmWindows - 1));
+        d.Reset();
+        FeedN(d, 1300.0f, kWindow);
+        CHECK(d.Get() == Verdict::Detecting);
     }
     // RDR2 loading screen first (reads ~1), then gameplay: provisional pre-exposed, then upgraded.
     {
         Detector d;
         FeedN(d, 0.9f, kWindow * 2);
         CHECK(d.Get() == Verdict::PreExposed);
-        FeedN(d, 1500.0f, kWindow);
+        FeedN(d, 1500.0f, kWindow * kConfirmWindows);
         CHECK(d.Get() == Verdict::Unexposed);
         CHECK(d.DecidedOn() > kThreshold);
     }
     // Scene-referred is final: a later menu or dark stretch does not flip it back.
     {
         Detector d;
-        FeedN(d, 1300.0f, kWindow);
+        FeedN(d, 1300.0f, kWindow * kConfirmWindows);
         FeedN(d, 0.5f, kWindow * 3);
         CHECK(d.Get() == Verdict::Unexposed);
     }
@@ -91,7 +123,7 @@ int main()
     // The user's value always wins; without one the detected default is used.
     {
         Instance().Reset();
-        FeedN(Instance(), 1300.0f, kWindow);
+        FeedN(Instance(), 1300.0f, kWindow * kConfirmWindows);
         CHECK(Effective(std::nullopt) == kUnexposedTrim);
         CHECK(Effective(std::optional<float>(3.0f)) == 3.0f);
         Instance().Reset();

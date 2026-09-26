@@ -2934,7 +2934,11 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
         // The game's exposure into the meter's tile (0,0), read back beside Automatic's: the follow-game calibration
         // needs the two from the same frame. The meter's tiles have been reduced already; nothing else reads them now.
-        const bool pairGameExposure = frame.ExposureTexture != nullptr;
+        // Same rule as Vulkan: only on an unexposed frame with AutoExposureFollowGame on, so nothing is learned while
+        // following is off (switching it on later starts learning at that moment).
+        const bool pairGameExposure = frame.ExposureTexture != nullptr &&
+                                      cfg.DlssNrAutoExposureFollowGame.value_or_default() &&
+                                      DlssNrAutoTrim::Instance().Get() == DlssNrAutoTrim::Verdict::Unexposed;
 
         if (pairGameExposure)
         {

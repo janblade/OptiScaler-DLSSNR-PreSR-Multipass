@@ -58,8 +58,10 @@ class Filter
 {
   public:
     // Start of one model evaluation of `feature`. `every` is how often the run is computed (1 = always); `reset` forces it.
-    // `slot` (frame number + pass index; negative = none) staggers the passes of one frame: a pass computes when
-    // slot % every == 0, so with every = 2 the passes alternate instead of all computing on one frame and none on the next.
+    // `slot` (the frame number; negative = none) anchors the cycle to the frame: a pass computes when slot % every == 0.
+    // Every pass of a frame gets the same slot, so all passes compute on the same frame and all reuse on the next. Offsetting
+    // each pass by its index (v0.1.19 pre-release) flickered on camera motion at 3 passes: a pass then built its bottleneck
+    // on a pass that was reusing, so the picture used data two frames old, like every = 3.
     // The cycle is anchored to the frame, so a pass that had to start over (reset, lost cache) falls back into its own
     // phase on the next due frame. A pass never goes longer than every - 1 reused evaluations, anchored or not.
     void Begin(const void* feature, bool reset, unsigned every, long long slot = -1)

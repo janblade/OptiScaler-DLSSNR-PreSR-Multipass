@@ -125,35 +125,30 @@ int main()
         CHECK(Kept(Eval(f, &a, false, 2)));
     }
 
-    { // staggered passes, N = 2, 3 passes, slot = frame + pass: each frame computes in 2 or 1 passes, never 3 or 0
+    { // passes share the frame's slot, N = 2, 3 passes: all compute on even frames, all reuse on odd ones
         Filter f;
         int p[3];
-        std::vector<int> perFrame;
         for (int frame = 0; frame < 9; ++frame)
         {
             int computed = 0;
             for (int pass = 0; pass < 3; ++pass)
-                computed += Kept(Eval(f, &p[pass], false, 2, kEval, frame + pass));
-            perFrame.push_back(computed);
+                computed += Kept(Eval(f, &p[pass], false, 2, kEval, frame));
+            CHECK(computed == (frame % 2 ? 0 : 3));
         }
-        CHECK(perFrame[0] == 3); // first frame: nothing cached yet
-        for (int frame = 1; frame < 9; ++frame)
-            CHECK(perFrame[frame] == (frame % 2 ? 1 : 2));
     }
 
-    { // a pass that starts over on its off frame (reset of that pass alone) is back in its phase on the next frame
+    { // a pass that starts over on an off frame (reset of that pass alone) is back in the frame's phase on the next frame
         Filter f;
-        int p[2];
+        int p[3];
         std::vector<std::string> seen;
         for (int frame = 0; frame < 8; ++frame)
         {
             std::string s;
-            for (int pass = 0; pass < 2; ++pass)
-                s += Kept(Eval(f, &p[pass], pass == 1 && frame == 4, 2, kEval, frame + pass)) ? 'V' : '-';
+            for (int pass = 0; pass < 3; ++pass)
+                s += Kept(Eval(f, &p[pass], pass == 1 && frame == 5, 2, kEval, frame)) ? 'V' : '-';
             seen.push_back(s);
         }
-        // frame 4: pass 1 is due (slot 4), pass 2 is reset on its off frame; frame 5: pass 2 due again (slot 6)
-        CHECK(seen[3] == "-V" && seen[4] == "VV" && seen[5] == "-V" && seen[6] == "V-" && seen[7] == "-V");
+        CHECK(seen[4] == "VVV" && seen[5] == "-V-" && seen[6] == "VVV" && seen[7] == "---");
     }
 
     { // anchored or not, a pass never waits longer than N - 1 reused evaluations, for N = 2 and 3, any phase, with a reset
@@ -172,20 +167,6 @@ int main()
                 CHECK(worst <= (int) every - 1);
                 CHECK(computed <= 12 / (int) every + 2); // still reuses: at most the first frame and the reset extra
             }
-    }
-
-    { // N = 3: the three passes compute on three different frames
-        Filter f;
-        int p[3];
-        for (int pass = 0; pass < 3; ++pass)
-            Eval(f, &p[pass], false, 3, kEval, pass);
-        for (int frame = 1; frame < 7; ++frame)
-        {
-            int computed = 0;
-            for (int pass = 0; pass < 3; ++pass)
-                computed += Kept(Eval(f, &p[pass], false, 3, kEval, frame + pass));
-            CHECK(computed == 1);
-        }
     }
 
     { // destroying the modules invalidates every cache

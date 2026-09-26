@@ -1,7 +1,8 @@
 #pragma once
 
-// The Automatic exposure defaults for the running game (DlssNr_AutoTrimDefault.h): the Trim and following the game's
-// exposure, from the known-game list unless the user set them. Every D3D12, Vulkan and menu reader goes through here.
+// The Automatic exposure defaults for the running game (DlssNr_AutoTrimDefault.h): the Trim (one default for every
+// game) and following the game's exposure (from the known-game list), unless the user set them. Every D3D12, Vulkan and
+// menu reader goes through here.
 
 #include <Config.h>
 #include <State.h>
@@ -18,11 +19,8 @@ inline bool KnownUnexposedGame()
     return known;
 }
 
-// The Automatic Trim in force: the user's, else the game's default.
-inline float AutoTrimEffective(const Config& cfg)
-{
-    return DlssNrAutoTrim::Effective(cfg.DlssNrAutoExposureTrim, KnownUnexposedGame());
-}
+// The Automatic Trim in force: the user's, else the default.
+inline float AutoTrimEffective(const Config& cfg) { return DlssNrAutoTrim::Effective(cfg.DlssNrAutoExposureTrim); }
 
 // Whether Automatic follows the game's exposure: the user's choice, else on for a known unexposed game.
 inline bool FollowGameOn(const Config& cfg)
@@ -39,8 +37,9 @@ inline void ReportAutoExposureDefaults()
         return;
 
     const bool known = KnownUnexposedGame();
-    LOG_INFO("DLSS-NR automatic exposure: {} ({}) -> default Trim {} ({}), following the game's exposure {} by default",
+    LOG_INFO("DLSS-NR automatic exposure: {} ({}) -> following the game's exposure {} by default; default Trim {:.3g} "
+             "(+{:.1f} EV)",
              known ? "known unexposed game" : "not a known unexposed game", State::Instance().gameExe,
-             DlssNrAutoTrim::DefaultTrim(known), known ? "+4.3 EV" : "+2.3 EV", known ? "on" : "off");
+             known ? "on" : "off", DlssNrAutoTrim::kDefaultTrim, DlssNrAutoTrim::kDefaultEv);
 }
 } // namespace DlssNr

@@ -512,8 +512,8 @@ class Config
     // linear-HDR NR input. Finished-picture mode bypasses this calculation and keeps its own
     // display white-point override.
     // AutoExposureTrim is a multiplier on the white point (higher = darker model input). While unset (ini `auto`) the
-    // Trim used is chosen per game (DlssNrAutoTrim::Effective, shaders/dlssnr/DlssNr_AutoTrimDefault.h):
-    // 0.25 (+4.3 EV) for a known unexposed game, 1.0 (+2.3 EV) otherwise; the 5.0 below is only the menu's 0 EV
+    // Trim used is the default (DlssNrAutoTrim::Effective, shaders/dlssnr/DlssNr_AutoTrimDefault.h):
+    // 1.77 (+1.5 EV) for every game; the 5.0 below is only the menu's 0 EV
     // point. The menu shows it as "Model input brightness" in stops around 5x: EV = -log2(trim / 5), so 0 EV = 5x, + is brighter.
     // AutoExposureShadowProtection is the menu's "Ignore bright highlights" (percent).
     CustomOptional<float> DlssNrAutoExposureTrim { 5.0f };

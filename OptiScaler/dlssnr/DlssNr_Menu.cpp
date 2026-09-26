@@ -227,7 +227,7 @@ static void ApplyPassPreset(Config* config, unsigned int passes)
     config->DlssNrLocalTone = PresetPass1.tone;
     config->DlssNrSkinStructure = PresetPass1.skin;
     config->DlssNrAutoMask = true;
-    // Automatic exposure at the default chosen for the game (DlssNr_AutoTrimDefault.h). Game exposure at 1x, which
+    // Automatic exposure at its default brightness (DlssNr_AutoTrimDefault.h). Game exposure at 1x, which
     // this used to set, gave NBA 2K27 a model input with a median of 0.07-0.32 (measured 2026-09-25).
     config->DlssNrWhitePointSource = 3u;        // Automatic exposure
     config->DlssNrAutoExposureTrim = std::nullopt;
@@ -864,24 +864,17 @@ void RenderMenu(Config* config, float menuResScale)
         else if (wpSource == 3)
         {
             // The scale stays centred on a 5x Trim (0 EV), the old default from the PR this came from. The default is
-            // now chosen per game -- +4.3 EV for a known unexposed game, +2.3 EV otherwise -- see
-            // DlssNr_AutoTrimDefault.h for the measurements. It is independent of the Game exposure Trim.
+            // +1.5 EV for every game; see DlssNr_AutoTrimDefault.h for the measurements. It is independent of the Game exposure Trim.
             RenderTrimEvSlider(config->DlssNrAutoExposureTrim, 5.0f,
                                DlssNrTrim::Parse(config->DlssNrAutoExposureTrimAnchors.value_or_default()).size(),
                                "autoexposure",
                                "Brightness of the picture handed to NR. + is brighter, - is darker."
-                               "\nUntil you move it, the default is chosen for the game: +4.3 EV for games known to hand"
-                               "\nover their frame before applying their exposure (RDR2), +2.3 EV for every other game."
-                               "\nFor another game that does that, raise it and tick Follow the game's exposure."
+                               "\nUntil you move it, it is +1.5 EV in every game."
                                "\nReset goes back to that default."
                                "\nToo bright clips highlights or tints shadows; too dark hides shadow detail."
                                "\nOptiScaler meters the linear HDR frame itself before NR runs."
                                "\nAutomatic exposure is available on D3D12 and Vulkan.",
-                               DlssNrAutoTrim::DefaultTrim(DlssNr::KnownUnexposedGame()));
-
-            ImGui::TextDisabled("Default for this game: %s%s",
-                                DlssNr::KnownUnexposedGame() ? "+4.3 EV (known unexposed game)" : "+2.3 EV",
-                                config->DlssNrAutoExposureTrim.has_value() ? "; your setting is in use" : "");
+                               DlssNrAutoTrim::kDefaultTrim);
 
             // Following the game's own exposure (DlssNr_FollowGame.h): on by default for a known unexposed game
             // (DlssNr_GameDefaults.h). Vulkan follows from the host value, a few frames behind the game.

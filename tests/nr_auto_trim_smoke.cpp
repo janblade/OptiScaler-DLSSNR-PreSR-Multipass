@@ -3,6 +3,7 @@
 // cl /std:c++20 /EHsc tests/nr_auto_trim_smoke.cpp
 #include "../OptiScaler/shaders/dlssnr/DlssNr_AutoTrimDefault.h"
 
+#include <cmath>
 #include <cstdio>
 
 using namespace DlssNrAutoTrim;
@@ -33,17 +34,15 @@ int main()
         CHECK(!IsKnownUnexposedGame("rdr2.exe.bak"));
         CHECK(!IsKnownUnexposedGame(""));
     }
-    // Default Trim: +4.3 EV for a known unexposed game, +2.3 EV for every other game.
+    // One default for every game: +1.5 EV on the menu's scale, EV = -log2(trim / 5).
     {
-        CHECK(DefaultTrim(true) == kUnexposedTrim);
-        CHECK(DefaultTrim(false) == kPreExposedTrim);
+        CHECK(std::fabs(-std::log2(kDefaultTrim / 5.0f) - kDefaultEv) < 1e-4f);
+        CHECK(std::fabs(kDefaultEv - 1.5f) < 1e-6f);
     }
-    // The user's Trim always wins; without one the game's default applies.
+    // The user's Trim always wins; without one the default applies.
     {
-        CHECK(Effective(std::nullopt, true) == kUnexposedTrim);
-        CHECK(Effective(std::nullopt, false) == kPreExposedTrim);
-        CHECK(Effective(std::optional<float>(3.0f), true) == 3.0f);
-        CHECK(Effective(std::optional<float>(3.0f), false) == 3.0f);
+        CHECK(Effective(std::nullopt) == kDefaultTrim);
+        CHECK(Effective(std::optional<float>(3.0f)) == 3.0f);
     }
     // Following the game's exposure: on by default only for a known unexposed game; the user's choice wins both ways.
     {

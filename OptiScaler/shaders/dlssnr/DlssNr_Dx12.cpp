@@ -3389,8 +3389,10 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         const auto tuning = PassTuning(cfg, pass);
 
         MakeModelWritable(passOutput);
-        // ViT reuse of the NVIDIA model: tell the NvAPI wrapper which feature this is, whether it starts over, and how often to compute the bottleneck
-        DlssNrNative::BeginEvaluate(passFeature, passReset, cfg.DlssNrVitEvery.value_or_default(), cmdList,
+        // ViT reuse of the NVIDIA model: tell the NvAPI wrapper which feature this is, whether it starts over, how often to compute the bottleneck,
+        // and the frame + pass slot that staggers the passes (successfulDispatches counts NR frames and is constant across one frame's passes)
+        DlssNrNative::BeginEvaluate(passFeature, passReset, cfg.DlssNrVitEvery.value_or_default(),
+                                    (long long) ((g_nr.successfulDispatches + pass) & 0x3FFFFFFFFFFFFFFFull), cmdList,
                                     cfg.DlssNrKernelProfile.value_or_default());
         result = g_nr.evaluate(
             cmdList, passFeature, g_nr.capabilityParams, passInput, depthIn, motionIn, passOutput,

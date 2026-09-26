@@ -2,7 +2,9 @@
 // cl /std:c++20 /EHsc tests/nr_vit_reuse_smoke.cpp
 #include "../OptiScaler/dlssnr/DlssNrVitReuse.h"
 
+#include <algorithm>
 #include <cstdio>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -29,10 +31,10 @@ struct Result
     bool wellFormed = true;
 };
 
-static Result Eval(Filter& f, const void* feature, bool reset, unsigned every, const Seq& seq = kEval)
+static Result Eval(Filter& f, const void* feature, bool reset, unsigned every, const Seq& seq = kEval, long long slot = -1)
 {
     Result r;
-    f.Begin(feature, reset, every);
+    f.Begin(feature, reset, every, slot);
     for (Role role : seq)
         r.dropped.push_back(f.Drop(role));
     r.wellFormed = f.End();
@@ -121,6 +123,69 @@ int main()
         CHECK(Dropped(Eval(f, &a, false, 2)));
         CHECK(Dropped(Eval(f, &b, false, 2)));
         CHECK(Kept(Eval(f, &a, false, 2)));
+    }
+
+    { // staggered passes, N = 2, 3 passes, slot = frame + pass: each frame computes in 2 or 1 passes, never 3 or 0
+        Filter f;
+        int p[3];
+        std::vector<int> perFrame;
+        for (int frame = 0; frame < 9; ++frame)
+        {
+            int computed = 0;
+            for (int pass = 0; pass < 3; ++pass)
+                computed += Kept(Eval(f, &p[pass], false, 2, kEval, frame + pass));
+            perFrame.push_back(computed);
+        }
+        CHECK(perFrame[0] == 3); // first frame: nothing cached yet
+        for (int frame = 1; frame < 9; ++frame)
+            CHECK(perFrame[frame] == (frame % 2 ? 1 : 2));
+    }
+
+    { // a pass that starts over on its off frame (reset of that pass alone) is back in its phase on the next frame
+        Filter f;
+        int p[2];
+        std::vector<std::string> seen;
+        for (int frame = 0; frame < 8; ++frame)
+        {
+            std::string s;
+            for (int pass = 0; pass < 2; ++pass)
+                s += Kept(Eval(f, &p[pass], pass == 1 && frame == 4, 2, kEval, frame + pass)) ? 'V' : '-';
+            seen.push_back(s);
+        }
+        // frame 4: pass 1 is due (slot 4), pass 2 is reset on its off frame; frame 5: pass 2 due again (slot 6)
+        CHECK(seen[3] == "-V" && seen[4] == "VV" && seen[5] == "-V" && seen[6] == "V-" && seen[7] == "-V");
+    }
+
+    { // anchored or not, a pass never waits longer than N - 1 reused evaluations, for N = 2 and 3, any phase, with a reset
+        for (unsigned every = 2; every <= 3; ++every)
+            for (int pass = -1; pass < 4; ++pass)
+            {
+                Filter f;
+                int run = 0, worst = 0, computed = 0;
+                for (int frame = 0; frame < 12; ++frame)
+                {
+                    if (Kept(Eval(f, &a, frame == 5, every, kEval, pass < 0 ? -1 : frame + pass)))
+                        run = 0, ++computed;
+                    else
+                        worst = std::max(worst, ++run);
+                }
+                CHECK(worst <= (int) every - 1);
+                CHECK(computed <= 12 / (int) every + 2); // still reuses: at most the first frame and the reset extra
+            }
+    }
+
+    { // N = 3: the three passes compute on three different frames
+        Filter f;
+        int p[3];
+        for (int pass = 0; pass < 3; ++pass)
+            Eval(f, &p[pass], false, 3, kEval, pass);
+        for (int frame = 1; frame < 7; ++frame)
+        {
+            int computed = 0;
+            for (int pass = 0; pass < 3; ++pass)
+                computed += Kept(Eval(f, &p[pass], false, 3, kEval, frame + pass));
+            CHECK(computed == 1);
+        }
     }
 
     { // destroying the modules invalidates every cache

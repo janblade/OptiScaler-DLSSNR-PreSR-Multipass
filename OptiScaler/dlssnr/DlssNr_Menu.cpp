@@ -199,9 +199,9 @@ struct PassProfile
     float skin;
 };
 
-static constexpr PassProfile PresetPass1 { 1u, 2.0f, 2.0f, 2.0f, -1.0f };  // Natural
-static constexpr PassProfile PresetPass2 { 1u, 1.0f, 1.25f, 0.45f, 0.25f }; // Natural
-static constexpr PassProfile PresetPass3 { 0u, 1.0f, 1.25f, 1.25f, 1.0f };  // Standard
+static constexpr PassProfile PresetPass1 { 1u, 1.8f, 1.8f, 1.8f, -1.0f };    // Natural
+static constexpr PassProfile PresetPass2 { 1u, 1.0f, 1.0f, 1.0f, -1.0f };    // Natural
+static constexpr PassProfile PresetPass3 { 1u, 0.75f, 1.5f, 0.46f, 1.0f };   // Natural
 
 // This fork's recommended starting points for the "Model passes" slider, one per pass count.
 // Each button touches only the settings named below (including Pass 2/3 overrides once the

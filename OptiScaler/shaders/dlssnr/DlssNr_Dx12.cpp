@@ -1226,8 +1226,16 @@ void ReportFrameStats(float whitePoint, uint32_t source)
     const float mean = (float) (sum / count);
     const float logAverage = (float) std::exp(logSum / count);
 
-    // The Automatic meter's black-tile rule (dlssnr.hlsl, gMode 13): 12 stops below the plain mean.
-    const float blackLevel = mean * std::exp2(-12.0f);
+    // The Automatic meter's black-tile rule (dlssnr.hlsl, gMode 13): 12 stops below the mean of the tiles at or
+    // below 16x the plain mean (the sun and lamps left out of the reference), or the plain mean when none are.
+    double coreSum = 0.0;
+    size_t coreCount = 0;
+
+    for (float v : scene)
+        if (v <= mean * 16.0f)
+            coreSum += v, ++coreCount;
+
+    const float blackLevel = (coreCount > 0 ? (float) (coreSum / (double) coreCount) : mean) * std::exp2(-12.0f);
     const float blackShare =
         100.0f * (float) std::count_if(scene.begin(), scene.end(), [&](float v) { return v <= blackLevel; }) / count;
     const float p50 = percentile(0.50f);

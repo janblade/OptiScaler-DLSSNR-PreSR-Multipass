@@ -512,15 +512,16 @@ class Config
     // linear-HDR NR input. Finished-picture mode bypasses this calculation and keeps its own
     // display white-point override.
     // AutoExposureTrim is a multiplier on the white point (higher = darker model input). While unset (ini `auto`) the
-    // Trim used is chosen per game from the frame type (DlssNrAutoTrim::Effective, shaders/dlssnr/DlssNr_AutoTrimDefault.h):
-    // 0.25 (+4.3 EV) on an unexposed frame, 1.0 (+2.3 EV) on a pre-exposed one; the 5.0 below is only the menu's 0 EV
+    // Trim used is chosen per game (DlssNrAutoTrim::Effective, shaders/dlssnr/DlssNr_AutoTrimDefault.h):
+    // 0.25 (+4.3 EV) for a known unexposed game, 1.0 (+2.3 EV) otherwise; the 5.0 below is only the menu's 0 EV
     // point. The menu shows it as "Model input brightness" in stops around 5x: EV = -log2(trim / 5), so 0 EV = 5x, + is brighter.
     // AutoExposureShadowProtection is the menu's "Ignore bright highlights" (percent).
     CustomOptional<float> DlssNrAutoExposureTrim { 5.0f };
     CustomOptional<float> DlssNrAutoExposureShadowProtection { 100.0f };
-    // On a frame the game has not exposed yet (and that supplies its exposure), Automatic follows the game's own
-    // exposure times a calibration learned against Automatic's meter (Vulkan: a few frames behind). See DlssNr_FollowGame.h.
-    CustomOptional<bool> DlssNrAutoExposureFollowGame { true };
+    // Automatic follows the game's own exposure times a calibration learned against Automatic's meter (Vulkan: a few
+    // frames behind). See DlssNr_FollowGame.h. Unset (auto) = on for a known unexposed game (DlssNr_AutoTrimDefault.h
+    // kUnexposedGames), off otherwise; a saved true or false is kept as it is.
+    CustomOptional<bool, NoDefault> DlssNrAutoExposureFollowGame;
 
     // Base-white-point-dependent Trim calibration tables, serialized as baseWhitePoint:trim pairs. Ini-only: the
     // menu no longer edits them, but a table already in the ini still applies (and disables the Trim slider).

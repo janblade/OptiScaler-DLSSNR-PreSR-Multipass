@@ -22,6 +22,7 @@
 #include "DlssNr_TrimAnchors.h"
 #include "DlssNr_AutoTrimDefault.h"
 #include "DlssNr_FollowGame.h"
+#include <dlssnr/DlssNr_GameDefaults.h>
 
 #include <Config.h>
 #include <State.h>
@@ -1417,21 +1418,16 @@ void ConsumeMeterReadback()
         g_nr.autoExposureValue = src[0];
         g_nr.autoExposurePreExposure = g_nr.meterExposurePreExposure[slot];
 
-        if (DlssNrAutoTrim::Instance().Feed(g_nr.autoExposurePreExposure / g_nr.autoExposureValue))
-            LOG_INFO("DLSS-NR automatic exposure: {} frame (base white point {:.3g}) -> default Trim {} ({})",
-                     DlssNrAutoTrim::Instance().Get() == DlssNrAutoTrim::Verdict::Unexposed ? "unexposed"
-                                                                                          : "pre-exposed",
-                     DlssNrAutoTrim::Instance().DecidedOn(), DlssNrAutoTrim::Instance().DefaultTrim(),
-                     DlssNrAutoTrim::Instance().Get() == DlssNrAutoTrim::Verdict::Unexposed ? "+4.3 EV" : "+2.3 EV");
+        DlssNr::ReportAutoExposureDefaults();
 
-        // The game's exposure from the same frame, when it supplied one. Learned against only on an unexposed frame,
-        // the only kind that follows the game.
+        // The game's exposure from the same frame, when it supplied one. Learned against only while following the
+        // game's exposure (DlssNr_GameDefaults.h).
         if (g_nr.meterPairHasGame[slot] && std::isfinite(src[1]) && src[1] > 0.0f)
         {
             g_nr.autoPairGameExposure = src[1];
             g_nr.autoPairPreExposure = g_nr.meterExposurePreExposure[slot];
 
-            if (DlssNrAutoTrim::Instance().Get() == DlssNrAutoTrim::Verdict::Unexposed &&
+            if (DlssNr::FollowGameOn(*Config::Instance()) &&
                 DlssNrFollowGame::Instance().Feed(g_nr.autoExposurePreExposure / g_nr.autoExposureValue,
                                                   g_nr.autoPairPreExposure / g_nr.autoPairGameExposure))
                 LOG_INFO("DLSS-NR automatic exposure: calibrated against the game's own exposure: {:+.2f} EV "
@@ -1578,7 +1574,7 @@ float ResolveWhitePoint(const Config& cfg, bool isHdrBuffer)
                 ? g_nr.autoPairPreExposure / g_nr.autoPairGameExposure * DlssNrFollowGame::Instance().Scale()
                 : g_nr.autoExposurePreExposure / g_nr.autoExposureValue;
         const auto anchors = DlssNrTrim::Parse(cfg.DlssNrAutoExposureTrimAnchors.value_or_default());
-        const float trim = DlssNrTrim::TrimForKey(baseWhitePoint, DlssNrAutoTrim::Effective(cfg.DlssNrAutoExposureTrim),
+        const float trim = DlssNrTrim::TrimForKey(baseWhitePoint, DlssNr::AutoTrimEffective(cfg),
                                                   anchors, cfg.DlssNrAutoExposureTrimPreview.value_or_default());
 
         return std::clamp(baseWhitePoint * trim, 0.01f, 4096.0f);
@@ -1605,7 +1601,7 @@ void FillExposureConstants(DlssNrConstants& params, const Config& cfg, uint32_t 
 
     params.PreExposure = preExposure;
     DlssNrTrim::FillConstants(params,
-                              automatic ? DlssNrAutoTrim::Effective(cfg.DlssNrAutoExposureTrim)
+                              automatic ? DlssNr::AutoTrimEffective(cfg)
                                         : cfg.DlssNrWhitePointTrim.value_or_default(),
                               anchors,
                               automatic ? cfg.DlssNrAutoExposureTrimPreview.value_or_default()
@@ -2942,11 +2938,9 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
         // The game's exposure into the meter's tile (0,0), read back beside Automatic's: the follow-game calibration
         // needs the two from the same frame. The meter's tiles have been reduced already; nothing else reads them now.
-        // Same rule as Vulkan: only on an unexposed frame with AutoExposureFollowGame on, so nothing is learned while
-        // following is off (switching it on later starts learning at that moment).
-        const bool pairGameExposure = frame.ExposureTexture != nullptr &&
-                                      cfg.DlssNrAutoExposureFollowGame.value_or_default() &&
-                                      DlssNrAutoTrim::Instance().Get() == DlssNrAutoTrim::Verdict::Unexposed;
+        // Same rule as Vulkan: only while following the game's exposure (DlssNr_GameDefaults.h), so nothing is learned
+        // while it is off (switching it on later starts learning at that moment).
+        const bool pairGameExposure = frame.ExposureTexture != nullptr && DlssNr::FollowGameOn(cfg);
 
         if (pairGameExposure)
         {
@@ -2966,11 +2960,10 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         ConsumeMeterReadback();
     }
 
-    // Automatic follows the game's own exposure on an unexposed frame, once the calibration has locked and while the game
-    // is still supplying its exposure this frame. See DlssNr_FollowGame.h.
-    g_nr.followingGame = usingAutoExposure && frame.ExposureTexture != nullptr &&
-                         cfg.DlssNrAutoExposureFollowGame.value_or_default() &&
-                         DlssNrAutoTrim::Instance().Get() == DlssNrAutoTrim::Verdict::Unexposed &&
+    // Automatic follows the game's own exposure when that is on (DlssNr_GameDefaults.h: a known unexposed game or the
+    // user's choice), once the calibration has locked and while the game is still supplying its exposure this frame.
+    // See DlssNr_FollowGame.h.
+    g_nr.followingGame = usingAutoExposure && frame.ExposureTexture != nullptr && DlssNr::FollowGameOn(cfg) &&
                          DlssNrFollowGame::Instance().Locked() && g_nr.autoPairGameExposure > 1e-8f;
     const float exposureBaseScale = g_nr.followingGame ? DlssNrFollowGame::Instance().Scale() : 1.0f;
 

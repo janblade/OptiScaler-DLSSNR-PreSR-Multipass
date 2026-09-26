@@ -13,6 +13,7 @@
 #include <shaders/dlssnr/DlssNr_TrimAnchors.h>
 #include <shaders/dlssnr/DlssNr_AutoTrimDefault.h>
 #include <shaders/dlssnr/DlssNr_FollowGame.h>
+#include "DlssNr_GameDefaults.h"
 
 #include <string>
 #include <vector>
@@ -681,7 +682,7 @@ void RenderMenu(Config* config, float menuResScale)
                     const auto trimAnchors =
                         DlssNrTrim::Parse(config->DlssNrAutoExposureTrimAnchors.value_or_default());
                     const float trim = DlssNrTrim::TrimForKey(
-                        baseWhitePoint, DlssNrAutoTrim::Effective(config->DlssNrAutoExposureTrim), trimAnchors, false);
+                        baseWhitePoint, DlssNr::AutoTrimEffective(*config), trimAnchors, false);
                     // Middle-grey metering, mode 13 in dlssnr.hlsl: exposure = 0.18 / (0.82 * average scene brightness).
                     ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
                                        "Scene brightness %.3f  ->  model white at %.2f",
@@ -863,60 +864,49 @@ void RenderMenu(Config* config, float menuResScale)
         else if (wpSource == 3)
         {
             // The scale stays centred on a 5x Trim (0 EV), the old default from the PR this came from. The default is
-            // now chosen per game from the frame type -- +4.3 EV unexposed, +2.3 EV pre-exposed -- see
+            // now chosen per game -- +4.3 EV for a known unexposed game, +2.3 EV otherwise -- see
             // DlssNr_AutoTrimDefault.h for the measurements. It is independent of the Game exposure Trim.
             RenderTrimEvSlider(config->DlssNrAutoExposureTrim, 5.0f,
                                DlssNrTrim::Parse(config->DlssNrAutoExposureTrimAnchors.value_or_default()).size(),
                                "autoexposure",
                                "Brightness of the picture handed to NR. + is brighter, - is darker."
-                               "\nUntil you move it, the default is chosen for the game: +4.3 EV when the game hands over"
-                               "\nits frame before applying its exposure (unexposed, e.g. RDR2), +2.3 EV when the exposure"
-                               "\nis already applied (pre-exposed, e.g. NBA 2K27, Cyberpunk 2077, The Witcher 3)."
+                               "\nUntil you move it, the default is chosen for the game: +4.3 EV for games known to hand"
+                               "\nover their frame before applying their exposure (RDR2), +2.3 EV for every other game."
+                               "\nFor another game that does that, raise it and tick Follow the game's exposure."
                                "\nReset goes back to that default."
                                "\nToo bright clips highlights or tints shadows; too dark hides shadow detail."
                                "\nOptiScaler meters the linear HDR frame itself before NR runs."
                                "\nAutomatic exposure is available on D3D12 and Vulkan.",
-                               DlssNrAutoTrim::Instance().DefaultTrim());
+                               DlssNrAutoTrim::DefaultTrim(DlssNr::KnownUnexposedGame()));
 
-            {
-                const auto verdict = DlssNrAutoTrim::Instance().Get();
-                const char* kind = verdict == DlssNrAutoTrim::Verdict::Unexposed   ? "+4.3 EV (unexposed frame detected)"
-                                   : verdict == DlssNrAutoTrim::Verdict::PreExposed ? "+2.3 EV (pre-exposed frame detected)"
-                                                                                       : "+2.3 EV (detecting...)";
-                ImGui::TextDisabled("Default for this game: %s%s", kind,
-                                    config->DlssNrAutoExposureTrim.has_value() ? "; your setting is in use" : "");
-            }
+            ImGui::TextDisabled("Default for this game: %s%s",
+                                DlssNr::KnownUnexposedGame() ? "+4.3 EV (known unexposed game)" : "+2.3 EV",
+                                config->DlssNrAutoExposureTrim.has_value() ? "; your setting is in use" : "");
 
-            // Following the game's own exposure on an unexposed frame (DlssNr_FollowGame.h). Vulkan follows from the host
-            // value, a few frames behind the game.
+            // Following the game's own exposure (DlssNr_FollowGame.h): on by default for a known unexposed game
+            // (DlssNr_GameDefaults.h). Vulkan follows from the host value, a few frames behind the game.
             {
                 const bool followVk = DlssNr::IsRunningVk();
-                bool follow = config->DlssNrAutoExposureFollowGame.value_or_default();
+                bool follow = DlssNr::FollowGameOn(*config);
 
                 if (ImGui::Checkbox("Follow the game's exposure", &follow))
                     config->DlssNrAutoExposureFollowGame = follow;
 
-                HelpMarker("For games that hand over their frame before applying their own exposure (e.g. RDR2)."
-                           "\nAutomatic learns how its own metering relates to the game's exposure in the first"
-                           "\nseconds of play, then follows the game's exposure, so brightness moves exactly with"
-                           "\nthe game: cutscenes, menus, fades. The brightness slider keeps its meaning."
-                           "\nGames that expose their frame themselves are not affected."
-                           "\nOn Vulkan it follows a few frames behind the game.");
+                HelpMarker("For games that hand over their frame before applying their own exposure: on by default"
+                           "\nfor those known to (RDR2), off for every other game. Automatic learns how its own metering"
+                           "\nrelates to the game's exposure in the first seconds of play, then follows the game's exposure,"
+                           "\nso brightness moves exactly with the game: cutscenes, menus, fades. The brightness slider"
+                           "\nkeeps its meaning. Leave it off for games that expose their frame themselves (most games):"
+                           "\nit would apply their exposure twice. On Vulkan it follows a few frames behind the game.");
 
                 const auto followStatus =
                     followVk ? DlssNr::FollowGameExposureStatusVk() : DlssNr::FollowGameExposureStatus();
                 const auto& calibration = DlssNrFollowGame::Instance();
 
-                const auto verdict = DlssNrAutoTrim::Instance().Get();
-
                 if (!follow)
                     ImGui::TextDisabled("Off");
-                else if (verdict == DlssNrAutoTrim::Verdict::Detecting)
-                    ImGui::TextDisabled("Detecting the frame type...");
-                else if (verdict != DlssNrAutoTrim::Verdict::Unexposed)
-                    ImGui::TextDisabled("Not used: this game exposes its frame itself");
                 else if (!followStatus.gameExposureSeen)
-                    ImGui::TextDisabled("Not available: the game supplies no exposure");
+                    ImGui::TextDisabled("Not available yet: no exposure from the game");
                 else if (!calibration.Locked())
                     ImGui::TextDisabled("Learning the calibration... (%u/%u)", calibration.Readings(),
                                         DlssNrFollowGame::kWindow);
@@ -924,13 +914,11 @@ void RenderMenu(Config* config, float menuResScale)
                     ImGui::TextDisabled("Calibration %+.2f EV against the game's exposure%s", calibration.OffsetEv(),
                                         followStatus.following ? "; following" : "; not following");
 
-                // The calibration is learned once per session; this learns it again. The frame type is kept: it is judged
-                // from the scene's brightness, and a dim unexposed scene reads like a pre-exposed one, so measuring it
-                // again at the wrong moment could only make it wrong (RDR2 read 77-116 in a dim scene, 2026-09-26).
+                // The calibration is learned once per session; this learns it again.
                 if (ImGui::SmallButton("Re-calibrate##autoexposure"))
                 {
                     DlssNrFollowGame::Instance().Reset();
-                    LOG_INFO("DLSS-NR automatic exposure: re-calibration requested (the frame type is kept)");
+                    LOG_INFO("DLSS-NR automatic exposure: re-calibration requested");
                 }
 
                 HelpMarker("Learns the calibration against the game's exposure again, for example when it was"

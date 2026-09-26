@@ -1,136 +1,66 @@
 #pragma once
 
-// The Automatic exposure Trim a game gets while the user has not set one (ini AutoExposureTrim = auto).
+// The Automatic exposure Trim a game gets while the user has not set one (ini AutoExposureTrim = auto), and whether it
+// follows the game's own exposure by default.
 //
 // Two kinds of frame reach Automatic exposure, and they want different defaults (measured 2026-09-25 with FrameStats).
-// Both are linear HDR, scene-referred in the colour sense and tone-mapped later; what differs is whether the game has
-// already applied its own exposure before handing the frame to the upscaler:
-// - unexposed (RDR2: raw scene luminance, the game's exposure of ~0.007 comes later; the meter's base white point sits
-//   around 900-1700): +4.3 EV (Trim 0.25) looked best; the old 5x left the model a picture with a median of 0.29;
-// - pre-exposed (NBA 2K27 ~0.2-0.8, Cyberpunk 2077 ~0.5 with 6.6 in the first seconds, The Witcher 3 ~2-6): +4.3 EV put
-//   yellow highlights in NBA's player shadows, +2.3 EV (Trim 1) looked right in all three.
-// The base white point (PreExposure / automatic exposure) tells them apart. kThreshold sits ~17x above the highest
-// pre-exposed reading and ~9x below RDR2's gameplay (raised from 20 after The Witcher 3 reached 6).
+// Both are linear HDR; what differs is whether the game has already applied its own exposure before the upscaler:
+// - unexposed (RDR2: raw scene luminance, the game's exposure of ~0.006-0.013 comes later): +4.3 EV (Trim 0.25) gave the
+//   model a median of 0.77-0.80 and looked best; following the game's exposure keeps its fades and adaptation;
+// - pre-exposed (NBA 2K27, Cyberpunk 2077, The Witcher 3): +4.3 EV put yellow highlights in NBA's player shadows,
+//   +2.3 EV (Trim 1) looked right in all three; following would apply the game's exposure a second time.
 //
-// The verdict only ever moves towards unexposed. An unexposed game shows pre-exposed numbers on loading screens and
-// menus (RDR2 read about 1 while loading), but a pre-exposed game never reads in the hundreds, so a sustained high
-// reading is conclusive and a low one is only provisional. Evidence: one unexposed game, three pre-exposed.
-// "Sustained" is kConfirmWindows high one-second windows in the session, not necessarily in a row: one or two seconds
-// of an unusually bright menu cannot latch a pre-exposed game, and a dim RDR2 scene whose readings hover around the
-// threshold (medians 77-116 measured on 2026-09-26, far below its daytime 900-1700) is still recognised after a few
-// brighter seconds. Low windows in between keep the count; they only give the provisional pre-exposed verdict.
+// Which kind a game is cannot be read off the frame: a dark unexposed scene has the numbers of a pre-exposed one (RDR2
+// read 12-116 in dim scenes on 2026-09-26, 900-1700 in daylight), and the DLSS inputs are the same (NBA passes an exposure
+// texture, PreExposure 1 and the flag like RDR2). So the games measured to be unexposed are listed by exe, everything else
+// gets the pre-exposed defaults, and the user's slider and Follow checkbox override both.
 //
-// Header-only and free of D3D/Vulkan types so the latch can be exercised on the host (tests/nr_auto_trim_smoke.cpp).
+// Header-only and free of D3D/Vulkan types so it can be exercised on the host (tests/nr_auto_trim_smoke.cpp).
 
 #include <algorithm>
-#include <array>
-#include <cmath>
-#include <mutex>
+#include <cctype>
 #include <optional>
+#include <string>
 
 namespace DlssNrAutoTrim
 {
 constexpr float kUnexposedTrim = 0.25f; // +4.3 EV on the menu's scale (neutral 5x)
 constexpr float kPreExposedTrim = 1.0f;  // +2.3 EV
-constexpr float kThreshold = 100.0f;        // base white point: RDR2 ~900-1700 in gameplay; pre-exposed games up to ~6 (The Witcher 3)
-constexpr unsigned kWindow = 60;            // readings per decision (about 1 s)
-constexpr unsigned kConfirmWindows = 3;     // high windows in the session before the verdict becomes Unexposed
 
-enum class Verdict
-{
-    Detecting,
-    PreExposed, // provisional: can still become Unexposed
-    Unexposed,  // final for the session
+// Games measured to hand over unexposed frames, by exe name (lower case). Kept here rather than as a GameQuirk in
+// misc/Quirks.h: upstream OptiScaler owns those lines (rdr2.exe already has compatibility quirks there), and a DLSS-NR
+// flag on them would conflict on every sync. Add a game only with a FrameStats measurement behind it.
+constexpr const char* kUnexposedGames[] = {
+    "rdr2.exe",     // Red Dead Redemption 2: scene median 150-350 in daylight, game exposure ~0.006-0.013 (2026-09-25)
+    "playrdr2.exe", // its launcher-started exe
 };
 
-class Detector
+// Whether the game's exe (name or full path, any case) is on kUnexposedGames.
+inline bool IsKnownUnexposedGame(const std::string& exe)
 {
-  public:
-    // One base white point per frame the Automatic meter produced. True when the verdict changed with this reading.
-    bool Feed(float baseWhitePoint)
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
+    const size_t slash = exe.find_last_of("\\/");
+    std::string name = slash == std::string::npos ? exe : exe.substr(slash + 1);
+    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return (char) std::tolower(c); });
 
-        if (verdict_ == Verdict::Unexposed || !std::isfinite(baseWhitePoint) || baseWhitePoint <= 0.0f)
-            return false;
+    for (const char* known : kUnexposedGames)
+        if (name == known)
+            return true;
 
-        window_[filled_ % kWindow] = baseWhitePoint;
-        ++filled_;
-
-        if (filled_ % kWindow != 0) // one decision per full window
-            return false;
-
-        std::array<float, kWindow> sorted = window_;
-        std::nth_element(sorted.begin(), sorted.begin() + kWindow / 2, sorted.end());
-        const float median = sorted[kWindow / 2];
-        Verdict next = Verdict::PreExposed;
-
-        if (median > kThreshold)
-        {
-            if (++highWindows_ < kConfirmWindows)
-                return false; // not yet conclusive: keep the current verdict (Detecting or PreExposed)
-
-            next = Verdict::Unexposed;
-        }
-
-        if (next == verdict_)
-            return false;
-
-        verdict_ = next;
-        median_ = median;
-        return true;
-    }
-
-    Verdict Get() const
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return verdict_;
-    }
-
-    // The base white point the current verdict was decided on (0 while detecting).
-    float DecidedOn() const
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return median_;
-    }
-
-    float DefaultTrim() const { return Get() == Verdict::Unexposed ? kUnexposedTrim : kPreExposedTrim; }
-
-    void Reset()
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        *this = Detector {};
-    }
-
-    Detector() = default;
-    Detector& operator=(const Detector& other)
-    {
-        window_ = other.window_;
-        filled_ = other.filled_;
-        highWindows_ = other.highWindows_;
-        verdict_ = other.verdict_;
-        median_ = other.median_;
-        return *this;
-    }
-
-  private:
-    mutable std::mutex mutex_;
-    std::array<float, kWindow> window_ {};
-    unsigned long long filled_ = 0;
-    unsigned highWindows_ = 0; // windows above kThreshold so far
-    Verdict verdict_ = Verdict::Detecting;
-    float median_ = 0.0f;
-};
-
-inline Detector& Instance()
-{
-    static Detector detector;
-    return detector;
+    return false;
 }
 
-// The Trim in force: the user's own when they set one, otherwise the detected default.
-inline float Effective(const std::optional<float>& userTrim)
+inline float DefaultTrim(bool knownUnexposed) { return knownUnexposed ? kUnexposedTrim : kPreExposedTrim; }
+
+// The Trim in force: the user's own when they set one, otherwise the game's default.
+inline float Effective(const std::optional<float>& userTrim, bool knownUnexposed)
 {
-    return userTrim.has_value() ? *userTrim : Instance().DefaultTrim();
+    return userTrim.has_value() ? *userTrim : DefaultTrim(knownUnexposed);
+}
+
+// Whether Automatic follows the game's exposure: the user's choice when they made one, otherwise on for a known
+// unexposed game only.
+inline bool FollowGame(const std::optional<bool>& userFollow, bool knownUnexposed)
+{
+    return userFollow.has_value() ? *userFollow : knownUnexposed;
 }
 } // namespace DlssNrAutoTrim

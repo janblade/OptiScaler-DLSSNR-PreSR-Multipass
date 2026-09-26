@@ -211,7 +211,7 @@ static void ApplyPassPreset(Config* config, unsigned int passes)
 {
     config->DlssNrEnabled = true;
     config->DlssNrPrecision = 0u; // NVIDIA (FP8)
-    config->DlssNrVitEvery = 1u;
+    config->DlssNrVitEvery = 2u; // Reuse bottleneck on, the default
     config->DlssNrApplyModel = true;
     config->DlssNrUnlockPasses = false;
     config->DlssNrPasses = passes;
@@ -1252,7 +1252,8 @@ void RenderMenu(Config* config, float menuResScale)
             config->DlssNrVitEvery = vitReuse ? 2u : 1u;
         HelpMarker("Recomputes the model's coarsest stage (its 32x18 bottleneck) only every other frame and reuses the last result in between, "
                    "which saves roughly a tenth of the model's GPU time.\nThat stage changes slowly, so the picture usually barely differs, "
-                   "but fast camera motion can look slightly softer. Scene cuts always recompute. Applies immediately, NVIDIA's own model only.");
+                   "but fast camera motion can look slightly softer. Scene cuts always recompute. With several passes, the passes take turns "
+                   "so the work is spread evenly across frames.\nOn by default. Applies immediately, NVIDIA's own model only.");
         if (vitReuse)
             ImGui::TextUnformatted(("Bottleneck reuse: " + DlssNrNative::VitStatus()).c_str());
         if (precisionChoice > 0)

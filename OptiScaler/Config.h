@@ -268,7 +268,7 @@ class Config
     CustomOptional<bool> DlssNrDeferredDlss { false };
     CustomOptional<bool> DlssNrResidualFg { false };
     CustomOptional<uint32_t> DlssNrPrecision { 0 }; // 0 NVIDIA FP8 (default), 4 Experimental NVFP4 hybrid
-    CustomOptional<uint32_t> DlssNrVitEvery { 1 };  // NVIDIA model: compute the ViT bottleneck every N-th frame (1 = always, default; 2 = every other frame), reuse it in between
+    CustomOptional<uint32_t> DlssNrVitEvery { 2 };  // NVIDIA model: compute the ViT bottleneck every N-th frame (1 = always; 2 = every other frame, default), reuse it in between
     CustomOptional<bool> DlssNrResidualFgApproxCamera { false };
     // Toggles the pass in game. Unbound by default -- a key that does something unexpected is worse
     // than one that does nothing.

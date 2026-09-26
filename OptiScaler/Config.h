@@ -506,7 +506,8 @@ class Config
     // was a button the notice never mentioned -- and then by clearing, which silently undid a
     // setting the user had made. Both were attempts to stop an illegal state being REACHED. A single
     // choice cannot reach it: there is nothing to keep consistent, because there is only one value.
-    CustomOptional<uint32_t> DlssNrWhitePointSource { 1 };
+    // Default 3 (Automatic, at +1.5 EV): it needs nothing from the game; Game exposure left NBA 2K27 far too dark.
+    CustomOptional<uint32_t> DlssNrWhitePointSource { 3 };
 
     // OptiScaler-owned automatic exposure controls. When active, automatic exposure uses the
     // linear-HDR NR input. Finished-picture mode bypasses this calculation and keeps its own
